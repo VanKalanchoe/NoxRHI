@@ -37,9 +37,51 @@ namespace NRI
             return mode == PolygonMode::Line ? D3D12_FILL_MODE_WIREFRAME : D3D12_FILL_MODE_SOLID;
         }
 
+        D3D12_BLEND translateBlendFactor(BlendFactor factor, bool isAlpha)
+        {
+            switch (factor)
+            {
+            case BlendFactor::Zero:             return D3D12_BLEND_ZERO;
+            case BlendFactor::One:              return D3D12_BLEND_ONE;
+            case BlendFactor::SrcAlpha:         return D3D12_BLEND_SRC_ALPHA;
+            case BlendFactor::OneMinusSrcAlpha: return D3D12_BLEND_INV_SRC_ALPHA;
+            case BlendFactor::SrcColor:         return isAlpha ? D3D12_BLEND_SRC_ALPHA : D3D12_BLEND_SRC_COLOR;
+            case BlendFactor::OneMinusSrcColor: return isAlpha ? D3D12_BLEND_INV_SRC_ALPHA : D3D12_BLEND_INV_SRC_COLOR;
+            default:                            return D3D12_BLEND_ONE;
+            }
+        }
+
+        D3D12_BLEND_OP translateBlendOp(BlendOp op)
+        {
+            switch (op)
+            {
+            case BlendOp::Add: return D3D12_BLEND_OP_ADD;
+            default:           return D3D12_BLEND_OP_ADD;
+            }
+        }
+
+        D3D12_BLEND_DESC buildBlendDesc(bool colorBlendEnable,
+                                        const ColorBlendEquation& eq,
+                                        uint32_t colorWriteMask)
+        {
+            D3D12_BLEND_DESC blend{};
+            D3D12_RENDER_TARGET_BLEND_DESC& rt = blend.RenderTarget[0];
+            rt.BlendEnable = colorBlendEnable ? TRUE : FALSE;
+            rt.SrcBlend = translateBlendFactor(eq.srcColorBlendFactor, false);
+            rt.DestBlend = translateBlendFactor(eq.dstColorBlendFactor, false);
+            rt.BlendOp = translateBlendOp(eq.colorBlendOp);
+            rt.SrcBlendAlpha = translateBlendFactor(eq.srcAlphaBlendFactor, true);
+            rt.DestBlendAlpha = translateBlendFactor(eq.dstAlphaBlendFactor, true);
+            rt.BlendOpAlpha = translateBlendOp(eq.alphaBlendOp);
+            rt.RenderTargetWriteMask = static_cast<UINT8>(colorWriteMask & 0xFu);
+            return blend;
+        }
+
         uint64_t makeGraphicsVariantKey(bool hasDepth, bool depthTestEnable, bool depthWriteEnable,
                                         CompareOp depthCompareOp, CullMode cullMode,
-                                        FrontFace frontFace, PolygonMode polygonMode)
+                                        FrontFace frontFace, PolygonMode polygonMode,
+                                        bool colorBlendEnable, const ColorBlendEquation& colorBlendEquation,
+                                        uint32_t colorWriteMask)
         {
             uint64_t key = 0;
             key |= (hasDepth ? 1ull : 0ull) << 0;
@@ -49,6 +91,17 @@ namespace NRI
             key |= (static_cast<uint64_t>(cullMode) & 0x3u) << 7;
             key |= (static_cast<uint64_t>(frontFace) & 0x3u) << 9;
             key |= (static_cast<uint64_t>(polygonMode) & 0x3u) << 11;
+            key |= (colorBlendEnable ? 1ull : 0ull) << 13;
+            if (colorBlendEnable)
+            {
+                key |= (static_cast<uint64_t>(colorBlendEquation.srcColorBlendFactor) & 0xFu) << 14;
+                key |= (static_cast<uint64_t>(colorBlendEquation.dstColorBlendFactor) & 0xFu) << 18;
+                key |= (static_cast<uint64_t>(colorBlendEquation.colorBlendOp) & 0x3u) << 22;
+                key |= (static_cast<uint64_t>(colorBlendEquation.srcAlphaBlendFactor) & 0xFu) << 24;
+                key |= (static_cast<uint64_t>(colorBlendEquation.dstAlphaBlendFactor) & 0xFu) << 28;
+                key |= (static_cast<uint64_t>(colorBlendEquation.alphaBlendOp) & 0x3u) << 32;
+            }
+            key |= (static_cast<uint64_t>(colorWriteMask) & 0xFu) << 34;
             return key;
         }
 
@@ -164,7 +217,10 @@ namespace NRI
                                                                     CompareOp depthCompareOp,
                                                                     CullMode cullMode,
                                                                     FrontFace frontFace,
-                                                                    PolygonMode polygonMode)
+                                                                    PolygonMode polygonMode,
+                                                                    bool colorBlendEnable,
+                                                                    const ColorBlendEquation& colorBlendEquation,
+                                                                    uint32_t colorWriteMask)
     {
         const BOOL effDepthEnable = (hasDepth && depthTestEnable) ? TRUE : FALSE;
         const D3D12_DEPTH_WRITE_MASK effDepthWrite = (hasDepth && depthWriteEnable)
@@ -172,6 +228,7 @@ namespace NRI
             : D3D12_DEPTH_WRITE_MASK_ZERO;
         const DXGI_FORMAT effDsvFormat = hasDepth ? DXGI_FORMAT_D32_FLOAT : DXGI_FORMAT_UNKNOWN;
         const BOOL frontCCW = (frontFace == FrontFace::CounterClockWise) ? TRUE : FALSE;
+        const D3D12_BLEND_DESC blendDesc = buildBlendDesc(colorBlendEnable, colorBlendEquation, colorWriteMask);
 
         ComPtr<ID3D12PipelineState> pso;
         if (m_hasMeshShaders)
@@ -182,6 +239,7 @@ namespace NRI
                 struct alignas(void*) { D3D12_PIPELINE_STATE_SUBOBJECT_TYPE type{ D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_AS }; D3D12_SHADER_BYTECODE bytecode{}; } AS;
                 struct alignas(void*) { D3D12_PIPELINE_STATE_SUBOBJECT_TYPE type{ D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_MS }; D3D12_SHADER_BYTECODE bytecode{}; } MS;
                 struct alignas(void*) { D3D12_PIPELINE_STATE_SUBOBJECT_TYPE type{ D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS }; D3D12_SHADER_BYTECODE bytecode{}; } PS;
+                struct alignas(void*) { D3D12_PIPELINE_STATE_SUBOBJECT_TYPE type{ D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND }; D3D12_BLEND_DESC desc{}; } Blend;
                 struct alignas(void*) { D3D12_PIPELINE_STATE_SUBOBJECT_TYPE type{ D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER }; D3D12_RASTERIZER_DESC desc{}; } Rasterizer;
                 struct alignas(void*) { D3D12_PIPELINE_STATE_SUBOBJECT_TYPE type{ D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL }; D3D12_DEPTH_STENCIL_DESC desc{}; } DepthStencil;
                 struct alignas(void*) { D3D12_PIPELINE_STATE_SUBOBJECT_TYPE type{ D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS }; D3D12_RT_FORMAT_ARRAY rts{}; } RTVFormats;
@@ -194,6 +252,7 @@ namespace NRI
             stream.MS.bytecode = { m_msBytecode.data(), m_msBytecode.size() };
             if (!m_psBytecode.empty())
                 stream.PS.bytecode = { m_psBytecode.data(), m_psBytecode.size() };
+            stream.Blend.desc = blendDesc;
 
             stream.Rasterizer.desc.FillMode = translatePolygonMode(polygonMode);
             stream.Rasterizer.desc.CullMode = translateCullMode(cullMode);
@@ -234,7 +293,7 @@ namespace NRI
             psoDesc.DepthStencilState.DepthWriteMask = effDepthWrite;
             psoDesc.DepthStencilState.DepthFunc = translateCompareOp(depthCompareOp);
 
-            psoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+            psoDesc.BlendState = blendDesc;
             psoDesc.SampleMask = UINT_MAX;
             psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
             psoDesc.NumRenderTargets = static_cast<UINT>(m_rtvFormats.size());
@@ -255,17 +314,22 @@ namespace NRI
                                                                 CompareOp depthCompareOp,
                                                                 CullMode cullMode,
                                                                 FrontFace frontFace,
-                                                                PolygonMode polygonMode)
+                                                                PolygonMode polygonMode,
+                                                                bool colorBlendEnable,
+                                                                const ColorBlendEquation& colorBlendEquation,
+                                                                uint32_t colorWriteMask)
     {
         const uint64_t key = makeGraphicsVariantKey(hasDepth, depthTestEnable, depthWriteEnable,
-                                                    depthCompareOp, cullMode, frontFace, polygonMode);
+                                                    depthCompareOp, cullMode, frontFace, polygonMode,
+                                                    colorBlendEnable, colorBlendEquation, colorWriteMask);
         std::scoped_lock lock(m_variantMutex);
         auto it = m_graphicsVariants.find(key);
         if (it != m_graphicsVariants.end())
             return it->second.Get();
 
         ComPtr<ID3D12PipelineState> built = buildGraphicsVariant(
-            hasDepth, depthTestEnable, depthWriteEnable, depthCompareOp, cullMode, frontFace, polygonMode);
+            hasDepth, depthTestEnable, depthWriteEnable, depthCompareOp, cullMode, frontFace, polygonMode,
+            colorBlendEnable, colorBlendEquation, colorWriteMask);
         ID3D12PipelineState* raw = built.Get();
         m_graphicsVariants.emplace(key, std::move(built));
         if (!m_pipeline)

@@ -15,6 +15,7 @@
 #include "NRI/Extensions/NRIMeshShader.h"
 #include "NRI/Extensions/NRIGpuProfiler.h"
 #include "NRI/Extensions/NRIShaderCompiler.h"
+#include "NRI/Extensions/NRIImgui.h"
 
 #include "CHandles.h"
 #include "Log.h"
@@ -1947,6 +1948,130 @@ void NRI_CALL nriSetShaderProgressCallbacks(const NriShaderProgressCallbacks* ca
             g_cShaderProgress.onIdle(g_cShaderProgress.userData);
     };
     NRI::SetShaderProgress(&g_cppShaderProgress);
+}
+
+NriResult NRI_CALL nriCreateImgui(NriDevice device, const NriImguiDesc* desc, NriImgui* outImgui)
+{
+    if (!device || !device->impl || !desc || !outImgui)
+        return NRI_ERROR_INVALID_ARGUMENT;
+    *outImgui = nullptr;
+    try
+    {
+        auto wrap = std::make_unique<NriImgui_T>();
+        wrap->device = device->impl;
+        std::shared_ptr<NRI::DescriptorHeap> resHeap = desc->resourceHeap ? desc->resourceHeap->impl : nullptr;
+        std::shared_ptr<NRI::DescriptorHeap> sampHeap = desc->samplerHeap ? desc->samplerHeap->impl : nullptr;
+        wrap->impl = std::make_unique<NRI::ImguiExtension>(device->impl, std::move(resHeap), std::move(sampHeap), *desc);
+        *outImgui = wrap.release();
+        return NRI_SUCCESS;
+    }
+    catch (const std::exception& e)
+    {
+        return translateException(e);
+    }
+}
+
+void NRI_CALL nriDestroyImgui(NriImgui imgui)
+{
+    if (!imgui)
+        return;
+    std::unique_ptr<NriImgui_T> owned(imgui);
+    owned->impl.reset();
+    owned->device.reset();
+}
+
+NriResult NRI_CALL nriImguiCreateTexture(NriImgui imgui, uint32_t width, uint32_t height, const void* rgbaPixels, uint64_t* outTextureId)
+{
+    if (!imgui || !imgui->impl || !outTextureId || !rgbaPixels)
+        return NRI_ERROR_INVALID_ARGUMENT;
+    try
+    {
+        *outTextureId = imgui->impl->createTexture(width, height, rgbaPixels);
+        return NRI_SUCCESS;
+    }
+    catch (const std::exception& e)
+    {
+        return translateException(e);
+    }
+}
+
+NriResult NRI_CALL nriImguiUpdateTexture(NriImgui imgui, uint64_t textureId, uint32_t x, uint32_t y, uint32_t width, uint32_t height,
+                                         const void* fullRgbaPixels, uint32_t texWidth, uint32_t texHeight)
+{
+    if (!imgui || !imgui->impl || !fullRgbaPixels)
+        return NRI_ERROR_INVALID_ARGUMENT;
+    try
+    {
+        imgui->impl->updateTexture(textureId, x, y, width, height, fullRgbaPixels, texWidth, texHeight);
+        return NRI_SUCCESS;
+    }
+    catch (const std::exception& e)
+    {
+        return translateException(e);
+    }
+}
+
+void NRI_CALL nriImguiDestroyTexture(NriImgui imgui, uint64_t textureId)
+{
+    if (imgui && imgui->impl)
+        imgui->impl->destroyTexture(textureId);
+}
+
+void NRI_CALL nriCmdCopyImguiData(NriCommandBuffer cmd, NriImgui imgui, const NriImguiDrawDataDesc* drawData)
+{
+    if (cmd && cmd->impl && imgui && imgui->impl && drawData)
+        imgui->impl->copyData(*cmd->impl, *drawData);
+}
+
+void NRI_CALL nriCmdDrawImgui(NriCommandBuffer cmd, NriImgui imgui, const NriImguiDrawDataDesc* drawData)
+{
+    if (cmd && cmd->impl && imgui && imgui->impl && drawData)
+        imgui->impl->draw(*cmd->impl, *drawData);
+}
+
+NriResult NRI_CALL nriImguiCreateViewport(NriImgui imgui, const NriImguiViewportDesc* desc, uint64_t* outViewportHandle)
+{
+    if (!imgui || !imgui->impl || !desc || !outViewportHandle)
+        return NRI_ERROR_INVALID_ARGUMENT;
+    try
+    {
+        *outViewportHandle = imgui->impl->createViewport(*desc);
+        return NRI_SUCCESS;
+    }
+    catch (const std::exception& e)
+    {
+        return translateException(e);
+    }
+}
+
+void NRI_CALL nriImguiResizeViewport(NriImgui imgui, uint64_t viewportHandle, uint32_t width, uint32_t height)
+{
+    if (imgui && imgui->impl)
+        imgui->impl->resizeViewport(viewportHandle, width, height);
+}
+
+void NRI_CALL nriImguiDestroyViewport(NriImgui imgui, uint64_t viewportHandle)
+{
+    if (imgui && imgui->impl)
+        imgui->impl->destroyViewport(viewportHandle);
+}
+
+uint32_t NRI_CALL nriImguiGetViewportSlot(NriImgui imgui, uint64_t viewportHandle)
+{
+    return (imgui && imgui->impl) ? imgui->impl->getViewportSlot(viewportHandle) : 0u;
+}
+
+void NRI_CALL nriImguiRenderViewport(NriImgui imgui, uint64_t viewportHandle, const NriImguiDrawDataDesc* drawData,
+                                   float clearR, float clearG, float clearB, float clearA)
+{
+    if (imgui && imgui->impl && drawData)
+        imgui->impl->renderViewport(viewportHandle, *drawData, clearR, clearG, clearB, clearA);
+}
+
+void NRI_CALL nriImguiPresentViewport(NriImgui imgui, uint64_t viewportHandle)
+{
+    if (imgui && imgui->impl)
+        imgui->impl->presentViewport(viewportHandle);
 }
 
 } // extern "C"

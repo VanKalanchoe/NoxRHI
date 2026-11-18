@@ -45,12 +45,7 @@ namespace NRI
             if (state.access & AccessBits::DepthStencilRead)
                 return D3D12_RESOURCE_STATE_DEPTH_READ;
             if (state.access & AccessBits::ShaderRead)
-            {
-                D3D12_RESOURCE_STATES s = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-                if (state.stages & (StageBits::Compute | StageBits::Task | StageBits::Mesh | StageBits::RayTracing))
-                    s |= D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-                return s;
-            }
+                return D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
             if (state.access & AccessBits::TransferWrite)
                 return D3D12_RESOURCE_STATE_COPY_DEST;
             if (state.access & AccessBits::TransferRead)
@@ -213,7 +208,10 @@ namespace NRI
             m_depthCompareOp,
             m_cullMode,
             m_frontFace,
-            m_polygonMode);
+            m_polygonMode,
+            m_colorBlendEnable,
+            m_colorBlendEquation,
+            m_colorWriteMask);
         if (desired && desired != m_boundPso)
         {
             m_cmdList->SetPipelineState(desired);
@@ -333,6 +331,8 @@ namespace NRI
 
     void CommandBufferD3D12::bindIndexBuffer(Buffer& buffer, uint64_t offet)
     {
+        auto* bufD3D12 = static_cast<BufferD3D12*>(&buffer);
+        transitionBufferState(*bufD3D12, D3D12_RESOURCE_STATE_INDEX_BUFFER);
         D3D12_INDEX_BUFFER_VIEW view{};
         view.BufferLocation = buffer.getDeviceAddress() + offet;
         view.SizeInBytes = static_cast<UINT>(buffer.getSize() - offet);
@@ -407,6 +407,8 @@ namespace NRI
     {
         auto* srcD3D12 = static_cast<BufferD3D12*>(&srcBuffer);
         auto* dstD3D12 = static_cast<BufferD3D12*>(&dstBuffer);
+        transitionBufferState(*srcD3D12, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        transitionBufferState(*dstD3D12, D3D12_RESOURCE_STATE_COPY_DEST);
         uint64_t size = region.size > 0 ? region.size : std::min(srcBuffer.getSize(), dstBuffer.getSize());
         m_cmdList->CopyBufferRegion(dstD3D12->getNativeBuffer(), region.dstOffset, srcD3D12->getNativeBuffer(), region.srcOffset, size);
     }
@@ -420,6 +422,8 @@ namespace NRI
     {
         auto* srcD3D12 = static_cast<BufferD3D12*>(&srcBuffer);
         auto* dstD3D12 = static_cast<BufferD3D12*>(&dstBuffer);
+        transitionBufferState(*srcD3D12, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        transitionBufferState(*dstD3D12, D3D12_RESOURCE_STATE_COPY_DEST);
         for (const auto& reg : regions)
         {
             m_cmdList->CopyBufferRegion(dstD3D12->getNativeBuffer(), reg.dstOffset, srcD3D12->getNativeBuffer(), reg.srcOffset, reg.size);
@@ -649,6 +653,21 @@ namespace NRI
         m_cmdList->ResourceBarrier(1, &b);
     }
 
+    void CommandBufferD3D12::transitionBufferState(BufferD3D12& buffer, D3D12_RESOURCE_STATES afterState)
+    {
+        if (buffer.isUploadHeap() || buffer.getCurrentState() == afterState)
+            return;
+
+        D3D12_RESOURCE_BARRIER barrier{};
+        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Transition.pResource = buffer.getNativeBuffer();
+        barrier.Transition.StateBefore = buffer.getCurrentState();
+        barrier.Transition.StateAfter = afterState;
+        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        m_cmdList->ResourceBarrier(1, &barrier);
+        buffer.setCurrentState(afterState);
+    }
+
     void CommandBufferD3D12::resourceBarriers(std::span<const TextureBarrierDesc> textures, std::span<const BufferBarrierDesc> buffers)
     {
         std::vector<D3D12_RESOURCE_BARRIER> barriers;
@@ -683,9 +702,21 @@ namespace NRI
         {
             if (!bb.buffer)
                 continue;
-            if ((bb.before.access & AccessBits::ShaderWrite) || (bb.after.access & AccessBits::ShaderWrite))
+            auto* bufD3D12 = static_cast<BufferD3D12*>(bb.buffer);
+            const D3D12_RESOURCE_STATES afterState = TranslateResourceStateToD3D12(bb.after);
+            if (!bufD3D12->isUploadHeap() && bufD3D12->getCurrentState() != afterState && afterState != D3D12_RESOURCE_STATE_COMMON)
             {
-                auto* bufD3D12 = static_cast<BufferD3D12*>(bb.buffer);
+                D3D12_RESOURCE_BARRIER b{};
+                b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                b.Transition.pResource = bufD3D12->getNativeBuffer();
+                b.Transition.StateBefore = bufD3D12->getCurrentState();
+                b.Transition.StateAfter = afterState;
+                b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                barriers.push_back(b);
+                bufD3D12->setCurrentState(afterState);
+            }
+            else if ((bb.before.access & AccessBits::ShaderWrite) || (bb.after.access & AccessBits::ShaderWrite))
+            {
                 D3D12_RESOURCE_BARRIER b{};
                 b.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
                 b.UAV.pResource = bufD3D12->getNativeBuffer();

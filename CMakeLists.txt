@@ -32,6 +32,7 @@ set(NOXRHI_CORE_SOURCES
     src/Core/Device.cpp
     src/Extensions/Wrapper/WrapperVK.cpp
     src/Extensions/Wrapper/WrapperD3D12.cpp
+    src/Extensions/Imgui/ImguiExtension.cpp
 )
 
 if(NRI_ENABLE_VULKAN)
@@ -241,12 +242,6 @@ if(NRI_BUILD_EXAMPLES)
                 "${NOXRHI_IMGUI_DIR}/imgui_widgets.cpp"
                 "${NOXRHI_IMGUI_DIR}/backends/imgui_impl_sdl3.cpp"
             )
-            if(NRI_ENABLE_VULKAN)
-                list(APPEND NOXRHI_IMGUI_SOURCES "${NOXRHI_IMGUI_DIR}/backends/imgui_impl_vulkan.cpp")
-            endif()
-            if(WIN32 AND NRI_ENABLE_D3D12)
-                list(APPEND NOXRHI_IMGUI_SOURCES "${NOXRHI_IMGUI_DIR}/backends/imgui_impl_dx12.cpp")
-            endif()
 
             add_executable(ImGuiDemo examples/ImGuiDemo/main.cpp ${NOXRHI_IMGUI_SOURCES})
             target_include_directories(ImGuiDemo SYSTEM PRIVATE
@@ -254,14 +249,6 @@ if(NRI_BUILD_EXAMPLES)
                 "${NOXRHI_IMGUI_DIR}/backends"
             )
             target_link_libraries(ImGuiDemo PRIVATE NoxRHI::RenderGraph SDL3::SDL3)
-            if(NRI_ENABLE_VULKAN)
-                target_compile_definitions(ImGuiDemo PRIVATE NRI_ENABLE_VULKAN=1)
-                target_link_libraries(ImGuiDemo PRIVATE Vulkan::Vulkan)
-            endif()
-            if(WIN32 AND NRI_ENABLE_D3D12)
-                target_compile_definitions(ImGuiDemo PRIVATE NRI_ENABLE_D3D12=1)
-                target_link_libraries(ImGuiDemo PRIVATE d3d12 dxgi)
-            endif()
             noxrhi_copy_runtime_deps(ImGuiDemo)
         endif()
     endif()

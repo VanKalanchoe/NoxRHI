@@ -21,6 +21,7 @@ NRI_DECLARE_HANDLE(NriAccelerationStructure);
 NRI_DECLARE_HANDLE(NriQueryPool);
 NRI_DECLARE_HANDLE(NriGpuProfiler);
 NRI_DECLARE_HANDLE(NriShaderCompiler);
+NRI_DECLARE_HANDLE(NriImgui);
 
 typedef enum NriResult
 {

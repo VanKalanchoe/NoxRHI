@@ -14,6 +14,7 @@
 #include <NRI/Extensions/NRIMeshShader.h>
 #include <NRI/Extensions/NRIGpuProfiler.h>
 #include <NRI/Extensions/NRIShaderCompiler.h>
+#include <NRI/Extensions/NRIImgui.h>
 #include <NRI/Extensions/NRIWrapperVK.h>
 #include <NRI/Extensions/NRIWrapperD3D12.h>
 
@@ -366,5 +367,133 @@ namespace nri
                                            const Buffer& countBuffer, uint64_t countOffset, uint32_t maxDrawCount, uint32_t stride)
     {
         nriCmdDrawMeshTasksIndirectCount(cmd.handle(), indirectBuffer.handle(), offset, countBuffer.handle(), countOffset, maxDrawCount, stride);
+    }
+
+    // ImGui extension
+    using ImguiVertex = NriImguiVertex;
+    using ImguiDrawCmd = NriImguiDrawCmd;
+    using ImguiDrawList = NriImguiDrawList;
+    using ImguiDrawDataDesc = NriImguiDrawDataDesc;
+    using ImguiViewportDesc = NriImguiViewportDesc;
+
+    struct ImguiDesc
+    {
+        const DescriptorHeap* resourceHeap = nullptr;
+        const DescriptorHeap* samplerHeap = nullptr;
+        uint32_t samplerSlot = 0;
+        ImageFormat colorFormat = NRI_FORMAT_SURFACE;
+        uint32_t framesInFlight = 2;
+        bool linearColorOutput = true;
+    };
+
+    class Imgui
+    {
+    public:
+        Imgui() = default;
+        explicit Imgui(NriImgui handle) : m_handle(handle) {}
+        ~Imgui() { reset(); }
+
+        Imgui(const Imgui&) = delete;
+        Imgui& operator=(const Imgui&) = delete;
+        Imgui(Imgui&& other) noexcept : m_handle(std::exchange(other.m_handle, nullptr)) {}
+        Imgui& operator=(Imgui&& other) noexcept
+        {
+            if (this != &other)
+            {
+                reset();
+                m_handle = std::exchange(other.m_handle, nullptr);
+            }
+            return *this;
+        }
+
+        void reset(NriImgui h = nullptr)
+        {
+            if (m_handle)
+                nriDestroyImgui(m_handle);
+            m_handle = h;
+        }
+        NriImgui release() { return std::exchange(m_handle, nullptr); }
+        NriImgui handle() const { return m_handle; }
+        explicit operator bool() const { return m_handle != nullptr; }
+
+        uint64_t createTexture(uint32_t width, uint32_t height, const void* rgbaPixels) const
+        {
+            uint64_t outId = 0;
+            checkResult(nriImguiCreateTexture(m_handle, width, height, rgbaPixels, &outId), "nriImguiCreateTexture");
+            return outId;
+        }
+
+        void updateTexture(uint64_t textureId, uint32_t x, uint32_t y, uint32_t width, uint32_t height,
+                           const void* fullRgbaPixels, uint32_t texWidth, uint32_t texHeight) const
+        {
+            checkResult(nriImguiUpdateTexture(m_handle, textureId, x, y, width, height, fullRgbaPixels, texWidth, texHeight),
+                        "nriImguiUpdateTexture");
+        }
+
+        void destroyTexture(uint64_t textureId) const
+        {
+            nriImguiDestroyTexture(m_handle, textureId);
+        }
+
+        void copyData(const CommandBuffer& cmd, const NriImguiDrawDataDesc& drawData) const
+        {
+            nriCmdCopyImguiData(cmd.handle(), m_handle, &drawData);
+        }
+
+        void draw(const CommandBuffer& cmd, const NriImguiDrawDataDesc& drawData) const
+        {
+            nriCmdDrawImgui(cmd.handle(), m_handle, &drawData);
+        }
+
+        uint64_t createViewport(const NriImguiViewportDesc& desc) const
+        {
+            uint64_t handle = 0;
+            checkResult(nriImguiCreateViewport(m_handle, &desc, &handle), "nriImguiCreateViewport");
+            return handle;
+        }
+
+        void resizeViewport(uint64_t viewportHandle, uint32_t width, uint32_t height) const
+        {
+            nriImguiResizeViewport(m_handle, viewportHandle, width, height);
+        }
+
+        void destroyViewport(uint64_t viewportHandle) const
+        {
+            nriImguiDestroyViewport(m_handle, viewportHandle);
+        }
+
+        uint32_t getViewportSlot(uint64_t viewportHandle) const
+        {
+            return nriImguiGetViewportSlot(m_handle, viewportHandle);
+        }
+
+        void renderViewport(uint64_t viewportHandle, const NriImguiDrawDataDesc& drawData,
+                            ClearColor clearColor = { 0.0f, 0.0f, 0.0f, 1.0f }) const
+        {
+            nriImguiRenderViewport(m_handle, viewportHandle, &drawData, clearColor.r, clearColor.g, clearColor.b, clearColor.a);
+        }
+
+        void presentViewport(uint64_t viewportHandle) const
+        {
+            nriImguiPresentViewport(m_handle, viewportHandle);
+        }
+
+    private:
+        NriImgui m_handle = nullptr;
+    };
+
+    inline Imgui createImgui(const Device& device, const ImguiDesc& desc = {})
+    {
+        const NriImguiDesc cDesc{
+            .resourceHeap = desc.resourceHeap ? desc.resourceHeap->handle() : nullptr,
+            .samplerHeap = desc.samplerHeap ? desc.samplerHeap->handle() : nullptr,
+            .samplerSlot = desc.samplerSlot,
+            .colorFormat = desc.colorFormat,
+            .framesInFlight = desc.framesInFlight,
+            .linearColorOutput = desc.linearColorOutput
+        };
+        NriImgui imgui = nullptr;
+        checkResult(nriCreateImgui(device.handle(), &cDesc, &imgui), "nriCreateImgui");
+        return Imgui(imgui);
     }
 }

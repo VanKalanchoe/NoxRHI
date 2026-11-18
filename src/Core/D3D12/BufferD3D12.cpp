@@ -42,6 +42,8 @@ namespace NRI
 
         m_buffer = m_deviceD3D12.getAllocator()->createBuffer(alignedSize, flags, m_initialState, heapType);
         m_gpuAddress = m_buffer.gpuAddress;
+        m_isUploadHeap = isUpload;
+        m_currentState = m_initialState;
     }
 
     BufferD3D12::~BufferD3D12()

@@ -25,7 +25,7 @@ namespace NRI
         void shutdown() override;
 
         bool isDeviceInit() const { return m_deviceInitialized; }
-        const std::string& getShaderCacheDir() const { return m_shaderCacheDir; }
+        const std::string& getShaderCacheDir() const override { return m_shaderCacheDir; }
 
         MemoryAllocatorVK& getAllocator() { return *m_allocator; }
 

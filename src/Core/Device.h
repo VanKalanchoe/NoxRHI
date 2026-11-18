@@ -52,6 +52,11 @@ namespace NRI
         virtual TimelinePoint getSparseTimelinePoint() const { return {}; }
         virtual bool isSurfaceFormatBGRA() const { return false; }
         virtual void finishPipelineBuilds() {}
+        virtual const std::string& getShaderCacheDir() const
+        {
+            static const std::string empty;
+            return empty;
+        }
         virtual bool isMemoryBudgetSupported() const = 0;
         virtual void getMemoryStats(std::vector<MemoryHeapStats>& outHeaps) const = 0;
         virtual uint64_t getTextureBytes() const = 0;

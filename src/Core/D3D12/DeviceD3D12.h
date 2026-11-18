@@ -61,7 +61,7 @@ namespace NRI
         bool hasAsyncComputeQueue() const override { return m_computeQueue != nullptr; }
         bool isMemoryBudgetSupported() const override { return true; }
         HWND getWindowHandle() const { return m_hwnd; }
-        const std::string& getShaderCacheDir() const { return m_shaderCacheDir; }
+        const std::string& getShaderCacheDir() const override { return m_shaderCacheDir; }
 
         uint32_t getShaderGroupHandleSize() const override { return D3D12_RAYTRACING_SHADER_RECORD_BYTE_ALIGNMENT; }
         uint32_t getShaderGroupBaseAlignment() const override { return D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT; }

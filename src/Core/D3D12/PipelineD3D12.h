@@ -24,7 +24,10 @@ namespace NRI
                                                      CompareOp depthCompareOp,
                                                      CullMode cullMode,
                                                      FrontFace frontFace,
-                                                     PolygonMode polygonMode);
+                                                     PolygonMode polygonMode,
+                                                     bool colorBlendEnable = false,
+                                                     const ColorBlendEquation& colorBlendEquation = {},
+                                                     uint32_t colorWriteMask = ColorComponent::All);
         ID3D12StateObject* getNativeStateObject() const { return m_stateObject.Get(); }
         PipelineType getType() const { return m_type; }
 
@@ -46,7 +49,10 @@ namespace NRI
                                                          CompareOp depthCompareOp,
                                                          CullMode cullMode,
                                                          FrontFace frontFace,
-                                                         PolygonMode polygonMode);
+                                                         PolygonMode polygonMode,
+                                                         bool colorBlendEnable,
+                                                         const ColorBlendEquation& colorBlendEquation,
+                                                         uint32_t colorWriteMask);
 
     private:
         DeviceD3D12& m_deviceD3D12;

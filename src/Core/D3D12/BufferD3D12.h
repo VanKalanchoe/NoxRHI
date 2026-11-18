@@ -22,6 +22,9 @@ namespace NRI
 
         ID3D12Resource* getNativeBuffer() const { return m_buffer.resource.Get(); }
         D3D12_RESOURCE_STATES getInitialState() const { return m_initialState; }
+        D3D12_RESOURCE_STATES getCurrentState() const { return m_currentState; }
+        void setCurrentState(D3D12_RESOURCE_STATES state) { m_currentState = state; }
+        bool isUploadHeap() const { return m_isUploadHeap; }
 
     private:
         DeviceD3D12& m_deviceD3D12;
@@ -30,6 +33,8 @@ namespace NRI
         uint64_t m_gpuAddress = 0;
         void* m_mappedPtr = nullptr;
         bool m_isMapped = false;
+        bool m_isUploadHeap = false;
         D3D12_RESOURCE_STATES m_initialState = D3D12_RESOURCE_STATE_COMMON;
+        D3D12_RESOURCE_STATES m_currentState = D3D12_RESOURCE_STATE_COMMON;
     };
 }

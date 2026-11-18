@@ -52,9 +52,21 @@ namespace NRI
         void setDepthCompareOp(const CompareOp& compareOp) override { m_depthCompareOp = compareOp; }
         void setDepthBoundsTestEnable(bool enable) override {}
         void setStencilTestEnable(bool enable) override {}
-        void setColorBlendEnable(uint32_t firstAttachment, bool enable) override {}
-        void setColorBlendEquation(uint32_t firstAttachment, const ColorBlendEquation& blendEquation) override {}
-        void setColorWriteMask(uint32_t firstAttachment, uint32_t colorWriteMask) override {}
+        void setColorBlendEnable(uint32_t firstAttachment, bool enable) override
+        {
+            (void)firstAttachment;
+            m_colorBlendEnable = enable;
+        }
+        void setColorBlendEquation(uint32_t firstAttachment, const ColorBlendEquation& blendEquation) override
+        {
+            (void)firstAttachment;
+            m_colorBlendEquation = blendEquation;
+        }
+        void setColorWriteMask(uint32_t firstAttachment, uint32_t colorWriteMask) override
+        {
+            (void)firstAttachment;
+            m_colorWriteMask = colorWriteMask;
+        }
         void setLogicOpEnable(bool enable) override {}
 
         void bindDescriptorHeaps(DescriptorHeap* resourceHeap, DescriptorHeap* samplerHeap) override;
@@ -99,6 +111,7 @@ namespace NRI
 
     private:
         void ensureGraphicsPipelineState();
+        void transitionBufferState(class BufferD3D12& buffer, D3D12_RESOURCE_STATES afterState);
 
     private:
         DeviceD3D12& m_deviceD3D12;
@@ -115,6 +128,12 @@ namespace NRI
         CullMode m_cullMode = CullMode::Back;
         FrontFace m_frontFace = FrontFace::CounterClockWise;
         PolygonMode m_polygonMode = PolygonMode::Fill;
+        bool m_colorBlendEnable = false;
+        ColorBlendEquation m_colorBlendEquation{
+            BlendFactor::SrcAlpha, BlendFactor::OneMinusSrcAlpha, BlendOp::Add,
+            BlendFactor::One, BlendFactor::Zero, BlendOp::Add
+        };
+        uint32_t m_colorWriteMask = ColorComponent::All;
 
         // Temporary RTV/DSV descriptor storage for dynamic rendering
         ComPtr<ID3D12DescriptorHeap> m_rtvHeap;

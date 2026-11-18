@@ -2,6 +2,7 @@
 #include <memory>
 #include "Device.h"
 #include "../Extensions/ShaderCompiler/ShaderCompiler.h"
+#include "../Extensions/Imgui/ImguiExtension.h"
 
 struct NriTimelineSemaphore_T
 {
@@ -79,4 +80,10 @@ struct NriGpuProfiler_T
 struct NriShaderCompiler_T
 {
     std::unique_ptr<NRI::ShaderCompiler> impl;
+};
+
+struct NriImgui_T
+{
+    std::shared_ptr<NRI::Device> device;
+    std::unique_ptr<NRI::ImguiExtension> impl;
 };
