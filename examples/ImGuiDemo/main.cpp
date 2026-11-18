@@ -204,6 +204,7 @@ namespace
         bool imguiInitialized = false;
 
         bool showDemoWindow = true;
+        bool enableDockSpace = true;
         bool enableViewports = true;
         std::array<float, 3> clearColor{ 0.08f, 0.10f, 0.14f };
 
@@ -472,7 +473,11 @@ SDL_AppResult SDL_AppIterate(void* appstate)
         ImGui_ImplSDL3_NewFrame();
         ImGui::NewFrame();
 
-        ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
+        if (state->enableDockSpace)
+        {
+            const ImGuiID dockId = ImGui::GetID("NoxRHIMainDockSpace");
+            ImGui::DockSpaceOverViewport(dockId, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
+        }
 
         if (state->showDemoWindow)
             ImGui::ShowDemoWindow(&state->showDemoWindow);
@@ -510,6 +515,7 @@ SDL_AppResult SDL_AppIterate(void* appstate)
 
             ImGui::Separator();
             ImGui::Checkbox("Show ImGui Demo Window", &state->showDemoWindow);
+            ImGui::Checkbox("Main DockSpace", &state->enableDockSpace);
             if (ImGui::Checkbox("VSync", &state->vsync))
                 state->needsResize = true;
             ImGui::ColorEdit3("Backdrop Clear", state->clearColor.data());
