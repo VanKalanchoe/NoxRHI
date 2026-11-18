@@ -62,7 +62,7 @@ if not exist "%SLANG_DIR%\lib\slang.lib" (
     if exist "%SLANG_DIR%" rmdir /s /q "%SLANG_DIR%"
     mkdir "%SLANG_DIR%"
     echo Extracting Slang to "%SLANG_DIR%"...
-    powershell -NoProfile -Command "Expand-Archive -LiteralPath '%SLANG_ZIP%' -DestinationPath '%SLANG_DIR%' -Force"
+    tar -xf "%SLANG_ZIP%" -C "%SLANG_DIR%"
     if errorlevel 1 (
         if exist "%SLANG_ZIP%" del /q "%SLANG_ZIP%"
         if exist "%SLANG_DIR%" rmdir /s /q "%SLANG_DIR%"

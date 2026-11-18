@@ -41,6 +41,7 @@ if errorlevel 1 (
 )
 
 echo.
-echo CMake configuration successful: "%BUILD_DIR%"
+echo Solution generated: "%BUILD_DIR%\NoxRHI.slnx"
+echo Open it in JetBrains Rider or Visual Studio 2026 to build and run.
 if /i not "%NRI_NO_PAUSE%"=="1" pause
 exit /b 0

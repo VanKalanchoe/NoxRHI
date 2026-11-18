@@ -47,14 +47,10 @@ scripts\install_dependencies.bat
 ```
 This downloads/bootstraps `VulkanMemoryAllocator-Hpp`, `D3D12MemoryAllocator`, `Slang`, and `vcpkg` + `sdl3` into `vendors/` (gitignored). `vcpkg` caches built packages in `%TEMP%\vcpkg-cache` so subsequent runs restore quickly.
 
-### 2. Configure & Build
+### 2. Generate the Solution (`.slnx`) for Rider / Visual Studio
 ```bat
-:: Configure with Visual Studio 2026 + ClangCL (default) and build Debug:
-scripts\build.bat
-
-:: Or configure explicitly first:
+:: Configure with Visual Studio 2026 + ClangCL (default), generating build\NoxRHI.slnx:
 scripts\setup_build.bat
-scripts\build.bat Debug
 
 :: To configure with default MSVC instead of ClangCL:
 scripts\setup_build.bat --msvc
@@ -63,8 +59,10 @@ scripts\setup_build.bat --msvc
 scripts\setup_build.bat -DNRI_STATIC_LIBRARY=ON
 ```
 
-### 3. Run Standalone Examples
-Built binaries and runtime DLLs are placed under `build\Debug\` (or `build\Release\`):
+Open **`build\NoxRHI.slnx`** in **JetBrains Rider** (or Visual Studio 2026) and build/run any target (`ClearScreen`, `RenderGraphTriangle`).
+
+### 3. Example CLI Flags
+Example executables accept the following command-line flags:
 ```bat
 build\Debug\ClearScreen.exe --frames 10 --resize-test
 build\Debug\ClearScreen.exe --d3d12 --frames 10 --resize-test
