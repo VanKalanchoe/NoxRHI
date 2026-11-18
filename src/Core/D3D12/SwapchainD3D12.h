@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <vector>
 #include "D3D12Common.h"
 #include "../Swapchain.h"
@@ -12,17 +13,19 @@ namespace NRI
     {
     public:
         SwapchainD3D12(DeviceD3D12& device, const SwapchainDesc& desc);
-        ~SwapchainD3D12() override = default;
+        ~SwapchainD3D12() override;
 
         Extent2D getExtent() const override { return m_extent; }
         FrameResult acquireNextImage(uint32_t frameIndex, uint32_t& outImageIndex) override;
         FrameResult present(uint32_t frameIndex, uint32_t imageIndex) override;
+        void signalFrame(ID3D12CommandQueue* queue, uint32_t frameIndex);
 
         IDXGISwapChain4* getNativeSwapchain() const { return m_swapChain.Get(); }
         TextureD3D12* getBackBuffer(uint32_t index) const { return m_backBuffers[index].get(); }
 
     private:
         void createSwapChain();
+        void waitForFrameSlot(uint32_t frameIndex);
 
     private:
         DeviceD3D12& m_deviceD3D12;
@@ -31,5 +34,10 @@ namespace NRI
         ComPtr<IDXGISwapChain4> m_swapChain;
         std::vector<std::unique_ptr<TextureD3D12>> m_backBuffers;
         uint32_t m_bufferCount = 3;
+
+        ComPtr<ID3D12Fence> m_frameFence;
+        HANDLE m_frameFenceEvent = nullptr;
+        std::array<uint64_t, 4> m_frameFenceValues{};
+        uint64_t m_nextFenceValue = 0;
     };
 }

@@ -262,6 +262,7 @@ namespace NRI
         {
             m_directQueue->ExecuteCommandLists(static_cast<UINT>(lists.size()), lists.data());
         }
+        static_cast<SwapchainD3D12&>(swapchain).signalFrame(m_directQueue.Get(), frameIndex);
         signalRetirementFence(QueueType::Graphics);
     }
 

@@ -6,7 +6,19 @@ namespace NRI
     SwapchainD3D12::SwapchainD3D12(DeviceD3D12& device, const SwapchainDesc& desc)
         : m_deviceD3D12(device), m_desc(desc), m_extent{ desc.Width, desc.Height }
     {
+        ThrowIfFailed(m_deviceD3D12.getNativeDevice()->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_frameFence)),
+                      "Create Swapchain Frame Fence");
+        m_frameFenceEvent = CreateEventEx(nullptr, nullptr, 0, EVENT_ALL_ACCESS);
         createSwapChain();
+    }
+
+    SwapchainD3D12::~SwapchainD3D12()
+    {
+        if (m_frameFenceEvent)
+        {
+            CloseHandle(m_frameFenceEvent);
+            m_frameFenceEvent = nullptr;
+        }
     }
 
     void SwapchainD3D12::createSwapChain()
@@ -65,8 +77,30 @@ namespace NRI
         }
     }
 
+    void SwapchainD3D12::waitForFrameSlot(uint32_t frameIndex)
+    {
+        if (!m_frameFence || !m_frameFenceEvent)
+            return;
+        const uint64_t waitValue = m_frameFenceValues[frameIndex % m_frameFenceValues.size()];
+        if (waitValue > 0 && m_frameFence->GetCompletedValue() < waitValue)
+        {
+            ThrowIfFailed(m_frameFence->SetEventOnCompletion(waitValue, m_frameFenceEvent), "Swapchain SetEventOnCompletion");
+            WaitForSingleObject(m_frameFenceEvent, INFINITE);
+        }
+    }
+
+    void SwapchainD3D12::signalFrame(ID3D12CommandQueue* queue, uint32_t frameIndex)
+    {
+        if (!queue || !m_frameFence)
+            return;
+        const uint64_t val = ++m_nextFenceValue;
+        m_frameFenceValues[frameIndex % m_frameFenceValues.size()] = val;
+        ThrowIfFailed(queue->Signal(m_frameFence.Get(), val), "Swapchain Signal Frame Fence");
+    }
+
     FrameResult SwapchainD3D12::acquireNextImage(uint32_t frameIndex, uint32_t& outImageIndex)
     {
+        waitForFrameSlot(frameIndex);
         outImageIndex = m_swapChain->GetCurrentBackBufferIndex();
         return FrameResult::Success;
     }
