@@ -14,6 +14,25 @@
 
 namespace NRI
 {
+    namespace
+    {
+        void CALLBACK onD3D12ValidationMessage(D3D12_MESSAGE_CATEGORY,
+                                               D3D12_MESSAGE_SEVERITY severity,
+                                               D3D12_MESSAGE_ID,
+                                               LPCSTR pDescription,
+                                               void*)
+        {
+            if (!pDescription)
+                return;
+            if (severity <= D3D12_MESSAGE_SEVERITY_ERROR)
+                NRI_LOG_ERROR("D3D12 validation: {}", pDescription);
+            else if (severity == D3D12_MESSAGE_SEVERITY_WARNING)
+                NRI_LOG_WARN("D3D12 validation: {}", pDescription);
+            else
+                NRI_LOG_INFO("D3D12 validation: {}", pDescription);
+        }
+    }
+
     DeviceD3D12::DeviceD3D12(const DeviceInitDesc& desc)
     {
         initD3D12(desc);
@@ -64,6 +83,15 @@ namespace NRI
         }
 
         ThrowIfFailed(D3D12CreateDevice(m_adapter.Get(), D3D_FEATURE_LEVEL_12_1, IID_PPV_ARGS(&m_device)), "D3D12CreateDevice");
+
+        if (desc.enableValidation)
+        {
+            ComPtr<ID3D12InfoQueue1> infoQueue;
+            if (SUCCEEDED(m_device.As(&infoQueue)))
+            {
+                infoQueue->RegisterMessageCallback(&onD3D12ValidationMessage, D3D12_MESSAGE_CALLBACK_FLAG_NONE, nullptr, &m_infoQueueCookie);
+            }
+        }
 
         D3D12_COMMAND_QUEUE_DESC queueDesc{};
         queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
@@ -125,6 +153,13 @@ namespace NRI
         waitIdle();
         m_shuttingDown = true;
         drainDeferredDeletions();
+        if (m_infoQueueCookie != 0 && m_device)
+        {
+            ComPtr<ID3D12InfoQueue1> infoQueue;
+            if (SUCCEEDED(m_device.As(&infoQueue)))
+                infoQueue->UnregisterMessageCallback(m_infoQueueCookie);
+            m_infoQueueCookie = 0;
+        }
         if (m_waitIdleEvent)
         {
             CloseHandle(m_waitIdleEvent);

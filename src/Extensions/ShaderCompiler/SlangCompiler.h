@@ -18,7 +18,7 @@ namespace NRI
         SlangCompiler();
         ~SlangCompiler() override = default;
 
-        std::vector<char> compile(const std::string& path) override;
+        std::vector<char> compile(const std::string& path, std::string_view entryPoint = {}) override;
         uint64_t sourceHash(const std::string& path) override;
         bool canCompile() override;
         void setTargetAPI(GraphicsAPI api) override { m_targetAPI = api; }

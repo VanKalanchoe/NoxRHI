@@ -29,6 +29,36 @@ namespace NRI
             default: return D3D12_RESOURCE_STATE_COMMON;
             }
         }
+
+        D3D12_RESOURCE_STATES TranslateResourceStateToD3D12(const ResourceState& state)
+        {
+            if (state.access == AccessBits::None)
+                return D3D12_RESOURCE_STATE_COMMON;
+            if (state.access & AccessBits::ShaderWrite)
+                return D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+            if (state.access & AccessBits::ColorAttachmentWrite)
+                return D3D12_RESOURCE_STATE_RENDER_TARGET;
+            if (state.access & AccessBits::ColorAttachmentRead)
+                return D3D12_RESOURCE_STATE_RENDER_TARGET;
+            if (state.access & AccessBits::DepthStencilWrite)
+                return D3D12_RESOURCE_STATE_DEPTH_WRITE;
+            if (state.access & AccessBits::DepthStencilRead)
+                return D3D12_RESOURCE_STATE_DEPTH_READ;
+            if (state.access & AccessBits::ShaderRead)
+            {
+                D3D12_RESOURCE_STATES s = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+                if (state.stages & (StageBits::Compute | StageBits::Task | StageBits::Mesh | StageBits::RayTracing))
+                    s |= D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+                return s;
+            }
+            if (state.access & AccessBits::TransferWrite)
+                return D3D12_RESOURCE_STATE_COPY_DEST;
+            if (state.access & AccessBits::TransferRead)
+                return D3D12_RESOURCE_STATE_COPY_SOURCE;
+            if (state.access & AccessBits::IndirectRead)
+                return D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+            return D3D12_RESOURCE_STATE_COMMON;
+        }
     }
 
     CommandBufferD3D12::CommandBufferD3D12(DeviceD3D12& device, CommandAllocatorD3D12& allocator)
@@ -55,20 +85,22 @@ namespace NRI
 
     void CommandBufferD3D12::begin(uint32_t index, bool oneTimeSubmit)
     {
+        (void)index;
+        (void)oneTimeSubmit;
         ThrowIfFailed(m_cmdList->Reset(m_allocator.getNativeAllocator(), nullptr), "CommandList Reset");
         m_isRecording = true;
-
-        if (m_allocator.getCommandListType() == D3D12_COMMAND_LIST_TYPE_DIRECT ||
-            m_allocator.getCommandListType() == D3D12_COMMAND_LIST_TYPE_COMPUTE)
-        {
-            ID3D12RootSignature* rootSig = m_deviceD3D12.getGlobalRootSignature();
-            if (rootSig)
-            {
-                if (m_allocator.getCommandListType() == D3D12_COMMAND_LIST_TYPE_DIRECT)
-                    m_cmdList->SetGraphicsRootSignature(rootSig);
-                m_cmdList->SetComputeRootSignature(rootSig);
-            }
-        }
+        m_currentPipeline = nullptr;
+        m_boundPso = nullptr;
+        m_currentBindPoint = m_allocator.getCommandListType() == D3D12_COMMAND_LIST_TYPE_COMPUTE
+            ? PipelineBindPoint::Compute
+            : PipelineBindPoint::Graphics;
+        m_hasDepthAttachment = false;
+        m_depthTestEnable = false;
+        m_depthWriteEnable = false;
+        m_depthCompareOp = CompareOp::GreaterOrEqual;
+        m_cullMode = CullMode::Back;
+        m_frontFace = FrontFace::CounterClockWise;
+        m_polygonMode = PolygonMode::Fill;
     }
 
     void CommandBufferD3D12::end(uint32_t index)
@@ -93,6 +125,18 @@ namespace NRI
 
             if (tex)
             {
+                if (tex->getCurrentState() != D3D12_RESOURCE_STATE_RENDER_TARGET)
+                {
+                    D3D12_RESOURCE_BARRIER barrier{};
+                    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                    barrier.Transition.pResource = tex->getNativeResource();
+                    barrier.Transition.StateBefore = tex->getCurrentState();
+                    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+                    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                    m_cmdList->ResourceBarrier(1, &barrier);
+                    tex->setCurrentState(D3D12_RESOURCE_STATE_RENDER_TARGET);
+                }
+
                 D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = rtvStart;
                 rtvHandle.ptr += i * m_rtvDescriptorSize;
 
@@ -112,6 +156,17 @@ namespace NRI
         if (desc.depthAttachment.attachment)
         {
             auto* depthTex = dynamic_cast<TextureD3D12*>(desc.depthAttachment.attachment);
+            if (depthTex->getCurrentState() != D3D12_RESOURCE_STATE_DEPTH_WRITE)
+            {
+                D3D12_RESOURCE_BARRIER barrier{};
+                barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                barrier.Transition.pResource = depthTex->getNativeResource();
+                barrier.Transition.StateBefore = depthTex->getCurrentState();
+                barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+                barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                m_cmdList->ResourceBarrier(1, &barrier);
+                depthTex->setCurrentState(D3D12_RESOURCE_STATE_DEPTH_WRITE);
+            }
             dsvHandle = m_dsvHeap->GetCPUDescriptorHandleForHeapStart();
             m_deviceD3D12.getNativeDevice()->CreateDepthStencilView(depthTex->getNativeResource(), nullptr, dsvHandle);
             hasDepth = true;
@@ -122,6 +177,7 @@ namespace NRI
             }
         }
 
+        m_hasDepthAttachment = hasDepth;
         m_cmdList->OMSetRenderTargets(
             static_cast<UINT>(rtvHandles.size()),
             rtvHandles.data(),
@@ -138,13 +194,45 @@ namespace NRI
 
     void CommandBufferD3D12::endRendering()
     {
+        m_hasDepthAttachment = false;
+    }
+
+    void CommandBufferD3D12::ensureGraphicsPipelineState()
+    {
+        if (!m_currentPipeline || m_currentBindPoint != PipelineBindPoint::Graphics)
+            return;
+        ID3D12PipelineState* desired = m_currentPipeline->resolveGraphicsPipeline(
+            m_hasDepthAttachment,
+            m_depthTestEnable,
+            m_depthWriteEnable,
+            m_depthCompareOp,
+            m_cullMode,
+            m_frontFace,
+            m_polygonMode);
+        if (desired && desired != m_boundPso)
+        {
+            m_cmdList->SetPipelineState(desired);
+            m_boundPso = desired;
+        }
     }
 
     void CommandBufferD3D12::bindPipeline(PipelineBindPoint bindPoint, Pipeline& pipeline)
     {
         auto& pipeD3D12 = static_cast<PipelineD3D12&>(pipeline);
-        if (pipeD3D12.getNativePipeline())
-            m_cmdList->SetPipelineState(pipeD3D12.getNativePipeline());
+        m_currentBindPoint = bindPoint;
+        m_currentPipeline = &pipeD3D12;
+        if (bindPoint == PipelineBindPoint::Graphics)
+        {
+            ensureGraphicsPipelineState();
+        }
+        else if (pipeD3D12.getNativePipeline())
+        {
+            if (pipeD3D12.getNativePipeline() != m_boundPso)
+            {
+                m_cmdList->SetPipelineState(pipeD3D12.getNativePipeline());
+                m_boundPso = pipeD3D12.getNativePipeline();
+            }
+        }
     }
 
     void CommandBufferD3D12::setViewport(Extent2D swapChainExtent)
@@ -161,7 +249,15 @@ namespace NRI
 
     void CommandBufferD3D12::setViewportWithCount(const ViewportBounds& bounds, float minDepth, float maxDepth)
     {
-        D3D12_VIEWPORT vp{ bounds.x, bounds.y, bounds.width, bounds.height, minDepth, maxDepth };
+        // D3D12 NDC Y is already +Y up and forbids negative viewport heights (used on Vulkan for Y flip).
+        float y = bounds.y;
+        float h = bounds.height;
+        if (h < 0.0f)
+        {
+            y += h;
+            h = -h;
+        }
+        D3D12_VIEWPORT vp{ bounds.x, y, bounds.width, h, minDepth, maxDepth };
         m_cmdList->RSSetViewports(1, &vp);
     }
 
@@ -192,14 +288,33 @@ namespace NRI
 
         if (count > 0)
             m_cmdList->SetDescriptorHeaps(count, heaps);
+
+        if (resourceHeap && samplerHeap &&
+            (m_allocator.getCommandListType() == D3D12_COMMAND_LIST_TYPE_DIRECT ||
+             m_allocator.getCommandListType() == D3D12_COMMAND_LIST_TYPE_COMPUTE))
+        {
+            ID3D12RootSignature* rootSig = m_deviceD3D12.getGlobalRootSignature();
+            if (rootSig)
+            {
+                if (m_allocator.getCommandListType() == D3D12_COMMAND_LIST_TYPE_DIRECT)
+                    m_cmdList->SetGraphicsRootSignature(rootSig);
+                m_cmdList->SetComputeRootSignature(rootSig);
+            }
+        }
     }
 
     void CommandBufferD3D12::pushData(const void* data, uint32_t size)
     {
         UINT numValues = size / 4;
-        if (m_allocator.getCommandListType() == D3D12_COMMAND_LIST_TYPE_DIRECT)
+        if (m_allocator.getCommandListType() == D3D12_COMMAND_LIST_TYPE_DIRECT &&
+            m_currentBindPoint == PipelineBindPoint::Graphics)
+        {
             m_cmdList->SetGraphicsRoot32BitConstants(0, numValues, data, 0);
-        m_cmdList->SetComputeRoot32BitConstants(0, numValues, data, 0);
+        }
+        else
+        {
+            m_cmdList->SetComputeRoot32BitConstants(0, numValues, data, 0);
+        }
     }
 
     void CommandBufferD3D12::bindVertexBuffers(uint32_t firstBinding, Buffer& buffer, uint64_t offset)
@@ -222,16 +337,19 @@ namespace NRI
 
     void CommandBufferD3D12::draw(uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance)
     {
+        ensureGraphicsPipelineState();
         m_cmdList->DrawInstanced(vertexCount, instanceCount, firstVertex, firstInstance);
     }
 
     void CommandBufferD3D12::drawIndexed(uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance)
     {
+        ensureGraphicsPipelineState();
         m_cmdList->DrawIndexedInstanced(indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
     }
 
     void CommandBufferD3D12::drawMeshTasks(uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ)
     {
+        ensureGraphicsPipelineState();
         m_cmdList->DispatchMesh(groupCountX, groupCountY, groupCountZ);
     }
 
@@ -305,9 +423,10 @@ namespace NRI
 
     void CommandBufferD3D12::transitionTextureLayout(Texture& texture, TextureLayout oldLayout, TextureLayout newLayout)
     {
+        (void)oldLayout;
         auto* texD3D12 = static_cast<TextureD3D12*>(&texture);
-        D3D12_RESOURCE_STATES stateBefore = TranslateTextureLayoutToD3D12(oldLayout);
-        D3D12_RESOURCE_STATES stateAfter = TranslateTextureLayoutToD3D12(newLayout);
+        const D3D12_RESOURCE_STATES stateBefore = texD3D12->getCurrentState();
+        const D3D12_RESOURCE_STATES stateAfter = TranslateTextureLayoutToD3D12(newLayout);
 
         if (stateBefore != stateAfter)
         {
@@ -318,6 +437,7 @@ namespace NRI
             barrier.Transition.StateAfter = stateAfter;
             barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
             m_cmdList->ResourceBarrier(1, &barrier);
+            texD3D12->setCurrentState(stateAfter);
         }
     }
 
@@ -529,9 +649,25 @@ namespace NRI
         std::vector<D3D12_RESOURCE_BARRIER> barriers;
         for (const auto& tb : textures)
         {
-            if (tb.texture)
+            if (!tb.texture)
+                continue;
+            auto* texD3D12 = static_cast<TextureD3D12*>(tb.texture);
+            const D3D12_RESOURCE_STATES beforeState = texD3D12->getCurrentState();
+            const D3D12_RESOURCE_STATES afterState = TranslateResourceStateToD3D12(tb.after);
+
+            if (beforeState != afterState)
             {
-                auto* texD3D12 = static_cast<TextureD3D12*>(tb.texture);
+                D3D12_RESOURCE_BARRIER b{};
+                b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                b.Transition.pResource = texD3D12->getNativeResource();
+                b.Transition.StateBefore = beforeState;
+                b.Transition.StateAfter = afterState;
+                b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                barriers.push_back(b);
+                texD3D12->setCurrentState(afterState);
+            }
+            else if (tb.after.access & AccessBits::ShaderWrite)
+            {
                 D3D12_RESOURCE_BARRIER b{};
                 b.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
                 b.UAV.pResource = texD3D12->getNativeResource();
@@ -540,7 +676,9 @@ namespace NRI
         }
         for (const auto& bb : buffers)
         {
-            if (bb.buffer)
+            if (!bb.buffer)
+                continue;
+            if ((bb.before.access & AccessBits::ShaderWrite) || (bb.after.access & AccessBits::ShaderWrite))
             {
                 auto* bufD3D12 = static_cast<BufferD3D12*>(bb.buffer);
                 D3D12_RESOURCE_BARRIER b{};
@@ -550,15 +688,8 @@ namespace NRI
             }
         }
 
-        if (barriers.empty())
-        {
-            D3D12_RESOURCE_BARRIER b{};
-            b.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-            b.UAV.pResource = nullptr;
-            barriers.push_back(b);
-        }
-
-        m_cmdList->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
+        if (!barriers.empty())
+            m_cmdList->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
     }
 
     void CommandBufferD3D12::beginDebugLabel(const char* label)

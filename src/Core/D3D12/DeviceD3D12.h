@@ -83,6 +83,7 @@ namespace NRI
         ComPtr<ID3D12CommandQueue> m_copyQueue;
 
         ComPtr<ID3D12RootSignature> m_globalRootSignature;
+        DWORD m_infoQueueCookie = 0;
 
         ComPtr<ID3D12Fence> m_waitIdleFence;
         uint64_t m_waitIdleFenceValue = 0;

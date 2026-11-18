@@ -29,6 +29,8 @@ namespace NRI
 
         ID3D12Resource* getNativeResource() const { return m_resource.Get(); }
         DXGI_FORMAT getDxgiFormat() const { return m_dxgiFormat; }
+        D3D12_RESOURCE_STATES getCurrentState() const { return m_currentState; }
+        void setCurrentState(D3D12_RESOURCE_STATES state) { m_currentState = state; }
 
         void uploadFromBuffer(CommandBuffer& cmdBuffer, Buffer& stagingBuffer, uint32_t width, uint32_t height,
                               uint32_t mipLevels, const std::vector<size_t>& mipOffsets) override;
@@ -51,5 +53,6 @@ namespace NRI
         ComPtr<ID3D12Resource> m_resource;
         uint32_t m_descriptorSlot = ~0u;
         bool m_ownsResource = true;
+        D3D12_RESOURCE_STATES m_currentState = D3D12_RESOURCE_STATE_COMMON;
     };
 }

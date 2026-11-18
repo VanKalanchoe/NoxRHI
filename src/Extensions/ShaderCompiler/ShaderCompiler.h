@@ -25,7 +25,7 @@ namespace NRI
     public:
         virtual ~ShaderCompiler() = default;
 
-        virtual std::vector<char> compile(const std::string& path) = 0;
+        virtual std::vector<char> compile(const std::string& path, std::string_view entryPoint = {}) = 0;
         virtual uint64_t sourceHash(const std::string& path) = 0;
         virtual bool canCompile() = 0;
         virtual void setTargetAPI(GraphicsAPI api) {}

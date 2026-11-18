@@ -158,6 +158,16 @@ namespace
 
     NriShaderProgressCallbacks g_cShaderProgress{};
     NRI::ShaderProgress g_cppShaderProgress{};
+
+    NriLogCallback g_cLogCallback = nullptr;
+    void* g_cLogUserData = nullptr;
+
+    void forwardCLog(NRI::LogLevel level, const char* message, void* userData)
+    {
+        (void)userData;
+        if (g_cLogCallback)
+            g_cLogCallback(static_cast<NriLogLevel>(level), message, g_cLogUserData);
+    }
 }
 
 extern "C" {
@@ -168,7 +178,9 @@ extern "C" {
 
 void NRI_CALL nriSetLogCallback(NriLogCallback callback, void* userData)
 {
-    NRI::SetLogCallback(reinterpret_cast<NRI::LogCallbackFn>(callback), userData);
+    g_cLogCallback = callback;
+    g_cLogUserData = userData;
+    NRI::SetLogCallback(callback ? &forwardCLog : nullptr, nullptr);
 }
 
 const char* NRI_CALL nriGetLastError(void)

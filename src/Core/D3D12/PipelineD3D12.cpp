@@ -5,38 +5,103 @@
 
 namespace NRI
 {
+    namespace
+    {
+        D3D12_COMPARISON_FUNC translateCompareOp(CompareOp op)
+        {
+            switch (op)
+            {
+            case CompareOp::Never:        return D3D12_COMPARISON_FUNC_NEVER;
+            case CompareOp::Less:         return D3D12_COMPARISON_FUNC_LESS;
+            case CompareOp::Equal:        return D3D12_COMPARISON_FUNC_EQUAL;
+            case CompareOp::LessOrEqual:    return D3D12_COMPARISON_FUNC_LESS_EQUAL;
+            case CompareOp::Greater:        return D3D12_COMPARISON_FUNC_GREATER;
+            case CompareOp::NotEqual:       return D3D12_COMPARISON_FUNC_NOT_EQUAL;
+            case CompareOp::GreaterOrEqual: return D3D12_COMPARISON_FUNC_GREATER_EQUAL;
+            case CompareOp::Always:       return D3D12_COMPARISON_FUNC_ALWAYS;
+            default:                      return D3D12_COMPARISON_FUNC_GREATER_EQUAL;
+            }
+        }
+
+        D3D12_CULL_MODE translateCullMode(CullMode mode)
+        {
+            return mode == CullMode::None ? D3D12_CULL_MODE_NONE : D3D12_CULL_MODE_BACK;
+        }
+
+        D3D12_FILL_MODE translatePolygonMode(PolygonMode mode)
+        {
+            return mode == PolygonMode::Line ? D3D12_FILL_MODE_WIREFRAME : D3D12_FILL_MODE_SOLID;
+        }
+
+        uint64_t makeGraphicsVariantKey(bool hasDepth, bool depthTestEnable, bool depthWriteEnable,
+                                        CompareOp depthCompareOp, CullMode cullMode,
+                                        FrontFace frontFace, PolygonMode polygonMode)
+        {
+            uint64_t key = 0;
+            key |= (hasDepth ? 1ull : 0ull) << 0;
+            key |= (depthTestEnable ? 1ull : 0ull) << 1;
+            key |= (depthWriteEnable ? 1ull : 0ull) << 2;
+            key |= (static_cast<uint64_t>(depthCompareOp) & 0xFu) << 3;
+            key |= (static_cast<uint64_t>(cullMode) & 0x3u) << 7;
+            key |= (static_cast<uint64_t>(frontFace) & 0x3u) << 9;
+            key |= (static_cast<uint64_t>(polygonMode) & 0x3u) << 11;
+            return key;
+        }
+    }
+
     PipelineD3D12::PipelineD3D12(DeviceD3D12& device, const PipelineDesc& desc, ShaderCompiler& compiler)
         : m_deviceD3D12(device), m_type(desc.type)
     {
-        switch (desc.type)
-        {
-        case PipelineType::Graphics:
+        if (m_type == PipelineType::Graphics)
             createGraphicsPipeline(desc, compiler);
-            break;
-        case PipelineType::Compute:
+        else if (m_type == PipelineType::Compute)
             createComputePipeline(desc, compiler);
-            break;
-        case PipelineType::RayTracing:
+        else
             createRayTracingPipeline(desc, compiler);
-            break;
-        }
     }
 
     void PipelineD3D12::createGraphicsPipeline(const PipelineDesc& desc, ShaderCompiler& compiler)
     {
-        std::vector<char> vsBytecode, psBytecode, asBytecode, msBytecode;
-        bool hasMeshShaders = false;
-
+        m_hasMeshShaders = false;
         for (const auto& s : desc.shaders)
         {
-            auto code = compiler.compile(s.sourcePath);
-            if (s.stage == ShaderStage::Vertex) vsBytecode = std::move(code);
-            else if (s.stage == ShaderStage::Fragment) psBytecode = std::move(code);
-            else if (s.stage == ShaderStage::Task) { asBytecode = std::move(code); hasMeshShaders = true; }
-            else if (s.stage == ShaderStage::Mesh) { msBytecode = std::move(code); hasMeshShaders = true; }
+            auto code = compiler.compile(s.sourcePath, s.entryPoint);
+            if (s.stage == ShaderStage::Vertex) m_vsBytecode = std::move(code);
+            else if (s.stage == ShaderStage::Fragment) m_psBytecode = std::move(code);
+            else if (s.stage == ShaderStage::Task) { m_asBytecode = std::move(code); m_hasMeshShaders = true; }
+            else if (s.stage == ShaderStage::Mesh) { m_msBytecode = std::move(code); m_hasMeshShaders = true; }
         }
 
-        if (hasMeshShaders)
+        m_rtvFormats.reserve(desc.colorFormats.size());
+        for (ImageFormat fmt : desc.colorFormats)
+            m_rtvFormats.push_back(TranslateImageFormat(fmt));
+
+        if (desc.buildNow)
+        {
+            // Prebuild the baseline depthless variant synchronously so compilation errors surface on creation.
+            m_pipeline = resolveGraphicsPipeline(
+                false, false, false, CompareOp::GreaterOrEqual,
+                CullMode::None, FrontFace::CounterClockWise, PolygonMode::Fill);
+        }
+    }
+
+    ComPtr<ID3D12PipelineState> PipelineD3D12::buildGraphicsVariant(bool hasDepth,
+                                                                    bool depthTestEnable,
+                                                                    bool depthWriteEnable,
+                                                                    CompareOp depthCompareOp,
+                                                                    CullMode cullMode,
+                                                                    FrontFace frontFace,
+                                                                    PolygonMode polygonMode)
+    {
+        const BOOL effDepthEnable = (hasDepth && depthTestEnable) ? TRUE : FALSE;
+        const D3D12_DEPTH_WRITE_MASK effDepthWrite = (hasDepth && depthWriteEnable)
+            ? D3D12_DEPTH_WRITE_MASK_ALL
+            : D3D12_DEPTH_WRITE_MASK_ZERO;
+        const DXGI_FORMAT effDsvFormat = hasDepth ? DXGI_FORMAT_D32_FLOAT : DXGI_FORMAT_UNKNOWN;
+        const BOOL frontCCW = (frontFace == FrontFace::CounterClockWise) ? TRUE : FALSE;
+
+        ComPtr<ID3D12PipelineState> pso;
+        if (m_hasMeshShaders)
         {
             struct alignas(void*) MeshPipelineStateStream
             {
@@ -51,61 +116,88 @@ namespace NRI
             } stream;
 
             stream.RootSig.pRootSignature = m_deviceD3D12.getGlobalRootSignature();
-            if (!asBytecode.empty())
-                stream.AS.bytecode = { asBytecode.data(), asBytecode.size() };
-            stream.MS.bytecode = { msBytecode.data(), msBytecode.size() };
-            if (!psBytecode.empty())
-                stream.PS.bytecode = { psBytecode.data(), psBytecode.size() };
+            if (!m_asBytecode.empty())
+                stream.AS.bytecode = { m_asBytecode.data(), m_asBytecode.size() };
+            stream.MS.bytecode = { m_msBytecode.data(), m_msBytecode.size() };
+            if (!m_psBytecode.empty())
+                stream.PS.bytecode = { m_psBytecode.data(), m_psBytecode.size() };
 
-            stream.Rasterizer.desc.FillMode = D3D12_FILL_MODE_SOLID;
-            stream.Rasterizer.desc.CullMode = D3D12_CULL_MODE_BACK;
+            stream.Rasterizer.desc.FillMode = translatePolygonMode(polygonMode);
+            stream.Rasterizer.desc.CullMode = translateCullMode(cullMode);
+            stream.Rasterizer.desc.FrontCounterClockwise = frontCCW;
             stream.Rasterizer.desc.DepthClipEnable = TRUE;
 
-            stream.DepthStencil.desc.DepthEnable = TRUE;
-            stream.DepthStencil.desc.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
-            stream.DepthStencil.desc.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL; // Reverse-Z
+            stream.DepthStencil.desc.DepthEnable = effDepthEnable;
+            stream.DepthStencil.desc.DepthWriteMask = effDepthWrite;
+            stream.DepthStencil.desc.DepthFunc = translateCompareOp(depthCompareOp);
 
-            stream.RTVFormats.rts.NumRenderTargets = static_cast<UINT>(desc.colorFormats.size());
-            for (size_t i = 0; i < desc.colorFormats.size(); ++i)
-                stream.RTVFormats.rts.RTFormats[i] = TranslateImageFormat(desc.colorFormats[i]);
-            stream.DSVFormat.format = DXGI_FORMAT_D32_FLOAT;
+            stream.RTVFormats.rts.NumRenderTargets = static_cast<UINT>(m_rtvFormats.size());
+            for (size_t i = 0; i < m_rtvFormats.size() && i < 8; ++i)
+                stream.RTVFormats.rts.RTFormats[i] = m_rtvFormats[i];
+            stream.DSVFormat.format = effDsvFormat;
 
             D3D12_PIPELINE_STATE_STREAM_DESC streamDesc{ sizeof(stream), &stream };
             ComPtr<ID3D12Device2> dev2;
             if (SUCCEEDED(m_deviceD3D12.getNativeDevice()->QueryInterface(IID_PPV_ARGS(&dev2))))
             {
-                ThrowIfFailed(dev2->CreatePipelineState(&streamDesc, IID_PPV_ARGS(&m_pipeline)), "CreatePipelineState (Mesh)");
+                ThrowIfFailed(dev2->CreatePipelineState(&streamDesc, IID_PPV_ARGS(&pso)), "CreatePipelineState (Mesh)");
             }
         }
         else
         {
             D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc{};
             psoDesc.pRootSignature = m_deviceD3D12.getGlobalRootSignature();
-            if (!vsBytecode.empty())
-                psoDesc.VS = { vsBytecode.data(), vsBytecode.size() };
-            if (!psBytecode.empty())
-                psoDesc.PS = { psBytecode.data(), psBytecode.size() };
+            if (!m_vsBytecode.empty())
+                psoDesc.VS = { m_vsBytecode.data(), m_vsBytecode.size() };
+            if (!m_psBytecode.empty())
+                psoDesc.PS = { m_psBytecode.data(), m_psBytecode.size() };
 
-            psoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-            psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
+            psoDesc.RasterizerState.FillMode = translatePolygonMode(polygonMode);
+            psoDesc.RasterizerState.CullMode = translateCullMode(cullMode);
+            psoDesc.RasterizerState.FrontCounterClockwise = frontCCW;
             psoDesc.RasterizerState.DepthClipEnable = TRUE;
 
-            psoDesc.DepthStencilState.DepthEnable = TRUE;
-            psoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
-            psoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
+            psoDesc.DepthStencilState.DepthEnable = effDepthEnable;
+            psoDesc.DepthStencilState.DepthWriteMask = effDepthWrite;
+            psoDesc.DepthStencilState.DepthFunc = translateCompareOp(depthCompareOp);
 
             psoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
             psoDesc.SampleMask = UINT_MAX;
             psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-            psoDesc.NumRenderTargets = static_cast<UINT>(desc.colorFormats.size());
-            for (size_t i = 0; i < desc.colorFormats.size(); ++i)
-                psoDesc.RTVFormats[i] = TranslateImageFormat(desc.colorFormats[i]);
-            psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+            psoDesc.NumRenderTargets = static_cast<UINT>(m_rtvFormats.size());
+            for (size_t i = 0; i < m_rtvFormats.size() && i < 8; ++i)
+                psoDesc.RTVFormats[i] = m_rtvFormats[i];
+            psoDesc.DSVFormat = effDsvFormat;
             psoDesc.SampleDesc.Count = 1;
 
             ThrowIfFailed(m_deviceD3D12.getNativeDevice()->CreateGraphicsPipelineState(
-                &psoDesc, IID_PPV_ARGS(&m_pipeline)), "CreateGraphicsPipelineState");
+                &psoDesc, IID_PPV_ARGS(&pso)), "CreateGraphicsPipelineState");
         }
+        return pso;
+    }
+
+    ID3D12PipelineState* PipelineD3D12::resolveGraphicsPipeline(bool hasDepth,
+                                                                bool depthTestEnable,
+                                                                bool depthWriteEnable,
+                                                                CompareOp depthCompareOp,
+                                                                CullMode cullMode,
+                                                                FrontFace frontFace,
+                                                                PolygonMode polygonMode)
+    {
+        const uint64_t key = makeGraphicsVariantKey(hasDepth, depthTestEnable, depthWriteEnable,
+                                                    depthCompareOp, cullMode, frontFace, polygonMode);
+        std::scoped_lock lock(m_variantMutex);
+        auto it = m_graphicsVariants.find(key);
+        if (it != m_graphicsVariants.end())
+            return it->second.Get();
+
+        ComPtr<ID3D12PipelineState> built = buildGraphicsVariant(
+            hasDepth, depthTestEnable, depthWriteEnable, depthCompareOp, cullMode, frontFace, polygonMode);
+        ID3D12PipelineState* raw = built.Get();
+        m_graphicsVariants.emplace(key, std::move(built));
+        if (!m_pipeline)
+            m_pipeline = raw;
+        return raw;
     }
 
     void PipelineD3D12::createComputePipeline(const PipelineDesc& desc, ShaderCompiler& compiler)
@@ -115,7 +207,7 @@ namespace NRI
         {
             if (s.stage == ShaderStage::Compute)
             {
-                csBytecode = compiler.compile(s.sourcePath);
+                csBytecode = compiler.compile(s.sourcePath, s.entryPoint);
                 break;
             }
         }
@@ -130,10 +222,9 @@ namespace NRI
 
     void PipelineD3D12::createRayTracingPipeline(const PipelineDesc& desc, ShaderCompiler& compiler)
     {
-        // Setup DXR state object
+        (void)compiler;
         std::vector<D3D12_STATE_SUBOBJECT> subobjects;
 
-        // Global root signature
         D3D12_GLOBAL_ROOT_SIGNATURE globalRootSigDesc{};
         globalRootSigDesc.pGlobalRootSignature = m_deviceD3D12.getGlobalRootSignature();
         D3D12_STATE_SUBOBJECT globalRootSigSubobject{};
@@ -141,7 +232,6 @@ namespace NRI
         globalRootSigSubobject.pDesc = &globalRootSigDesc;
         subobjects.push_back(globalRootSigSubobject);
 
-        // Raytracing pipeline config
         D3D12_RAYTRACING_PIPELINE_CONFIG pipelineConfig{};
         pipelineConfig.MaxTraceRecursionDepth = desc.maxRecursionDepth;
         D3D12_STATE_SUBOBJECT configSubobject{};

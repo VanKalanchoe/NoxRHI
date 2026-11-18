@@ -9,6 +9,7 @@ namespace NRI
 {
     class DeviceD3D12;
     class CommandAllocatorD3D12;
+    class PipelineD3D12;
 
     class CommandBufferD3D12 final : public CommandBuffer
     {
@@ -33,9 +34,9 @@ namespace NRI
         void setPrimitiveTopology(const PrimitiveTopology& topology) override;
         void setPrimitiveRestartEnable(bool enable) override {}
         void setRasterizerDiscardEnable(bool enable) override {}
-        void setPolygonMode(const PolygonMode& polygon) override {}
-        void setCullMode(const CullMode& cullMode) override {}
-        void setFrontFace(const FrontFace& frontFace) override {}
+        void setPolygonMode(const PolygonMode& polygon) override { m_polygonMode = polygon; }
+        void setCullMode(const CullMode& cullMode) override { m_cullMode = cullMode; }
+        void setFrontFace(const FrontFace& frontFace) override { m_frontFace = frontFace; }
         void setDepthBiasEnable(bool enable) override {}
         // D3D12 keeps depth bias in the pipeline's rasterizer state (ID3D12GraphicsCommandList9::RSSetDepthBias is the dynamic form);
         // like setDepthBiasEnable above, not wired yet: the shadow map passes draw without the raster slope bias here.
@@ -46,9 +47,9 @@ namespace NRI
         void setSampleMask(uint32_t sampleCount, uint32_t sampleMask) override {}
         void setAlphaToCoverageEnable(bool enable) override {}
         void setAlphaToOneEnableEXT(bool enable) override {}
-        void setDepthTestEnable(bool enable) override {}
-        void setDepthWriteEnable(bool enable) override {}
-        void setDepthCompareOp(const CompareOp& compareOp) override {}
+        void setDepthTestEnable(bool enable) override { m_depthTestEnable = enable; }
+        void setDepthWriteEnable(bool enable) override { m_depthWriteEnable = enable; }
+        void setDepthCompareOp(const CompareOp& compareOp) override { m_depthCompareOp = compareOp; }
         void setDepthBoundsTestEnable(bool enable) override {}
         void setStencilTestEnable(bool enable) override {}
         void setColorBlendEnable(uint32_t firstAttachment, bool enable) override {}
@@ -97,10 +98,23 @@ namespace NRI
         void endDebugLabel() override;
 
     private:
+        void ensureGraphicsPipelineState();
+
+    private:
         DeviceD3D12& m_deviceD3D12;
         CommandAllocatorD3D12& m_allocator;
         ComPtr<ID3D12GraphicsCommandList6> m_cmdList;
         bool m_isRecording = false;
+        PipelineD3D12* m_currentPipeline = nullptr;
+        ID3D12PipelineState* m_boundPso = nullptr;
+        PipelineBindPoint m_currentBindPoint = PipelineBindPoint::Graphics;
+        bool m_hasDepthAttachment = false;
+        bool m_depthTestEnable = false;
+        bool m_depthWriteEnable = false;
+        CompareOp m_depthCompareOp = CompareOp::GreaterOrEqual;
+        CullMode m_cullMode = CullMode::Back;
+        FrontFace m_frontFace = FrontFace::CounterClockWise;
+        PolygonMode m_polygonMode = PolygonMode::Fill;
 
         // Temporary RTV/DSV descriptor storage for dynamic rendering
         ComPtr<ID3D12DescriptorHeap> m_rtvHeap;

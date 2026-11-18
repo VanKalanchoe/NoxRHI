@@ -155,7 +155,7 @@ namespace NRI
         return hashSourceAndIncludes(path, searchPathsCopy, visited);
     }
 
-    std::vector<char> SlangCompiler::compile(const std::string& path)
+    std::vector<char> SlangCompiler::compile(const std::string& path, std::string_view entryPoint)
     {
         if (!std::filesystem::exists(path))
             NRI_LOG_ERROR("SlangCompiler::compile file not found: {}", path);
@@ -286,9 +286,47 @@ namespace NRI
             throw std::runtime_error("Slang failed to load module: " + path + (firstError.empty() ? std::string() : "\n" + firstError));
         }
 
-        Slang::ComPtr<ISlangBlob> spirv;
+        Slang::ComPtr<ISlangBlob> targetCode;
         Slang::ComPtr<slang::IBlob> targetDiagnostics;
-        SlangResult result = slangModule->getTargetCode(0, spirv.writeRef(), targetDiagnostics.writeRef());
+        SlangResult result = SLANG_OK;
+
+        if (!entryPoint.empty())
+        {
+            std::string entryName(entryPoint);
+            Slang::ComPtr<slang::IEntryPoint> ep;
+            slangModule->findEntryPointByName(entryName.c_str(), ep.writeRef());
+            if (!ep)
+                throw std::runtime_error("Slang entry point '" + entryName + "' not found in: " + path);
+
+            slang::IComponentType* components[] = { slangModule.get(), ep.get() };
+            Slang::ComPtr<slang::IComponentType> composed;
+            Slang::ComPtr<slang::IBlob> composeDiags;
+            result = session->createCompositeComponentType(components, 2, composed.writeRef(), composeDiags.writeRef());
+            if (composeDiags)
+            {
+                NRI_LOG_ERROR("Slang compose diagnostics ({}:{}): {}", path, entryName,
+                              static_cast<const char*>(composeDiags->getBufferPointer()));
+            }
+            if (SLANG_FAILED(result) || !composed)
+                throw std::runtime_error("Slang failed to compose entry point '" + entryName + "' in: " + path);
+
+            Slang::ComPtr<slang::IComponentType> linked;
+            Slang::ComPtr<slang::IBlob> linkDiags;
+            result = composed->link(linked.writeRef(), linkDiags.writeRef());
+            if (linkDiags)
+            {
+                NRI_LOG_ERROR("Slang link diagnostics ({}:{}): {}", path, entryName,
+                              static_cast<const char*>(linkDiags->getBufferPointer()));
+            }
+            if (SLANG_FAILED(result) || !linked)
+                throw std::runtime_error("Slang failed to link entry point '" + entryName + "' in: " + path);
+
+            result = linked->getEntryPointCode(0, 0, targetCode.writeRef(), targetDiagnostics.writeRef());
+        }
+        else
+        {
+            result = slangModule->getTargetCode(0, targetCode.writeRef(), targetDiagnostics.writeRef());
+        }
 
         if (targetDiagnostics)
         {
@@ -296,11 +334,15 @@ namespace NRI
                           static_cast<const char*>(targetDiagnostics->getBufferPointer()));
         }
 
-        if (SLANG_FAILED(result) || !spirv)
-            throw std::runtime_error("Slang failed to generate target code: " + path);
+        if (SLANG_FAILED(result) || !targetCode)
+        {
+            char hexBuf[32];
+            std::snprintf(hexBuf, sizeof(hexBuf), "0x%08X", static_cast<unsigned int>(result));
+            throw std::runtime_error("Slang failed to generate target code (" + std::string(hexBuf) + ", entry='" + std::string(entryPoint) + "', api=" + std::to_string(static_cast<int>(m_targetAPI)) + "): " + path);
+        }
 
-        const char* dataPtr = static_cast<const char*>(spirv->getBufferPointer());
-        size_t dataSize = spirv->getBufferSize();
+        const char* dataPtr = static_cast<const char*>(targetCode->getBufferPointer());
+        size_t dataSize = targetCode->getBufferSize();
 
         return std::vector<char>(dataPtr, dataPtr + dataSize);
     }

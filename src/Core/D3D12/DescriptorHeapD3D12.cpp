@@ -47,7 +47,7 @@ namespace NRI
                 sampDesc.MinLOD = s.minLod;
                 sampDesc.MaxLOD = s.maxLod;
                 sampDesc.MaxAnisotropy = std::max(1u, static_cast<UINT>(s.maxAnisotropy));
-                sampDesc.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+                sampDesc.ComparisonFunc = D3D12_COMPARISON_FUNC_NONE;
 
                 D3D12_CPU_DESCRIPTOR_HANDLE handle = getCpuHandle(static_cast<uint32_t>(i));
                 m_deviceD3D12.getNativeDevice()->CreateSampler(&sampDesc, handle);
