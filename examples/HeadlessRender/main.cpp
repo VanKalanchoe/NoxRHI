@@ -31,10 +31,15 @@ int main(int argc, char** argv)
 
     try
     {
+#ifndef NDEBUG
+        constexpr bool kEnableValidation = true;
+#else
+        constexpr bool kEnableValidation = false;
+#endif
         nri::DeviceDesc devDesc{};
         devDesc.api = api;
         devDesc.window.type = NRI_WINDOW_SYSTEM_HEADLESS;
-        devDesc.enableValidation = true;
+        devDesc.enableValidation = kEnableValidation;
         devDesc.shaderCacheDir = "shader_cache_headless";
         devDesc.logCallback = onNriLog;
 

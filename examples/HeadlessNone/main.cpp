@@ -31,10 +31,15 @@ int main()
 {
     try
     {
+#ifndef NDEBUG
+        constexpr bool kEnableValidation = true;
+#else
+        constexpr bool kEnableValidation = false;
+#endif
         nri::DeviceDesc devDesc{};
         devDesc.api = NRI_GRAPHICS_API_NONE;
         devDesc.window.type = NRI_WINDOW_SYSTEM_HEADLESS;
-        devDesc.enableValidation = true;
+        devDesc.enableValidation = kEnableValidation;
         devDesc.logCallback = onNriLog;
 
         nri::Device device = nri::createDevice(devDesc);
@@ -100,7 +105,7 @@ int main()
         // Run a headless no-GPU RenderGraph tick loop without any GPU driver or window.
         nri::RenderGraph renderGraph;
         renderGraph.SetLogCallback(onRgLog);
-        renderGraph.SetValidationEnabled(true);
+        renderGraph.SetValidationEnabled(kEnableValidation);
         renderGraph.Initialize(device, resourceHeap, kFramesInFlight);
 
         constexpr nri::Extent2D kVirtualExtent{ 1280, 720 };

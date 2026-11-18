@@ -41,7 +41,11 @@ int main(int argc, char** argv)
     std::setvbuf(stderr, nullptr, _IONBF, 0);
     NriGraphicsAPI api = NRI_GRAPHICS_API_NONE;
     uint32_t frameCount = 4;
+#ifndef NDEBUG
     bool enableValidation = true;
+#else
+    bool enableValidation = false;
+#endif
     bool enableStreamline = true;
     for (int i = 1; i < argc; ++i)
     {
@@ -49,6 +53,8 @@ int main(int argc, char** argv)
             api = NRI_GRAPHICS_API_VULKAN;
         else if (std::strcmp(argv[i], "--dx12") == 0 || std::strcmp(argv[i], "--d3d12") == 0)
             api = NRI_GRAPHICS_API_D3D12;
+        else if (std::strcmp(argv[i], "--validation") == 0)
+            enableValidation = true;
         else if (std::strcmp(argv[i], "--no-validation") == 0)
             enableValidation = false;
         else if (std::strcmp(argv[i], "--no-streamline") == 0)

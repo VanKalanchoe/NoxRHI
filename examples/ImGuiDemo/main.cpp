@@ -294,6 +294,7 @@ namespace
         int width = 1280;
         int height = 720;
         int maxFrames = -1;
+        bool vsync = false;
         bool resizeTest = false;
         bool viewportTest = false;
         bool needsResize = false;
@@ -445,6 +446,8 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
             state->maxFrames = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--resize-test") == 0)
             state->resizeTest = true;
+        else if (std::strcmp(argv[i], "--vsync") == 0)
+            state->vsync = true;
         else if (std::strcmp(argv[i], "--viewport-test") == 0)
             state->viewportTest = true;
         else if (std::strcmp(argv[i], "--vk") == 0 || std::strcmp(argv[i], "--vulkan") == 0)
@@ -470,10 +473,15 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
 
     try
     {
+#ifndef NDEBUG
+        constexpr bool kEnableValidation = true;
+#else
+        constexpr bool kEnableValidation = false;
+#endif
         nri::DeviceDesc devDesc{};
         devDesc.api = state->api;
         devDesc.window = getWindowHandle(state->window);
-        devDesc.enableValidation = true;
+        devDesc.enableValidation = kEnableValidation;
         devDesc.shaderCacheDir = "shader_cache_imgui";
         devDesc.logCallback = onNriLog;
 
@@ -481,7 +489,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
         state->swapchain = nri::createSwapchain(state->device, {
             static_cast<uint32_t>(state->width),
             static_cast<uint32_t>(state->height),
-            true
+            state->vsync
         });
 
         state->resourceHeap = state->device.createDescriptorHeap({
@@ -524,7 +532,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
         hooks.EndGpuZone = &profilerEndGpuZone;
 
         state->renderGraph.SetLogCallback(onRgLog);
-        state->renderGraph.SetValidationEnabled(true);
+        state->renderGraph.SetValidationEnabled(kEnableValidation);
         state->renderGraph.SetProfilerHooks(hooks);
         state->renderGraph.Initialize(state->device, state->resourceHeap, kFramesInFlight);
 
@@ -613,7 +621,7 @@ SDL_AppResult SDL_AppIterate(void* appstate)
             state->swapchain = nri::createSwapchain(state->device, {
                 static_cast<uint32_t>(state->width),
                 static_cast<uint32_t>(state->height),
-                true
+                state->vsync
             });
             state->needsResize = false;
         }
@@ -652,6 +660,7 @@ SDL_AppResult SDL_AppIterate(void* appstate)
             ImGui::End();
         }
 
+        ImGui::SetNextWindowSize(ImVec2(440.0f, 265.0f), ImGuiCond_FirstUseEver);
         if (ImGui::Begin("NoxRHI Telemetry"))
         {
             const char* apiLabel = (state->api == NRI_GRAPHICS_API_D3D12) ? "Direct3D 12"
@@ -661,7 +670,7 @@ SDL_AppResult SDL_AppIterate(void* appstate)
             ImGui::Text("Renderer: NRIImgui Extension (Zero native API code in app)");
             ImGui::Separator();
             ImGui::Text("FPS (avg %zu): %.1f", state->metricCount, fps);
-            ImGui::Text("CPU Avg: %.3f ms", cpuAvgMs);
+            ImGui::Text("CPU Frame Avg: %.3f ms", cpuAvgMs);
             ImGui::Text("GPU Avg: %.3f ms (instant: %.3f ms)", gpuAvgMs, state->profilerState.lastGpuFrameMs);
 
             if (!state->profilerState.lastPassTimesMs.empty())
@@ -674,6 +683,8 @@ SDL_AppResult SDL_AppIterate(void* appstate)
 
             ImGui::Separator();
             ImGui::Checkbox("Show ImGui Demo Window", &state->showDemoWindow);
+            if (ImGui::Checkbox("VSync", &state->vsync))
+                state->needsResize = true;
             ImGui::ColorEdit3("Backdrop Clear", state->clearColor.data());
             ImGui::Text("Multi-Viewport: %s", (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) ? "Enabled (drag windows outside)" : "Disabled");
         }

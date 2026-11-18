@@ -43,6 +43,7 @@ namespace
         int width = 800;
         int height = 600;
         int maxFrames = -1;
+        bool vsync = false;
         bool resizeTest = false;
         bool needsResize = false;
         uint32_t frameNumber = 0;
@@ -65,6 +66,8 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
             state->maxFrames = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--resize-test") == 0)
             state->resizeTest = true;
+        else if (std::strcmp(argv[i], "--vsync") == 0)
+            state->vsync = true;
         else if (std::strcmp(argv[i], "--vk") == 0 || std::strcmp(argv[i], "--vulkan") == 0)
             api = NRI_GRAPHICS_API_VULKAN;
         else if (std::strcmp(argv[i], "--dx12") == 0 || std::strcmp(argv[i], "--d3d12") == 0)
@@ -86,17 +89,22 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
 
     try
     {
+#ifndef NDEBUG
+        constexpr bool kEnableValidation = true;
+#else
+        constexpr bool kEnableValidation = false;
+#endif
         nri::DeviceDesc devDesc{};
         devDesc.api = api;
         devDesc.window = getWindowHandle(state->window);
-        devDesc.enableValidation = true;
+        devDesc.enableValidation = kEnableValidation;
         devDesc.logCallback = onNriLog;
 
         state->device = nri::createDevice(devDesc);
         state->swapchain = nri::createSwapchain(state->device, {
             static_cast<uint32_t>(state->width),
             static_cast<uint32_t>(state->height),
-            true
+            state->vsync
         });
 
         for (uint32_t i = 0; i < kFramesInFlight; ++i)
@@ -155,7 +163,7 @@ SDL_AppResult SDL_AppIterate(void* appstate)
             state->swapchain = nri::createSwapchain(state->device, {
                 static_cast<uint32_t>(state->width),
                 static_cast<uint32_t>(state->height),
-                true
+                state->vsync
             });
             state->needsResize = false;
         }
