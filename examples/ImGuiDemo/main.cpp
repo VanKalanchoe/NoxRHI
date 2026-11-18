@@ -18,12 +18,8 @@
 
 #include <NRIHPP/NRI.hpp>
 #include <NRIHPP/NRIExtensions.hpp>
+#include <NRIHPP/imgui_impl_noxrhi.h>
 #include <NRIRenderGraph/RenderGraph.h>
-
-static_assert(sizeof(ImDrawVert) == sizeof(NriImguiVertex), "ImDrawVert must match NriImguiVertex size");
-static_assert(offsetof(ImDrawVert, pos) == offsetof(NriImguiVertex, pos), "ImDrawVert::pos mismatch");
-static_assert(offsetof(ImDrawVert, uv) == offsetof(NriImguiVertex, uv), "ImDrawVert::uv mismatch");
-static_assert(offsetof(ImDrawVert, col) == offsetof(NriImguiVertex, col), "ImDrawVert::col mismatch");
 
 static int g_validationErrors = 0;
 
@@ -192,101 +188,6 @@ namespace
             ps->profiler->writeTimestamp(cmd, slot.passes[idx].queryId + 1);
     }
 
-    struct NriDrawDataScratch
-    {
-        std::vector<NriImguiDrawList> drawLists;
-        std::vector<NriImguiDrawCmd> drawCmds;
-    };
-
-    void syncImguiTextures(nri::Imgui& imgui, ImDrawData* drawData)
-    {
-        if (!drawData || !drawData->Textures)
-            return;
-
-        for (ImTextureData* tex : *drawData->Textures)
-        {
-            if (tex->Status == ImTextureStatus_WantCreate)
-            {
-                const uint64_t texId = imgui.createTexture(static_cast<uint32_t>(tex->Width),
-                                                           static_cast<uint32_t>(tex->Height),
-                                                           tex->GetPixels());
-                tex->SetTexID(static_cast<ImTextureID>(texId));
-                tex->SetStatus(ImTextureStatus_OK);
-            }
-            else if (tex->Status == ImTextureStatus_WantUpdates)
-            {
-                imgui.updateTexture(static_cast<uint64_t>(tex->GetTexID()),
-                                     static_cast<uint32_t>(tex->UpdateRect.x),
-                                     static_cast<uint32_t>(tex->UpdateRect.y),
-                                     static_cast<uint32_t>(tex->UpdateRect.w),
-                                     static_cast<uint32_t>(tex->UpdateRect.h),
-                                     tex->GetPixels(),
-                                     static_cast<uint32_t>(tex->Width),
-                                     static_cast<uint32_t>(tex->Height));
-                tex->SetStatus(ImTextureStatus_OK);
-            }
-            else if (tex->Status == ImTextureStatus_WantDestroy && tex->UnusedFrames > 0)
-            {
-                imgui.destroyTexture(static_cast<uint64_t>(tex->GetTexID()));
-                tex->SetTexID(ImTextureID_Invalid);
-                tex->SetStatus(ImTextureStatus_Destroyed);
-            }
-        }
-    }
-
-    NriImguiDrawDataDesc translateImDrawData(ImDrawData* drawData, uint32_t frameSlot, uint32_t viewportSlot, NriDrawDataScratch& scratch)
-    {
-        scratch.drawLists.clear();
-        scratch.drawCmds.clear();
-
-        if (!drawData || drawData->CmdListsCount == 0)
-            return {};
-
-        size_t totalCmds = 0;
-        for (const ImDrawList* list : drawData->CmdLists)
-            totalCmds += static_cast<size_t>(list->CmdBuffer.Size);
-
-        scratch.drawLists.reserve(static_cast<size_t>(drawData->CmdListsCount));
-        scratch.drawCmds.reserve(totalCmds);
-
-        for (const ImDrawList* list : drawData->CmdLists)
-        {
-            const size_t cmdStart = scratch.drawCmds.size();
-            for (const ImDrawCmd& cmd : list->CmdBuffer)
-            {
-                if (cmd.UserCallback)
-                    continue;
-                scratch.drawCmds.push_back(NriImguiDrawCmd{
-                    .clipRect = { cmd.ClipRect.x, cmd.ClipRect.y, cmd.ClipRect.z, cmd.ClipRect.w },
-                    .elemCount = cmd.ElemCount,
-                    .idxOffset = cmd.IdxOffset,
-                    .vtxOffset = static_cast<int32_t>(cmd.VtxOffset),
-                    .textureId = static_cast<uint64_t>(cmd.GetTexID())
-                });
-            }
-
-            scratch.drawLists.push_back(NriImguiDrawList{
-                .vertices = reinterpret_cast<const NriImguiVertex*>(list->VtxBuffer.Data),
-                .vertexCount = static_cast<uint32_t>(list->VtxBuffer.Size),
-                .indices = list->IdxBuffer.Data,
-                .indexCount = static_cast<uint32_t>(list->IdxBuffer.Size),
-                .indexSize = sizeof(ImDrawIdx),
-                .cmds = scratch.drawCmds.data() + cmdStart,
-                .cmdCount = static_cast<uint32_t>(scratch.drawCmds.size() - cmdStart)
-            });
-        }
-
-        return NriImguiDrawDataDesc{
-            .drawLists = scratch.drawLists.data(),
-            .drawListCount = static_cast<uint32_t>(scratch.drawLists.size()),
-            .displayPos = { drawData->DisplayPos.x, drawData->DisplayPos.y },
-            .displaySize = { drawData->DisplaySize.x, drawData->DisplaySize.y },
-            .framebufferScale = { drawData->FramebufferScale.x, drawData->FramebufferScale.y },
-            .frameIndex = frameSlot,
-            .viewportSlot = viewportSlot
-        };
-    }
-
     struct AppState
     {
         SDL_Window* window = nullptr;
@@ -316,72 +217,10 @@ namespace
         nri::Swapchain swapchain;
         nri::DescriptorHeap resourceHeap;
         nri::DescriptorHeap samplerHeap;
-        nri::Imgui imgui;
         nri::GpuProfiler gpuProfiler;
         nri::RenderGraph renderGraph;
         ProfilerState profilerState{};
-        NriDrawDataScratch mainScratch{};
-        NriDrawDataScratch viewportScratch{};
     };
-
-    void rendererCreateWindow(ImGuiViewport* viewport)
-    {
-        auto* state = static_cast<AppState*>(ImGui::GetIO().BackendRendererUserData);
-        if (!state)
-            return;
-
-        NriNativeWindowHandle handle{};
-#ifdef _WIN32
-        handle.type = NRI_WINDOW_SYSTEM_WIN32;
-        handle.hwnd = viewport->PlatformHandleRaw;
-#endif
-        const uint64_t vpHandle = state->imgui.createViewport(NriImguiViewportDesc{
-            .window = handle,
-            .width = static_cast<uint32_t>(std::max(1.0f, viewport->Size.x)),
-            .height = static_cast<uint32_t>(std::max(1.0f, viewport->Size.y)),
-            .vsync = false
-        });
-        viewport->RendererUserData = reinterpret_cast<void*>(static_cast<uintptr_t>(vpHandle));
-    }
-
-    void rendererDestroyWindow(ImGuiViewport* viewport)
-    {
-        auto* state = static_cast<AppState*>(ImGui::GetIO().BackendRendererUserData);
-        const uint64_t vpHandle = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(viewport->RendererUserData));
-        if (state && vpHandle != 0)
-            state->imgui.destroyViewport(vpHandle);
-        viewport->RendererUserData = nullptr;
-    }
-
-    void rendererSetWindowSize(ImGuiViewport* viewport, ImVec2 size)
-    {
-        auto* state = static_cast<AppState*>(ImGui::GetIO().BackendRendererUserData);
-        const uint64_t vpHandle = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(viewport->RendererUserData));
-        if (state && vpHandle != 0)
-            state->imgui.resizeViewport(vpHandle, static_cast<uint32_t>(std::max(0.0f, size.x)), static_cast<uint32_t>(std::max(0.0f, size.y)));
-    }
-
-    void rendererRenderWindow(ImGuiViewport* viewport, void*)
-    {
-        auto* state = static_cast<AppState*>(ImGui::GetIO().BackendRendererUserData);
-        const uint64_t vpHandle = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(viewport->RendererUserData));
-        if (!state || vpHandle == 0)
-            return;
-
-        syncImguiTextures(state->imgui, viewport->DrawData);
-        const uint32_t vpSlot = state->imgui.getViewportSlot(vpHandle);
-        const NriImguiDrawDataDesc dd = translateImDrawData(viewport->DrawData, 0, vpSlot, state->viewportScratch);
-        const bool noBg = (viewport->Flags & ImGuiViewportFlags_NoRendererClear) != 0;
-        state->imgui.renderViewport(vpHandle, dd, noBg ? nri::ClearColor{ 0.0f, 0.0f, 0.0f, 0.0f } : nri::ClearColor{ 0.0f, 0.0f, 0.0f, 1.0f });
-    }
-
-    void rendererSwapBuffers(ImGuiViewport* viewport, void*)
-    {
-        auto* state = static_cast<AppState*>(ImGui::GetIO().BackendRendererUserData);
-        const uint64_t vpHandle = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(viewport->RendererUserData));
-        if (state && vpHandle != 0)
-            state->imgui.presentViewport(vpHandle);
-    }
 }
 
 static void initImGui(AppState& state)
@@ -393,12 +232,6 @@ static void initImGui(AppState& state)
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     if (state.enableViewports)
         io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
-
-    io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
-    io.BackendFlags |= ImGuiBackendFlags_RendererHasViewports;
-    io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
-    io.BackendRendererName = "NoxRHI_NRIImgui";
-    io.BackendRendererUserData = &state;
 
     ImGui::StyleColorsDark();
     const float scale = SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
@@ -414,14 +247,17 @@ static void initImGui(AppState& state)
         style.Colors[ImGuiCol_WindowBg].w = 1.0f;
     }
 
-    ImGuiPlatformIO& platformIO = ImGui::GetPlatformIO();
-    platformIO.Renderer_CreateWindow = rendererCreateWindow;
-    platformIO.Renderer_DestroyWindow = rendererDestroyWindow;
-    platformIO.Renderer_SetWindowSize = rendererSetWindowSize;
-    platformIO.Renderer_RenderWindow = rendererRenderWindow;
-    platformIO.Renderer_SwapBuffers = rendererSwapBuffers;
-
     ImGui_ImplSDL3_InitForOther(state.window);
+    ImGui_ImplNoxRHI_Init({
+        .device = &state.device,
+        .resourceHeap = &state.resourceHeap,
+        .samplerHeap = &state.samplerHeap,
+        .samplerSlot = 0,
+        .colorFormat = NRI_FORMAT_SURFACE,
+        .framesInFlight = kFramesInFlight,
+        .linearColorOutput = true,
+        .enableViewports = state.enableViewports
+    });
     state.imguiInitialized = true;
 }
 
@@ -430,9 +266,8 @@ static void shutdownImGui(AppState& state)
     if (!state.imguiInitialized)
         return;
 
-    ImGui::DestroyPlatformWindows();
+    ImGui_ImplNoxRHI_Shutdown();
     ImGui_ImplSDL3_Shutdown();
-    ImGui::GetIO().BackendRendererUserData = nullptr;
     ImGui::DestroyContext();
     state.imguiInitialized = false;
 }
@@ -509,15 +344,6 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
             .type = NRI_DESCRIPTOR_HEAP_SAMPLER,
             .maxSamplerDescriptors = 8,
             .samplers = { defaultSampler }
-        });
-
-        state->imgui = nri::createImgui(state->device, {
-            .resourceHeap = &state->resourceHeap,
-            .samplerHeap = &state->samplerHeap,
-            .samplerSlot = 0,
-            .colorFormat = NRI_FORMAT_SURFACE,
-            .framesInFlight = kFramesInFlight,
-            .linearColorOutput = true
         });
 
         state->gpuProfiler = nri::createGpuProfiler(state->device, kFramesInFlight);
@@ -642,6 +468,7 @@ SDL_AppResult SDL_AppIterate(void* appstate)
             return SDL_APP_CONTINUE;
         }
 
+        ImGui_ImplNoxRHI_NewFrame();
         ImGui_ImplSDL3_NewFrame();
         ImGui::NewFrame();
 
@@ -691,19 +518,16 @@ SDL_AppResult SDL_AppIterate(void* appstate)
         ImGui::End();
 
         ImGui::Render();
-        ImDrawData* drawData = ImGui::GetDrawData();
-        syncImguiTextures(state->imgui, drawData);
-
-        const NriImguiDrawDataDesc mainDrawData = translateImDrawData(drawData, frameSlot, 0, state->mainScratch);
+        const NriImguiDrawDataDesc mainDrawData = ImGui_ImplNoxRHI_PrepareDrawData(ImGui::GetDrawData(), frameSlot);
 
         const nri::Extent2D extent = state->swapchain.getExtent();
         state->renderGraph.Reset({ state->frameNumber, extent, extent });
 
         state->renderGraph.AddPass("ImGuiUpload", nri::RGPassFlags::NeverCull,
             [](nri::RGBuilder&) {},
-            [state, mainDrawData](nri::RGPassContext& ctx)
+            [mainDrawData](nri::RGPassContext& ctx)
             {
-                state->imgui.copyData(ctx.Cmd(), mainDrawData);
+                ImGui_ImplNoxRHI_CopyData(ctx.Cmd(), mainDrawData);
             });
 
         state->renderGraph.AddPass("ImGuiOverlay", nri::RGPassFlags::Raster,
@@ -713,9 +537,9 @@ SDL_AppResult SDL_AppIterate(void* appstate)
                                   { state->clearColor[0], state->clearColor[1], state->clearColor[2], 1.0f });
                 b.SetRenderArea(extent, nri::RGViewport::None);
             },
-            [state, mainDrawData](nri::RGPassContext& ctx)
+            [mainDrawData](nri::RGPassContext& ctx)
             {
-                state->imgui.draw(ctx.Cmd(), mainDrawData);
+                ImGui_ImplNoxRHI_RenderDrawData(ctx.Cmd(), mainDrawData);
             });
 
         state->renderGraph.Compile();
@@ -761,7 +585,6 @@ void SDL_AppQuit(void* appstate, SDL_AppResult result)
             state->renderGraph.ReleaseResources();
         }
         shutdownImGui(*state);
-        state->imgui.reset();
         state->gpuProfiler.reset();
         state->samplerHeap.reset();
         state->resourceHeap.reset();

@@ -15,7 +15,7 @@ Public headers expose **zero** backend SDK headers (`<vulkan/...>`, `<d3d12.h>`)
    - `NRIUpscaler.h` (NVIDIA Streamline: DLSS Super Resolution & Ray Reconstruction)
    - `NRIDenoiser.h` (NVIDIA Real-Time Denoisers: SIGMA Shadow, REBLUR, RELAX)
    - `NRIWrapperVK.h`, `NRIWrapperD3D12.h` (opt-in native interop using opaque `void*` / `uint64_t` handles)
-3. **`include/NRIHPP/` (`NoxRHI::HPP`)** — Header-only C++20 RAII wrappers (`namespace nri`, `NRI.hpp`, `NRIExtensions.hpp`) with move-only handles, `std::span`, and `std::string_view`.
+3. **`include/NRIHPP/` (`NoxRHI::HPP`)** — Header-only C++20 RAII wrappers (`namespace nri`, `NRI.hpp`, `NRIExtensions.hpp`) with move-only handles, `std::span`, and `std::string_view`, plus an optional Dear ImGui renderer backend (`imgui_impl_noxrhi.h` with docking + multi-viewport support).
 4. **`include/NRIRenderGraph/` + `src/RenderGraph/` (`NoxRHI::RenderGraph`)** — Standalone RenderGraph library built on `NoxRHI::HPP` with transient resource pooling, barrier planning, validation, and optional profiler/task hooks.
 
 > **Two Headless Modes:**
