@@ -19,6 +19,7 @@
 
 # Runtime shader caches & compiled binaries
 shader_cache*/
+imgui.ini
 *.bin
 *.pdb
 *.ilk

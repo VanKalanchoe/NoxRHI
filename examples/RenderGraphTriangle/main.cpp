@@ -1,11 +1,15 @@
+#define SDL_MAIN_USE_CALLBACKS 1
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_main.h>
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <vector>
 
-#include <SDL3/SDL.h>
 #include <NRIHPP/NRI.hpp>
 #include <NRIHPP/NRIExtensions.hpp>
 #include <NRIRenderGraph/RenderGraph.h>
@@ -78,17 +82,41 @@ static void applyBaselineDynamicState(nri::CommandBuffer& cmd)
     cmd.setLogicOpEnable(false);
 }
 
-int main(int argc, char** argv)
+namespace
 {
-    int maxFrames = -1;
-    bool resizeTest = false;
+    constexpr uint32_t kFramesInFlight = 2;
+
+    struct AppState
+    {
+        SDL_Window* window = nullptr;
+        int width = 800;
+        int height = 600;
+        int maxFrames = -1;
+        bool resizeTest = false;
+        bool needsResize = false;
+        uint32_t frameNumber = 0;
+        bool failed = false;
+
+        nri::Device device;
+        nri::Swapchain swapchain;
+        nri::DescriptorHeap resourceHeap;
+        nri::DescriptorHeap samplerHeap;
+        nri::ShaderCompiler compiler;
+        nri::Pipeline trianglePipeline;
+        nri::RenderGraph renderGraph;
+    };
+}
+
+SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
+{
+    auto state = std::make_unique<AppState>();
     NriGraphicsAPI api = NRI_GRAPHICS_API_VULKAN;
     for (int i = 1; i < argc; ++i)
     {
         if (std::strcmp(argv[i], "--frames") == 0 && i + 1 < argc)
-            maxFrames = std::atoi(argv[++i]);
+            state->maxFrames = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--resize-test") == 0)
-            resizeTest = true;
+            state->resizeTest = true;
         else if (std::strcmp(argv[i], "--d3d12") == 0)
             api = NRI_GRAPHICS_API_D3D12;
     }
@@ -96,33 +124,33 @@ int main(int argc, char** argv)
     if (!SDL_Init(SDL_INIT_VIDEO))
     {
         std::fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
-        return 1;
+        return SDL_APP_FAILURE;
     }
 
-    int width = 800;
-    int height = 600;
-    SDL_Window* window = SDL_CreateWindow("NoxRHI RenderGraphTriangle (NRIRenderGraph + NRIHPP)", width, height, SDL_WINDOW_RESIZABLE);
-    if (!window)
+    state->window = SDL_CreateWindow("NoxRHI RenderGraphTriangle (NRIRenderGraph + NRIHPP)", state->width, state->height, SDL_WINDOW_RESIZABLE);
+    if (!state->window)
     {
         std::fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
-        SDL_Quit();
-        return 1;
+        return SDL_APP_FAILURE;
     }
 
-    int exitCode = 0;
     try
     {
         nri::DeviceDesc devDesc{};
         devDesc.api = api;
-        devDesc.window = getWindowHandle(window);
+        devDesc.window = getWindowHandle(state->window);
         devDesc.enableValidation = true;
         devDesc.shaderCacheDir = "shader_cache_triangle";
         devDesc.logCallback = onNriLog;
 
-        nri::Device device = nri::createDevice(devDesc);
-        nri::Swapchain swapchain = nri::createSwapchain(device, { static_cast<uint32_t>(width), static_cast<uint32_t>(height), true });
+        state->device = nri::createDevice(devDesc);
+        state->swapchain = nri::createSwapchain(state->device, {
+            static_cast<uint32_t>(state->width),
+            static_cast<uint32_t>(state->height),
+            true
+        });
 
-        nri::DescriptorHeap resourceHeap = device.createDescriptorHeap({
+        state->resourceHeap = state->device.createDescriptorHeap({
             .type = NRI_DESCRIPTOR_HEAP_RESOURCE,
             .maxBufferDescriptors = 64,
             .maxImageDescriptors = 64
@@ -132,14 +160,14 @@ int main(int argc, char** argv)
         defaultSampler.magFilter = NRI_FILTER_LINEAR;
         defaultSampler.minFilter = NRI_FILTER_LINEAR;
         defaultSampler.maxLod = 1000.0f;
-        nri::DescriptorHeap samplerHeap = device.createDescriptorHeap({
+        state->samplerHeap = state->device.createDescriptorHeap({
             .type = NRI_DESCRIPTOR_HEAP_SAMPLER,
             .maxSamplerDescriptors = 8,
             .samplers = { defaultSampler }
         });
 
-        nri::ShaderCompiler compiler = nri::createSlangCompiler();
-        compiler.setTargetAPI(api);
+        state->compiler = nri::createSlangCompiler();
+        state->compiler.setTargetAPI(api);
 
         std::string shaderPath = "triangle.slang";
         if (!std::filesystem::exists(shaderPath))
@@ -149,7 +177,7 @@ int main(int argc, char** argv)
                 shaderPath = (std::filesystem::path(basePath) / "triangle.slang").string();
         }
 
-        nri::Pipeline trianglePipeline = device.createPipeline({
+        state->trianglePipeline = state->device.createPipeline({
             .type = NRI_PIPELINE_GRAPHICS,
             .shaders = {
                 { NRI_SHADER_STAGE_VERTEX, "vertMain", shaderPath },
@@ -157,152 +185,185 @@ int main(int argc, char** argv)
             },
             .colorFormats = { NRI_FORMAT_SURFACE },
             .buildNow = true
-        }, compiler.handle());
-        device.finishPipelineBuilds();
+        }, state->compiler.handle());
+        state->device.finishPipelineBuilds();
 
-        constexpr uint32_t framesInFlight = 2;
-        nri::RenderGraph renderGraph;
-        renderGraph.SetLogCallback(onRgLog);
-        renderGraph.SetValidationEnabled(true);
-        renderGraph.Initialize(device, resourceHeap, framesInFlight);
-        renderGraph.SetCommandBufferSetup([&](nri::CommandBuffer& cmd, nri::QueueType queue)
+        state->renderGraph.SetLogCallback(onRgLog);
+        state->renderGraph.SetValidationEnabled(true);
+        state->renderGraph.Initialize(state->device, state->resourceHeap, kFramesInFlight);
+
+        AppState* rawState = state.get();
+        state->renderGraph.SetCommandBufferSetup([rawState](nri::CommandBuffer& cmd, nri::QueueType queue)
         {
-            cmd.bindDescriptorHeaps(&resourceHeap, &samplerHeap);
+            cmd.bindDescriptorHeaps(&rawState->resourceHeap, &rawState->samplerHeap);
             if (queue == NRI_QUEUE_GRAPHICS)
                 applyBaselineDynamicState(cmd);
         });
+    }
+    catch (const std::exception& e)
+    {
+        std::fprintf(stderr, "[RenderGraphTriangle] Init Exception: %s\n", e.what());
+        state->failed = true;
+        *appstate = state.release();
+        return SDL_APP_FAILURE;
+    }
 
-        uint32_t frameNumber = 0;
-        bool running = true;
-        bool needsResize = false;
+    *appstate = state.release();
+    return SDL_APP_CONTINUE;
+}
 
-        while (running && (maxFrames < 0 || static_cast<int>(frameNumber) < maxFrames))
+SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event)
+{
+    auto* state = static_cast<AppState*>(appstate);
+    if (event->type == SDL_EVENT_QUIT)
+        return SDL_APP_SUCCESS;
+    if (event->type == SDL_EVENT_WINDOW_RESIZED || event->type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
+    {
+        state->width = event->window.data1;
+        state->height = event->window.data2;
+        state->needsResize = true;
+    }
+    return SDL_APP_CONTINUE;
+}
+
+SDL_AppResult SDL_AppIterate(void* appstate)
+{
+    auto* state = static_cast<AppState*>(appstate);
+    if (state->maxFrames >= 0 && static_cast<int>(state->frameNumber) >= state->maxFrames)
+        return g_validationErrors > 0 ? SDL_APP_FAILURE : SDL_APP_SUCCESS;
+
+    try
+    {
+        if (state->resizeTest && state->frameNumber == 4)
         {
-            SDL_Event ev;
-            while (SDL_PollEvent(&ev))
-            {
-                if (ev.type == SDL_EVENT_QUIT)
-                    running = false;
-                else if (ev.type == SDL_EVENT_WINDOW_RESIZED || ev.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
-                {
-                    width = ev.window.data1;
-                    height = ev.window.data2;
-                    needsResize = true;
-                }
-            }
-
-            if (resizeTest && frameNumber == 4)
-            {
-                SDL_SetWindowSize(window, 1024, 720);
-                width = 1024;
-                height = 720;
-                needsResize = true;
-            }
-
-            if (needsResize && width > 0 && height > 0)
-            {
-                device.waitIdle();
-                renderGraph.ReleaseResources();
-                swapchain.reset();
-                swapchain = nri::createSwapchain(device, { static_cast<uint32_t>(width), static_cast<uint32_t>(height), true });
-                needsResize = false;
-            }
-
-            if (width == 0 || height == 0)
-            {
-                SDL_Delay(16);
-                continue;
-            }
-
-            device.beginFrame(frameNumber);
-
-            const uint32_t frameSlot = frameNumber % framesInFlight;
-            uint32_t imageIndex = 0;
-            if (swapchain.acquireNextImage(frameSlot, imageIndex) == NRI_FRAME_RESULT_RESIZE_REQUIRED)
-            {
-                needsResize = true;
-                continue;
-            }
-
-            const nri::Extent2D extent = swapchain.getExtent();
-            renderGraph.Reset({ frameNumber, extent, extent });
-
-            // Pass 1: Draw triangle into a RenderGraph transient color texture
-            nri::RGTexture offscreenColor = renderGraph.CreateTexture("TriangleColor", {
-                .Size = nri::RGSize::RenderResolution,
-                .Format = NRI_FORMAT_SURFACE,
-                .Usage = NRI_TEXTURE_USAGE_COLOR_ATTACHMENT
-            });
-
-            const float timeSec = static_cast<float>(frameNumber) * 0.03f;
-            renderGraph.AddPass("DrawTriangle", nri::RGPassFlags::Raster,
-                [&](nri::RGBuilder& b)
-                {
-                    b.ColorTarget(offscreenColor, NRI_LOAD_OP_CLEAR, NRI_STORE_OP_STORE, { 0.08f, 0.10f, 0.14f, 1.0f });
-                    b.SetRenderArea(extent, nri::RGViewport::FlippedY);
-                },
-                [&](nri::RGPassContext& ctx)
-                {
-                    nri::CommandBuffer& cmd = ctx.Cmd();
-                    cmd.bindPipeline(NRI_PIPELINE_BIND_POINT_GRAPHICS, trianglePipeline);
-                    struct { float t; } pc{ timeSec };
-                    cmd.pushData(&pc, sizeof(pc));
-                    cmd.draw(3, 1, 0, 0);
-                });
-
-            // Pass 2: Copy/resolve transient into the swapchain backbuffer (or draw/copy)
-            // Note: Swapchain images have eColorAttachment usage; copy or render directly.
-            // Here we also exercise a direct swapchain raster pass so both transient + swapchain paths run.
-            renderGraph.AddPass("PresentTriangle", nri::RGPassFlags::Raster,
-                [&](nri::RGBuilder& b)
-                {
-                    b.Read(offscreenColor, nri::RGTextureAccess::Sampled);
-                    b.SwapchainTarget(swapchain, imageIndex, NRI_LOAD_OP_CLEAR, NRI_STORE_OP_STORE, { 0.08f, 0.10f, 0.14f, 1.0f });
-                    b.SetRenderArea(extent, nri::RGViewport::FlippedY);
-                },
-                [&](nri::RGPassContext& ctx)
-                {
-                    nri::CommandBuffer& cmd = ctx.Cmd();
-                    cmd.bindPipeline(NRI_PIPELINE_BIND_POINT_GRAPHICS, trianglePipeline);
-                    struct { float t; } pc{ timeSec };
-                    cmd.pushData(&pc, sizeof(pc));
-                    cmd.draw(3, 1, 0, 0);
-                });
-
-            renderGraph.Compile();
-            const auto submissions = renderGraph.Execute(frameSlot);
-            for (size_t s = 0; s < submissions.size(); ++s)
-            {
-                const auto& sub = submissions[s];
-                if (s + 1 == submissions.size())
-                    device.submitCommandBuffers(sub.CommandBuffers, swapchain.handle(), frameSlot, imageIndex, sub.Waits);
-                else
-                    device.submit(sub.Queue, sub.CommandBuffers, sub.Waits, sub.Signals);
-            }
-
-            if (swapchain.present(frameSlot, imageIndex) == NRI_FRAME_RESULT_RESIZE_REQUIRED)
-                needsResize = true;
-
-            ++frameNumber;
+            SDL_SetWindowSize(state->window, 1024, 720);
+            state->width = 1024;
+            state->height = 720;
+            state->needsResize = true;
         }
 
-        device.waitIdle();
-        renderGraph.ReleaseResources();
+        if (state->needsResize && state->width > 0 && state->height > 0)
+        {
+            state->device.waitIdle();
+            state->renderGraph.ReleaseResources();
+            state->swapchain.reset();
+            state->swapchain = nri::createSwapchain(state->device, {
+                static_cast<uint32_t>(state->width),
+                static_cast<uint32_t>(state->height),
+                true
+            });
+            state->needsResize = false;
+        }
+
+        if (state->width <= 0 || state->height <= 0)
+        {
+            SDL_Delay(16);
+            return SDL_APP_CONTINUE;
+        }
+
+        state->device.beginFrame(state->frameNumber);
+
+        const uint32_t frameSlot = state->frameNumber % kFramesInFlight;
+        uint32_t imageIndex = 0;
+        if (state->swapchain.acquireNextImage(frameSlot, imageIndex) == NRI_FRAME_RESULT_RESIZE_REQUIRED)
+        {
+            state->needsResize = true;
+            return SDL_APP_CONTINUE;
+        }
+
+        const nri::Extent2D extent = state->swapchain.getExtent();
+        state->renderGraph.Reset({ state->frameNumber, extent, extent });
+
+        nri::RGTexture offscreenColor = state->renderGraph.CreateTexture("TriangleColor", {
+            .Size = nri::RGSize::RenderResolution,
+            .Format = NRI_FORMAT_SURFACE,
+            .Usage = NRI_TEXTURE_USAGE_COLOR_ATTACHMENT
+        });
+
+        const float timeSec = static_cast<float>(state->frameNumber) * 0.03f;
+        state->renderGraph.AddPass("DrawTriangle", nri::RGPassFlags::Raster,
+            [&](nri::RGBuilder& b)
+            {
+                b.ColorTarget(offscreenColor, NRI_LOAD_OP_CLEAR, NRI_STORE_OP_STORE, { 0.08f, 0.10f, 0.14f, 1.0f });
+                b.SetRenderArea(extent, nri::RGViewport::FlippedY);
+            },
+            [state, timeSec](nri::RGPassContext& ctx)
+            {
+                nri::CommandBuffer& cmd = ctx.Cmd();
+                cmd.bindPipeline(NRI_PIPELINE_BIND_POINT_GRAPHICS, state->trianglePipeline);
+                struct { float t; } pc{ timeSec };
+                cmd.pushData(&pc, sizeof(pc));
+                cmd.draw(3, 1, 0, 0);
+            });
+
+        state->renderGraph.AddPass("PresentTriangle", nri::RGPassFlags::Raster,
+            [&](nri::RGBuilder& b)
+            {
+                b.Read(offscreenColor, nri::RGTextureAccess::Sampled);
+                b.SwapchainTarget(state->swapchain, imageIndex, NRI_LOAD_OP_CLEAR, NRI_STORE_OP_STORE, { 0.08f, 0.10f, 0.14f, 1.0f });
+                b.SetRenderArea(extent, nri::RGViewport::FlippedY);
+            },
+            [state, timeSec](nri::RGPassContext& ctx)
+            {
+                nri::CommandBuffer& cmd = ctx.Cmd();
+                cmd.bindPipeline(NRI_PIPELINE_BIND_POINT_GRAPHICS, state->trianglePipeline);
+                struct { float t; } pc{ timeSec };
+                cmd.pushData(&pc, sizeof(pc));
+                cmd.draw(3, 1, 0, 0);
+            });
+
+        state->renderGraph.Compile();
+        const auto submissions = state->renderGraph.Execute(frameSlot);
+        for (size_t s = 0; s < submissions.size(); ++s)
+        {
+            const auto& sub = submissions[s];
+            if (s + 1 == submissions.size())
+                state->device.submitCommandBuffers(sub.CommandBuffers, state->swapchain.handle(), frameSlot, imageIndex, sub.Waits);
+            else
+                state->device.submit(sub.Queue, sub.CommandBuffers, sub.Waits, sub.Signals);
+        }
+
+        if (state->swapchain.present(frameSlot, imageIndex) == NRI_FRAME_RESULT_RESIZE_REQUIRED)
+            state->needsResize = true;
+
+        ++state->frameNumber;
     }
     catch (const std::exception& e)
     {
         std::fprintf(stderr, "[RenderGraphTriangle] Exception: %s\n", e.what());
-        exitCode = 1;
+        state->failed = true;
+        return SDL_APP_FAILURE;
     }
 
-    SDL_DestroyWindow(window);
-    SDL_Quit();
+    return SDL_APP_CONTINUE;
+}
 
-    if (g_validationErrors > 0)
+void SDL_AppQuit(void* appstate, SDL_AppResult result)
+{
+    auto* state = static_cast<AppState*>(appstate);
+    if (state)
     {
-        std::fprintf(stderr, "[RenderGraphTriangle] Failed with %d validation/NRI errors\n", g_validationErrors);
-        return 1;
+        if (state->device.handle())
+        {
+            state->device.waitIdle();
+            state->renderGraph.ReleaseResources();
+        }
+        state->trianglePipeline.reset();
+        state->compiler.reset();
+        state->samplerHeap.reset();
+        state->resourceHeap.reset();
+        state->swapchain.reset();
+        state->device.reset();
+        if (state->window)
+            SDL_DestroyWindow(state->window);
+
+        const bool hadFailure = state->failed || result == SDL_APP_FAILURE || g_validationErrors > 0;
+        delete state;
+        if (hadFailure)
+        {
+            std::fprintf(stderr, "[RenderGraphTriangle] Failed with %d validation/NRI errors\n", g_validationErrors);
+            return;
+        }
     }
     std::printf("[RenderGraphTriangle] Clean exit.\n");
-    return exitCode;
 }

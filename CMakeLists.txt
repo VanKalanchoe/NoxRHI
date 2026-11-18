@@ -16,6 +16,7 @@ option(NRI_BUILD_RENDERGRAPH "Build NRIRenderGraph target on top of NRIHPP" ON)
 option(NRI_ENABLE_VULKAN     "Enable Vulkan backend" ON)
 option(NRI_ENABLE_D3D12      "Enable D3D12 backend" ON)
 option(NRI_ENABLE_SLANG      "Enable Slang shader compiler extension" ON)
+option(NRI_ENABLE_PCH        "Enable private precompiled header for faster NoxRHI builds" ON)
 option(NRI_BUILD_EXAMPLES    "Build standalone NoxRHI examples" ON)
 
 if(NRI_BUILD_RENDERGRAPH AND NOT NRI_BUILD_HPP)
@@ -89,6 +90,7 @@ target_include_directories(NoxRHI
 if(NRI_ENABLE_VULKAN)
     target_compile_definitions(NoxRHI PRIVATE
         NRI_ENABLE_VULKAN=1
+        $<$<BOOL:${WIN32}>:VK_USE_PLATFORM_WIN32_KHR>
         VULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1
         VULKAN_HPP_NO_STRUCT_CONSTRUCTORS=1
         VULKAN_HPP_HANDLE_ERROR_OUT_OF_DATE_AS_SUCCESS
@@ -125,6 +127,10 @@ if(NRI_ENABLE_SLANG)
             endif()
         endif()
     endif()
+endif()
+
+if(NRI_ENABLE_PCH)
+    target_precompile_headers(NoxRHI PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/Core/NoxRHIPCH.h")
 endif()
 
 # -----------------------------------------------------------------------------
@@ -208,5 +214,55 @@ if(NRI_BUILD_EXAMPLES)
                 "${CMAKE_CURRENT_SOURCE_DIR}/examples/RenderGraphTriangle/triangle.slang"
                 $<TARGET_FILE_DIR:RenderGraphTriangle>/triangle.slang
         )
+
+        find_package(Stb QUIET)
+        if(Stb_FOUND OR DEFINED Stb_INCLUDE_DIR)
+            add_executable(TexturedQuads examples/TexturedQuads/main.cpp)
+            target_include_directories(TexturedQuads PRIVATE ${Stb_INCLUDE_DIR})
+            target_link_libraries(TexturedQuads PRIVATE NoxRHI::RenderGraph SDL3::SDL3)
+            noxrhi_copy_runtime_deps(TexturedQuads)
+            add_custom_command(TARGET TexturedQuads POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${CMAKE_CURRENT_SOURCE_DIR}/examples/TexturedQuads/textured_quads.slang"
+                    $<TARGET_FILE_DIR:TexturedQuads>/textured_quads.slang
+                COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+                    "${CMAKE_CURRENT_SOURCE_DIR}/examples/TexturedQuads/assets"
+                    "$<TARGET_FILE_DIR:TexturedQuads>/assets"
+            )
+        endif()
+
+        set(NOXRHI_IMGUI_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendors/imgui")
+        if(EXISTS "${NOXRHI_IMGUI_DIR}/imgui.h")
+            set(NOXRHI_IMGUI_SOURCES
+                "${NOXRHI_IMGUI_DIR}/imgui.cpp"
+                "${NOXRHI_IMGUI_DIR}/imgui_demo.cpp"
+                "${NOXRHI_IMGUI_DIR}/imgui_draw.cpp"
+                "${NOXRHI_IMGUI_DIR}/imgui_tables.cpp"
+                "${NOXRHI_IMGUI_DIR}/imgui_widgets.cpp"
+                "${NOXRHI_IMGUI_DIR}/backends/imgui_impl_sdl3.cpp"
+            )
+            if(NRI_ENABLE_VULKAN)
+                list(APPEND NOXRHI_IMGUI_SOURCES "${NOXRHI_IMGUI_DIR}/backends/imgui_impl_vulkan.cpp")
+            endif()
+            if(WIN32 AND NRI_ENABLE_D3D12)
+                list(APPEND NOXRHI_IMGUI_SOURCES "${NOXRHI_IMGUI_DIR}/backends/imgui_impl_dx12.cpp")
+            endif()
+
+            add_executable(ImGuiDemo examples/ImGuiDemo/main.cpp ${NOXRHI_IMGUI_SOURCES})
+            target_include_directories(ImGuiDemo SYSTEM PRIVATE
+                "${NOXRHI_IMGUI_DIR}"
+                "${NOXRHI_IMGUI_DIR}/backends"
+            )
+            target_link_libraries(ImGuiDemo PRIVATE NoxRHI::RenderGraph SDL3::SDL3)
+            if(NRI_ENABLE_VULKAN)
+                target_compile_definitions(ImGuiDemo PRIVATE NRI_ENABLE_VULKAN=1)
+                target_link_libraries(ImGuiDemo PRIVATE Vulkan::Vulkan)
+            endif()
+            if(WIN32 AND NRI_ENABLE_D3D12)
+                target_compile_definitions(ImGuiDemo PRIVATE NRI_ENABLE_D3D12=1)
+                target_link_libraries(ImGuiDemo PRIVATE d3d12 dxgi)
+            endif()
+            noxrhi_copy_runtime_deps(ImGuiDemo)
+        endif()
     endif()
 endif()

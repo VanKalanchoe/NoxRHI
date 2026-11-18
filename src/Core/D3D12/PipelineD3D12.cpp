@@ -3,6 +3,10 @@
 #include "TextureD3D12.h"
 #include "../../Extensions/ShaderCompiler/ShaderCompiler.h"
 
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+
 namespace NRI
 {
     namespace
@@ -47,6 +51,75 @@ namespace NRI
             key |= (static_cast<uint64_t>(polygonMode) & 0x3u) << 11;
             return key;
         }
+
+        const char* stageShortName(ShaderStage stage)
+        {
+            switch (stage)
+            {
+            case ShaderStage::Vertex:       return "vert";
+            case ShaderStage::Fragment:     return "frag";
+            case ShaderStage::Compute:      return "comp";
+            case ShaderStage::Task:         return "task";
+            case ShaderStage::Mesh:         return "mesh";
+            case ShaderStage::RayGen:       return "rgen";
+            case ShaderStage::Miss:         return "rmiss";
+            case ShaderStage::ClosestHit:   return "rchit";
+            case ShaderStage::AnyHit:       return "rahit";
+            case ShaderStage::Intersection: return "rint";
+            case ShaderStage::Callable:     return "rcall";
+            default:                        return "unknown";
+            }
+        }
+
+        std::vector<char> loadOrCompileDxil(const ShaderStageDesc& shaderDesc,
+                                              ShaderCompiler& compiler,
+                                              const std::string& cacheDir,
+                                              bool forceCompile)
+        {
+            const std::filesystem::path source(shaderDesc.sourcePath);
+            const std::string stem = source.stem().string();
+            const uint64_t sourceHash = compiler.sourceHash(shaderDesc.sourcePath);
+            const std::filesystem::path folder = std::filesystem::path(cacheDir) / stem;
+            const std::filesystem::path binaryPath =
+                folder / (stem + "." + stageShortName(shaderDesc.stage) + "." + shaderDesc.entryPoint + "." + std::to_string(sourceHash) + ".dxil.bin");
+
+            if (std::filesystem::exists(binaryPath) && (!forceCompile || !compiler.canCompile()))
+            {
+                std::ifstream file(binaryPath, std::ios::binary | std::ios::ate);
+                if (file)
+                {
+                    const size_t size = static_cast<size_t>(file.tellg());
+                    file.seekg(0);
+                    std::vector<char> data(size);
+                    if (size > 0)
+                        file.read(data.data(), static_cast<std::streamsize>(size));
+                    if (!data.empty())
+                    {
+                        NRI_LOG_INFO("PipelineD3D12 loading shader binary: {}", binaryPath.string());
+                        return data;
+                    }
+                }
+            }
+
+            NRI_LOG_INFO("PipelineD3D12 compiling shader: {} ({})", shaderDesc.sourcePath, shaderDesc.entryPoint);
+            const auto started = std::chrono::steady_clock::now();
+            std::vector<char> bytecode = compiler.compile(shaderDesc.sourcePath, shaderDesc.entryPoint);
+            const double elapsedMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+            NRI_LOG_INFO("Shader compiled: {} ({:.0f} ms)", shaderDesc.sourcePath, elapsedMs);
+
+            if (!bytecode.empty())
+            {
+                std::error_code ec;
+                std::filesystem::create_directories(folder, ec);
+                std::ofstream out(binaryPath, std::ios::binary);
+                if (out)
+                {
+                    out.write(bytecode.data(), static_cast<std::streamsize>(bytecode.size()));
+                    NRI_LOG_INFO("PipelineD3D12 saving shader binary: {}", binaryPath.string());
+                }
+            }
+            return bytecode;
+        }
     }
 
     PipelineD3D12::PipelineD3D12(DeviceD3D12& device, const PipelineDesc& desc, ShaderCompiler& compiler)
@@ -65,7 +138,7 @@ namespace NRI
         m_hasMeshShaders = false;
         for (const auto& s : desc.shaders)
         {
-            auto code = compiler.compile(s.sourcePath, s.entryPoint);
+            auto code = loadOrCompileDxil(s, compiler, m_deviceD3D12.getShaderCacheDir(), desc.forceCompile);
             if (s.stage == ShaderStage::Vertex) m_vsBytecode = std::move(code);
             else if (s.stage == ShaderStage::Fragment) m_psBytecode = std::move(code);
             else if (s.stage == ShaderStage::Task) { m_asBytecode = std::move(code); m_hasMeshShaders = true; }
@@ -207,7 +280,7 @@ namespace NRI
         {
             if (s.stage == ShaderStage::Compute)
             {
-                csBytecode = compiler.compile(s.sourcePath, s.entryPoint);
+                csBytecode = loadOrCompileDxil(s, compiler, m_deviceD3D12.getShaderCacheDir(), desc.forceCompile);
                 break;
             }
         }

@@ -3,6 +3,7 @@
 #include <atomic>
 #include <memory>
 #include <span>
+#include <string>
 #include <vector>
 
 #include "D3D12Common.h"
@@ -60,6 +61,7 @@ namespace NRI
         bool hasAsyncComputeQueue() const override { return m_computeQueue != nullptr; }
         bool isMemoryBudgetSupported() const override { return true; }
         HWND getWindowHandle() const { return m_hwnd; }
+        const std::string& getShaderCacheDir() const { return m_shaderCacheDir; }
 
         uint32_t getShaderGroupHandleSize() const override { return D3D12_RAYTRACING_SHADER_RECORD_BYTE_ALIGNMENT; }
         uint32_t getShaderGroupBaseAlignment() const override { return D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT; }
@@ -74,6 +76,7 @@ namespace NRI
 
     private:
         HWND m_hwnd = nullptr;
+        std::string m_shaderCacheDir = "shader_cache";
         ComPtr<IDXGIFactory6> m_factory;
         ComPtr<IDXGIAdapter4> m_adapter;
         ComPtr<ID3D12Device5> m_device;

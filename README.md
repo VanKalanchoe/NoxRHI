@@ -33,9 +33,10 @@ Public headers expose **zero** backend SDK headers (`<vulkan/...>`, `<d3d12.h>`)
 | **VulkanMemoryAllocator-Hpp** (incl. VMA) | `v3.4.0+3` | Vulkan GPU memory allocation | Private (`NoxRHI::Core`, Vulkan) | [YaaZ/VulkanMemoryAllocator-Hpp](https://github.com/YaaZ/VulkanMemoryAllocator-Hpp) |
 | **D3D12MemoryAllocator** | `v3.1.0` | D3D12 GPU memory allocation | Private (`NoxRHI::Core`, D3D12) | [GPUOpen/D3D12MemoryAllocator](https://github.com/GPUOpen-LibrariesAndSDKs/D3D12MemoryAllocator) |
 | **Slang** | `v2026.14.1` | Runtime shader compiler (`NRI_ENABLE_SLANG=ON`) | Private (`NoxRHI::Core`, delay-loaded `slang.dll`) | [shader-slang/slang](https://github.com/shader-slang/slang) |
-| **vcpkg** + **SDL3** | `x64-windows` | Window/event loop for standalone examples only | `examples/` only (`NRI_BUILD_EXAMPLES=ON`) | [microsoft/vcpkg](https://github.com/Microsoft/vcpkg) |
+| **vcpkg** + **SDL3** + **stb** | `x64-windows` | Window/event loop & `stb_image` texture loader for examples | `examples/` only (`NRI_BUILD_EXAMPLES=ON`) | [microsoft/vcpkg](https://github.com/Microsoft/vcpkg) |
+| **Dear ImGui** | `docking` branch | Docking + multi-viewport UI demo (`ImGuiDemo` via Layer 2 native wrappers) | `examples/ImGuiDemo/` only | [ocornut/imgui](https://github.com/ocornut/imgui) |
 
-> **D3D12 Shader Compilation Note:** The prebuilt Slang release provides SPIR-V generation out of the box. Compiling Slang shaders to DXIL (`--d3d12` in `RenderGraphTriangle`) at runtime requires DirectX Shader Compiler (`dxcompiler.dll` and `dxil.dll`) on `PATH` or next to the executable.
+> **D3D12 Shader Compilation Note:** Compiling Slang shaders to DXIL (`--d3d12`) at runtime uses `dxcompiler.dll` / `dxil.dll` (from the Windows SDK or Vulkan SDK on `PATH` / beside the executable).
 
 ---
 
@@ -45,7 +46,7 @@ Public headers expose **zero** backend SDK headers (`<vulkan/...>`, `<d3d12.h>`)
 ```bat
 scripts\install_dependencies.bat
 ```
-This downloads/bootstraps `VulkanMemoryAllocator-Hpp`, `D3D12MemoryAllocator`, `Slang`, and `vcpkg` + `sdl3` into `vendors/` (gitignored). `vcpkg` caches built packages in `%TEMP%\vcpkg-cache` so subsequent runs restore quickly.
+This downloads/bootstraps `VulkanMemoryAllocator-Hpp`, `D3D12MemoryAllocator`, `Slang`, `Dear ImGui (docking)`, and `vcpkg` + `sdl3` + `stb` into `vendors/` (gitignored). `vcpkg` caches built packages in `%TEMP%\vcpkg-cache` so subsequent runs restore quickly.
 
 ### 2. Generate the Solution (`.slnx`) for Rider / Visual Studio
 ```bat
@@ -59,14 +60,17 @@ scripts\setup_build.bat --msvc
 scripts\setup_build.bat -DNRI_STATIC_LIBRARY=ON
 ```
 
-Open **`build\NoxRHI.slnx`** in **JetBrains Rider** (or Visual Studio 2026) and build/run any target (`ClearScreen`, `RenderGraphTriangle`).
+Open **`build\NoxRHI.slnx`** in **JetBrains Rider** (or Visual Studio 2026) and build/run any target (`ClearScreen`, `RenderGraphTriangle`, `TexturedQuads`, `ImGuiDemo`).
 
 ### 3. Example CLI Flags
-Example executables accept the following command-line flags:
+All examples use SDL3 main callbacks (`SDL_MAIN_USE_CALLBACKS`) and accept:
 ```bat
 build\Debug\ClearScreen.exe --frames 10 --resize-test
-build\Debug\ClearScreen.exe --d3d12 --frames 10 --resize-test
 build\Debug\RenderGraphTriangle.exe --frames 10 --resize-test
+build\Debug\TexturedQuads.exe --frames 10 --resize-test
+build\Debug\ImGuiDemo.exe --frames 10 --resize-test
+:: Add --d3d12 to run any example on Direct3D 12:
+build\Debug\ImGuiDemo.exe --d3d12 --frames 10 --resize-test
 ```
 
 ---
@@ -81,7 +85,8 @@ build\Debug\RenderGraphTriangle.exe --frames 10 --resize-test
 | `NRI_ENABLE_VULKAN` | `ON` | Enable Vulkan 1.3/1.4 backend |
 | `NRI_ENABLE_D3D12` | `ON` | Enable Direct3D 12 backend (Windows) |
 | `NRI_ENABLE_SLANG` | `ON` | Enable Slang shader compiler extension |
-| `NRI_BUILD_EXAMPLES` | `ON` | Build `ClearScreen` and `RenderGraphTriangle` (`SDL3`) |
+| `NRI_ENABLE_PCH` | `ON` | Use private precompiled headers inside `NoxRHI::Core` for faster builds |
+| `NRI_BUILD_EXAMPLES` | `ON` | Build `ClearScreen`, `RenderGraphTriangle`, `TexturedQuads`, and `ImGuiDemo` (`SDL3`) |
 
 ---
 

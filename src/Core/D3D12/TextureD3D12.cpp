@@ -130,6 +130,18 @@ namespace NRI
 
         auto* list = cmdD3D12->getNativeCommandList();
 
+        if (m_currentState != D3D12_RESOURCE_STATE_COPY_DEST)
+        {
+            D3D12_RESOURCE_BARRIER barrier{};
+            barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            barrier.Transition.pResource = m_resource.Get();
+            barrier.Transition.StateBefore = m_currentState;
+            barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+            barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            list->ResourceBarrier(1, &barrier);
+            m_currentState = D3D12_RESOURCE_STATE_COPY_DEST;
+        }
+
         // Copy each mip level
         uint32_t curWidth = m_desc.width;
         uint32_t curHeight = m_desc.height;
@@ -138,14 +150,38 @@ namespace NRI
 
         for (uint32_t mip = 0; mip < mipOffsets.size() && mip < m_desc.mipLevels; ++mip)
         {
-            uint32_t blocksX = (std::max(curWidth, 1u) + blockSize - 1) / blockSize;
-            uint32_t blocksY = (std::max(curHeight, 1u) + blockSize - 1) / blockSize;
-            uint32_t rowPitch = (blocksX * blockBytes + 255) & ~255u; // 256-byte pitch alignment
+            const uint32_t blocksX = (std::max(curWidth, 1u) + blockSize - 1) / blockSize;
+            const uint32_t blocksY = (std::max(curHeight, 1u) + blockSize - 1) / blockSize;
+            const uint32_t rawPitch = blocksX * blockBytes;
+            const uint32_t rowPitch = (rawPitch + 255u) & ~255u; // 256-byte pitch alignment
+            const uint64_t effectiveOffset = stagingOffset + mipOffsets[mip];
+
+            ID3D12Resource* srcResource = bufferD3D12->getNativeBuffer();
+            uint64_t srcOffset = effectiveOffset;
+
+            if (rawPitch != rowPitch || (effectiveOffset % D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT) != 0)
+            {
+                const uint64_t paddedSize = static_cast<uint64_t>(rowPitch) * blocksY;
+                BufferDesc tmpDesc{};
+                tmpDesc.size = paddedSize;
+                tmpDesc.usage = BufferUsage::Staging;
+                auto tmpBuf = std::make_shared<BufferD3D12>(m_deviceD3D12, tmpDesc);
+
+                const auto* srcBytes = static_cast<const uint8_t*>(bufferD3D12->map(0, 0)) + effectiveOffset;
+                auto* dstBytes = static_cast<uint8_t*>(tmpBuf->map(0, paddedSize));
+                for (uint32_t row = 0; row < blocksY; ++row)
+                    std::memcpy(dstBytes + static_cast<size_t>(row) * rowPitch, srcBytes + static_cast<size_t>(row) * rawPitch, rawPitch);
+                tmpBuf->unmap();
+
+                srcResource = tmpBuf->getNativeBuffer();
+                srcOffset = 0;
+                m_deviceD3D12.enqueueDeferredDeletion([tmpBuf]() mutable { tmpBuf.reset(); });
+            }
 
             D3D12_TEXTURE_COPY_LOCATION src{};
-            src.pResource = bufferD3D12->getNativeBuffer();
+            src.pResource = srcResource;
             src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-            src.PlacedFootprint.Offset = stagingOffset + mipOffsets[mip];
+            src.PlacedFootprint.Offset = srcOffset;
             src.PlacedFootprint.Footprint.Format = m_dxgiFormat;
             src.PlacedFootprint.Footprint.Width = curWidth;
             src.PlacedFootprint.Footprint.Height = curHeight;
@@ -162,6 +198,16 @@ namespace NRI
             curWidth = std::max(1u, curWidth / 2);
             curHeight = std::max(1u, curHeight / 2);
         }
+
+        const D3D12_RESOURCE_STATES srvState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        D3D12_RESOURCE_BARRIER postBarrier{};
+        postBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        postBarrier.Transition.pResource = m_resource.Get();
+        postBarrier.Transition.StateBefore = m_currentState;
+        postBarrier.Transition.StateAfter = srvState;
+        postBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        list->ResourceBarrier(1, &postBarrier);
+        m_currentState = srvState;
     }
 
     void TextureD3D12::recordInitialLayout(CommandBuffer& cmdBuffer)

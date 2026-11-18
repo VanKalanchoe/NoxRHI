@@ -34,6 +34,7 @@ namespace NRI
     }
 
     DeviceD3D12::DeviceD3D12(const DeviceInitDesc& desc)
+        : m_shaderCacheDir(desc.shaderCacheDir.empty() ? "shader_cache" : desc.shaderCacheDir)
     {
         initD3D12(desc);
         createGlobalRootSignature();
@@ -113,6 +114,37 @@ namespace NRI
         }
 
         m_allocator = std::make_unique<MemoryAllocatorD3D12>(*this);
+
+        DXGI_ADAPTER_DESC1 chosenDesc{};
+        m_adapter->GetDesc1(&chosenDesc);
+        char adapterName[256]{};
+        WideCharToMultiByte(CP_UTF8, 0, chosenDesc.Description, -1, adapterName, sizeof(adapterName), nullptr, nullptr);
+        NRI_LOG_INFO("D3D12 Adapter: {} (VRAM: {} MB)", adapterName, static_cast<uint64_t>(chosenDesc.DedicatedVideoMemory >> 20));
+        NRI_LOG_INFO("Transfer queue: {}", m_copyQueue ? "dedicated COPY queue" : "shared with DIRECT");
+        NRI_LOG_INFO("Async compute queue: {}", m_computeQueue ? "dedicated COMPUTE queue" : "shared with DIRECT");
+
+        D3D12_FEATURE_DATA_D3D12_OPTIONS opts{};
+        m_device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &opts, sizeof(opts));
+        NRI_LOG_INFO("Sparse buffers (TiledResourcesTier): {}",
+                     opts.TiledResourcesTier == D3D12_TILED_RESOURCES_TIER_NOT_SUPPORTED ? "off" :
+                     opts.TiledResourcesTier == D3D12_TILED_RESOURCES_TIER_1 ? "Tier 1" :
+                     opts.TiledResourcesTier == D3D12_TILED_RESOURCES_TIER_2 ? "Tier 2" : "Tier 3+");
+
+        D3D12_FEATURE_DATA_D3D12_OPTIONS5 opts5{};
+        if (SUCCEEDED(m_device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &opts5, sizeof(opts5))))
+        {
+            NRI_LOG_INFO("RT Pipeline Properties: tier={}, recordStride={}, tableAlign={}",
+                         opts5.RaytracingTier == D3D12_RAYTRACING_TIER_NOT_SUPPORTED ? "off" :
+                         opts5.RaytracingTier == D3D12_RAYTRACING_TIER_1_0 ? "1.0" : "1.1",
+                         D3D12_RAYTRACING_SHADER_RECORD_BYTE_ALIGNMENT,
+                         D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT);
+        }
+
+        D3D12_FEATURE_DATA_D3D12_OPTIONS7 opts7{};
+        if (SUCCEEDED(m_device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS7, &opts7, sizeof(opts7))))
+        {
+            NRI_LOG_INFO("Mesh shaders: {}", opts7.MeshShaderTier == D3D12_MESH_SHADER_TIER_NOT_SUPPORTED ? "off" : "Tier 1");
+        }
     }
 
     void DeviceD3D12::createGlobalRootSignature()

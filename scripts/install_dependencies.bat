@@ -75,12 +75,28 @@ if not exist "%SLANG_DIR%\lib\slang.lib" (
 )
 
 :: ----------------------------------------------------------------------------
-:: 4. vcpkg + SDL3 (for standalone examples)
+:: 4. Dear ImGui (docking branch - standalone ImGuiDemo example only)
+:: ----------------------------------------------------------------------------
+set "IMGUI_DIR=%VENDORS_DIR%\imgui"
+if not exist "%IMGUI_DIR%\imgui.h" (
+    echo [4/5] Cloning Dear ImGui ^(docking branch^)...
+    if exist "%IMGUI_DIR%" rmdir /s /q "%IMGUI_DIR%"
+    git clone --depth 1 --branch docking https://github.com/ocornut/imgui.git "%IMGUI_DIR%"
+    if errorlevel 1 (
+        echo ERROR: Failed to clone Dear ImGui.
+        goto :fail
+    )
+) else (
+    echo [4/5] Dear ImGui already present, skipping.
+)
+
+:: ----------------------------------------------------------------------------
+:: 5. vcpkg + SDL3 + stb (standalone examples only)
 :: ----------------------------------------------------------------------------
 set "VCPKG_ROOT=%VENDORS_DIR%\vcpkg"
 if not exist "%VCPKG_ROOT%\vcpkg.exe" (
     if not exist "%VCPKG_ROOT%\.git" (
-        echo [4/4] Cloning vcpkg into "%VCPKG_ROOT%"...
+        echo [5/5] Cloning vcpkg into "%VCPKG_ROOT%"...
         if exist "%VCPKG_ROOT%" rmdir /s /q "%VCPKG_ROOT%"
         git clone https://github.com/Microsoft/vcpkg.git "%VCPKG_ROOT%"
         if errorlevel 1 (
@@ -88,7 +104,7 @@ if not exist "%VCPKG_ROOT%\vcpkg.exe" (
             goto :fail
         )
     ) else (
-        echo [4/4] vcpkg repository already cloned, bootstrapping...
+        echo [5/5] vcpkg repository already cloned, bootstrapping...
     )
     pushd "%VCPKG_ROOT%"
     call bootstrap-vcpkg.bat -disableMetrics
@@ -99,16 +115,16 @@ if not exist "%VCPKG_ROOT%\vcpkg.exe" (
     )
     popd
 ) else (
-    echo [4/4] vcpkg executable already present.
+    echo [5/5] vcpkg executable already present.
 )
 
 if not exist "%TEMP%\vcpkg-cache" mkdir "%TEMP%\vcpkg-cache"
 set "VCPKG_BINARY_SOURCES=clear;files,%TEMP%\vcpkg-cache,readwrite"
 
-echo Ensuring SDL3 ^(x64-windows^) is installed via vcpkg...
-"%VCPKG_ROOT%\vcpkg.exe" install sdl3 --triplet=x64-windows
+echo Ensuring SDL3 and stb ^(x64-windows^) are installed via vcpkg...
+"%VCPKG_ROOT%\vcpkg.exe" install sdl3 stb --triplet=x64-windows
 if errorlevel 1 (
-    echo ERROR: Failed to install sdl3 via vcpkg.
+    echo ERROR: Failed to install sdl3/stb via vcpkg.
     goto :fail
 )
 
