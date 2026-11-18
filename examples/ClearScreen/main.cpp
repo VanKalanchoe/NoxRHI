@@ -131,10 +131,9 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event)
     auto* state = static_cast<AppState*>(appstate);
     if (event->type == SDL_EVENT_QUIT)
         return SDL_APP_SUCCESS;
-    if (event->type == SDL_EVENT_WINDOW_RESIZED || event->type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
+    if (event->type == SDL_EVENT_WINDOW_RESIZED || event->type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED || event->type == SDL_EVENT_WINDOW_RESTORED)
     {
-        state->width = event->window.data1;
-        state->height = event->window.data2;
+        SDL_GetWindowSizeInPixels(state->window, &state->width, &state->height);
         state->needsResize = true;
     }
     return SDL_APP_CONTINUE;
@@ -156,7 +155,14 @@ SDL_AppResult SDL_AppIterate(void* appstate)
             state->needsResize = true;
         }
 
-        if (state->needsResize && state->width > 0 && state->height > 0)
+        const bool minimized = (SDL_GetWindowFlags(state->window) & SDL_WINDOW_MINIMIZED) != 0;
+        if (minimized || state->width <= 0 || state->height <= 0)
+        {
+            SDL_Delay(16);
+            return SDL_APP_CONTINUE;
+        }
+
+        if (state->needsResize)
         {
             state->device.waitIdle();
             state->swapchain.reset();
@@ -166,12 +172,6 @@ SDL_AppResult SDL_AppIterate(void* appstate)
                 state->vsync
             });
             state->needsResize = false;
-        }
-
-        if (state->width <= 0 || state->height <= 0)
-        {
-            SDL_Delay(16);
-            return SDL_APP_CONTINUE;
         }
 
         state->device.beginFrame(state->frameNumber);
