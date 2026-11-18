@@ -71,18 +71,18 @@ scripts\setup_build.bat -DNRI_STATIC_LIBRARY=ON
 Open **`build\NoxRHI.slnx`** in **JetBrains Rider** (or Visual Studio 2026) and build/run any target (`HeadlessNone`, `HeadlessRender`, `ClearScreen`, `RenderGraphTriangle`, `TexturedQuads`, `ImGuiDemo`, `StreamlineNRDDemo`).
 
 ### 3. Example CLI Flags
-Windowed examples (`ClearScreen`, `RenderGraphTriangle`, `TexturedQuads`, `ImGuiDemo`) use SDL3 main callbacks (`SDL_MAIN_USE_CALLBACKS`), `HeadlessNone` runs with no GPU/window (`NRI_GRAPHICS_API_NONE`), and `HeadlessRender` / `StreamlineNRDDemo` run windowless on the GPU (`NRI_WINDOW_SYSTEM_HEADLESS`):
+All examples default to the no-GPU backend (`NRI_GRAPHICS_API_NONE`); pass `--vk` (Vulkan) or `--dx12` / `--d3d12` (Direct3D 12) to run on a GPU backend. Windowed examples (`ClearScreen`, `RenderGraphTriangle`, `TexturedQuads`, `ImGuiDemo`) use SDL3 main callbacks (`SDL_MAIN_USE_CALLBACKS`), `HeadlessNone` runs solely on `NRI_GRAPHICS_API_NONE`, and `HeadlessRender` / `StreamlineNRDDemo` run windowless (`NRI_WINDOW_SYSTEM_HEADLESS`):
 ```bat
 build\Debug\HeadlessNone.exe
-build\Debug\HeadlessRender.exe
-build\Debug\StreamlineNRDDemo.exe --frames 5
-build\Debug\ClearScreen.exe --frames 10 --resize-test
-build\Debug\RenderGraphTriangle.exe --frames 10 --resize-test
-build\Debug\TexturedQuads.exe --frames 10 --resize-test
-build\Debug\ImGuiDemo.exe --frames 10 --resize-test
-:: Add --d3d12 to run any example on Direct3D 12:
-build\Debug\StreamlineNRDDemo.exe --d3d12 --frames 5
-build\Debug\ImGuiDemo.exe --d3d12 --frames 10 --resize-test
+build\Debug\HeadlessRender.exe --vk
+build\Debug\StreamlineNRDDemo.exe --vk --frames 5
+build\Debug\ClearScreen.exe --vk --frames 10 --resize-test
+build\Debug\RenderGraphTriangle.exe --vk --frames 10 --resize-test
+build\Debug\TexturedQuads.exe --vk --frames 10 --resize-test
+build\Debug\ImGuiDemo.exe --vk --frames 10 --resize-test
+:: Use --dx12 (or --d3d12) to run on Direct3D 12:
+build\Debug\StreamlineNRDDemo.exe --dx12 --frames 5
+build\Debug\ImGuiDemo.exe --dx12 --frames 10 --resize-test
 ```
 
 ---

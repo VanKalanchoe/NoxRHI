@@ -39,13 +39,15 @@ int main(int argc, char** argv)
 {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::setvbuf(stderr, nullptr, _IONBF, 0);
-    NriGraphicsAPI api = NRI_GRAPHICS_API_VULKAN;
+    NriGraphicsAPI api = NRI_GRAPHICS_API_NONE;
     uint32_t frameCount = 4;
     bool enableValidation = true;
     bool enableStreamline = true;
     for (int i = 1; i < argc; ++i)
     {
-        if (std::strcmp(argv[i], "--d3d12") == 0)
+        if (std::strcmp(argv[i], "--vk") == 0 || std::strcmp(argv[i], "--vulkan") == 0)
+            api = NRI_GRAPHICS_API_VULKAN;
+        else if (std::strcmp(argv[i], "--dx12") == 0 || std::strcmp(argv[i], "--d3d12") == 0)
             api = NRI_GRAPHICS_API_D3D12;
         else if (std::strcmp(argv[i], "--no-validation") == 0)
             enableValidation = false;
@@ -72,8 +74,11 @@ int main(int argc, char** argv)
         const bool dlssRR = nri::isUpscalerSupported(device, NRI_UPSCALER_TYPE_DLSS_RR);
         const bool nrdAvail = nri::isDenoiserAvailable(device);
 
+        const char* apiName = (api == NRI_GRAPHICS_API_D3D12) ? "D3D12"
+                            : (api == NRI_GRAPHICS_API_VULKAN) ? "Vulkan"
+                            : "None";
         std::printf("[StreamlineNRDDemo] API=%s | Streamline=%s | DLSS-SR=%s | DLSS-RR=%s | NRD=%s\n",
-                    api == NRI_GRAPHICS_API_D3D12 ? "D3D12" : "Vulkan",
+                    apiName,
                     slInit ? "on" : "off",
                     dlssSR ? "supported" : "unavailable",
                     dlssRR ? "supported" : "unavailable",

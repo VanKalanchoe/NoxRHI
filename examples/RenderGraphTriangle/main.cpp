@@ -110,14 +110,16 @@ namespace
 SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
 {
     auto state = std::make_unique<AppState>();
-    NriGraphicsAPI api = NRI_GRAPHICS_API_VULKAN;
+    NriGraphicsAPI api = NRI_GRAPHICS_API_NONE;
     for (int i = 1; i < argc; ++i)
     {
         if (std::strcmp(argv[i], "--frames") == 0 && i + 1 < argc)
             state->maxFrames = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--resize-test") == 0)
             state->resizeTest = true;
-        else if (std::strcmp(argv[i], "--d3d12") == 0)
+        else if (std::strcmp(argv[i], "--vk") == 0 || std::strcmp(argv[i], "--vulkan") == 0)
+            api = NRI_GRAPHICS_API_VULKAN;
+        else if (std::strcmp(argv[i], "--dx12") == 0 || std::strcmp(argv[i], "--d3d12") == 0)
             api = NRI_GRAPHICS_API_D3D12;
     }
 
@@ -166,8 +168,11 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
             .samplers = { defaultSampler }
         });
 
-        state->compiler = nri::createSlangCompiler();
-        state->compiler.setTargetAPI(api);
+        if (api != NRI_GRAPHICS_API_NONE)
+        {
+            state->compiler = nri::createSlangCompiler();
+            state->compiler.setTargetAPI(api);
+        }
 
         std::string shaderPath = "triangle.slang";
         if (!std::filesystem::exists(shaderPath))

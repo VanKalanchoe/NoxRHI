@@ -33,7 +33,7 @@ struct PushConstants
     float2 scale;
     float2 translate;
     uint linearColorOutput;
-    uint _pad0;
+    uint baseVertex;
 };
 
 struct VSOut
@@ -53,12 +53,13 @@ float3 srgbToLinear(float3 c)
 [shader("vertex")]
 VSOut vertMain(uint vertexId : SV_VertexID, uniform PushConstants pc)
 {
+    uint resolvedVertex = vertexId + pc.baseVertex;
 #ifdef NOX_VULKAN
     ImGuiVertex* verts = (ImGuiVertex*)pc.vbAddress;
-    ImGuiVertex v = verts[vertexId];
+    ImGuiVertex v = verts[resolvedVertex];
 #else
     ByteAddressBuffer vb = ByteAddressBuffer.Handle(uint2(pc.vbSlot, 0));
-    uint baseOffset = vertexId * 20u;
+    uint baseOffset = resolvedVertex * 20u;
     ImGuiVertex v;
     v.pos = asfloat(vb.Load2(baseOffset));
     v.uv  = asfloat(vb.Load2(baseOffset + 8u));
@@ -100,7 +101,7 @@ float4 fragMain(VSOut input, uniform PushConstants pc) : SV_Target
             float scale[2];
             float translate[2];
             uint32_t linearColorOutput;
-            uint32_t pad0;
+            uint32_t baseVertex;
         };
         static_assert(sizeof(ImguiPushConstants) == 48, "Push constant layout mismatch with Slang shader");
 
@@ -223,6 +224,16 @@ float4 fragMain(VSOut input, uniform PushConstants pc) : SV_Target
 
     void ImguiExtension::ensurePipeline()
     {
+        if (m_device->getAPI() == GraphicsAPI::None)
+        {
+            PipelineDesc pipeDesc{};
+            pipeDesc.type = PipelineType::Graphics;
+            pipeDesc.colorFormats = { m_colorFormat };
+            pipeDesc.buildNow = true;
+            m_pipeline = m_device->createPipelineNoCompiler(pipeDesc);
+            return;
+        }
+
         const std::string& cacheDir = m_device->getShaderCacheDir();
         std::filesystem::path folder = cacheDir.empty() ? std::filesystem::path("shader_cache") : std::filesystem::path(cacheDir);
         std::error_code ec;
@@ -589,12 +600,11 @@ float4 fragMain(VSOut input, uniform PushConstants pc) : SV_Target
                 cmd.setScissorRect(sx0, sy0, sw, sh);
 
                 pc.texSlot = resolveTextureSlot(drawCmd.textureId);
+                pc.baseVertex = static_cast<uint32_t>(std::max<int32_t>(0, drawCmd.vtxOffset + globalVtxOffset));
                 cmd.pushData(&pc, sizeof(pc));
 
-                cmd.drawIndexed(drawCmd.elemCount, 1,
-                                drawCmd.idxOffset + globalIdxOffset,
-                                drawCmd.vtxOffset + globalVtxOffset,
-                                0);
+                // Vertex pulling via SV_VertexID ignores BaseVertex on HLSL/Slang; baseVertex is added in vertMain.
+                cmd.drawIndexed(drawCmd.elemCount, 1, drawCmd.idxOffset + globalIdxOffset, 0, 0);
             }
             globalVtxOffset += static_cast<int32_t>(list.vertexCount);
             globalIdxOffset += list.indexCount;

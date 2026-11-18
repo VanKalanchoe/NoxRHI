@@ -60,7 +60,5 @@ float4 fragMain(VSOut input, uniform PushConstants pc) : SV_Target
 {
     Texture2D tex = Texture2D.Handle(uint2(pc.imageHeapOffset + input.texSlot, 0));
     SamplerState linearSampler = SamplerState.Handle(uint2(0, 0));
-    float4 sampled = tex.Sample(linearSampler, input.uv);
-    float3 cardBg = float3(0.11, 0.13, 0.18);
-    return float4(lerp(cardBg, sampled.rgb, sampled.a), 1.0);
+    return tex.Sample(linearSampler, input.uv);
 }

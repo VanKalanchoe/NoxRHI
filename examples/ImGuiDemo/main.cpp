@@ -290,7 +290,7 @@ namespace
     struct AppState
     {
         SDL_Window* window = nullptr;
-        NriGraphicsAPI api = NRI_GRAPHICS_API_VULKAN;
+        NriGraphicsAPI api = NRI_GRAPHICS_API_NONE;
         int width = 1280;
         int height = 720;
         int maxFrames = -1;
@@ -447,7 +447,9 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)
             state->resizeTest = true;
         else if (std::strcmp(argv[i], "--viewport-test") == 0)
             state->viewportTest = true;
-        else if (std::strcmp(argv[i], "--d3d12") == 0)
+        else if (std::strcmp(argv[i], "--vk") == 0 || std::strcmp(argv[i], "--vulkan") == 0)
+            state->api = NRI_GRAPHICS_API_VULKAN;
+        else if (std::strcmp(argv[i], "--dx12") == 0 || std::strcmp(argv[i], "--d3d12") == 0)
             state->api = NRI_GRAPHICS_API_D3D12;
         else if (std::strcmp(argv[i], "--no-viewports") == 0)
             state->enableViewports = false;
@@ -652,7 +654,10 @@ SDL_AppResult SDL_AppIterate(void* appstate)
 
         if (ImGui::Begin("NoxRHI Telemetry"))
         {
-            ImGui::Text("Backend API: %s", state->api == NRI_GRAPHICS_API_D3D12 ? "Direct3D 12" : "Vulkan");
+            const char* apiLabel = (state->api == NRI_GRAPHICS_API_D3D12) ? "Direct3D 12"
+                                 : (state->api == NRI_GRAPHICS_API_VULKAN) ? "Vulkan"
+                                 : "None (No-GPU)";
+            ImGui::Text("Backend API: %s", apiLabel);
             ImGui::Text("Renderer: NRIImgui Extension (Zero native API code in app)");
             ImGui::Separator();
             ImGui::Text("FPS (avg %zu): %.1f", state->metricCount, fps);
