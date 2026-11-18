@@ -12,9 +12,9 @@ echo   %VENDORS_DIR%
 echo ============================================================================
 
 :: ----------------------------------------------------------------------------
-:: 1. VulkanMemoryAllocator-Hpp (v3.4.0, includes VulkanMemoryAllocator submodule)
+:: 1. VulkanMemoryAllocator-Hpp (v3.4.0+3, includes VulkanMemoryAllocator submodule)
 :: ----------------------------------------------------------------------------
-set "VMA_HPP_VERSION=v3.4.0"
+set "VMA_HPP_VERSION=v3.4.0+3"
 set "VMA_HPP_DIR=%VENDORS_DIR%\VulkanMemoryAllocator-Hpp"
 if not exist "%VMA_HPP_DIR%\include\vk_mem_alloc.hpp" (
     echo [1/4] Cloning VulkanMemoryAllocator-Hpp ^(%VMA_HPP_VERSION%^)...
@@ -62,13 +62,14 @@ if not exist "%SLANG_DIR%\lib\slang.lib" (
     if exist "%SLANG_DIR%" rmdir /s /q "%SLANG_DIR%"
     mkdir "%SLANG_DIR%"
     echo Extracting Slang to "%SLANG_DIR%"...
-    tar -xf "%SLANG_ZIP%" -C "%SLANG_DIR%"
-    set "TAR_ERR=%errorlevel%"
-    if exist "%SLANG_ZIP%" del /q "%SLANG_ZIP%"
-    if not "%TAR_ERR%"=="0" (
+    powershell -NoProfile -Command "Expand-Archive -LiteralPath '%SLANG_ZIP%' -DestinationPath '%SLANG_DIR%' -Force"
+    if errorlevel 1 (
+        if exist "%SLANG_ZIP%" del /q "%SLANG_ZIP%"
+        if exist "%SLANG_DIR%" rmdir /s /q "%SLANG_DIR%"
         echo ERROR: Failed to extract Slang archive.
         goto :fail
     )
+    if exist "%SLANG_ZIP%" del /q "%SLANG_ZIP%"
 ) else (
     echo [3/4] Slang already present, skipping.
 )

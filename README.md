@@ -30,7 +30,7 @@ Public headers expose **zero** backend SDK headers (`<vulkan/...>`, `<d3d12.h>`)
 
 | Dependency | Version | Purpose | Scope | Source |
 |---|---|---|---|---|
-| **VulkanMemoryAllocator-Hpp** (incl. VMA) | `v3.4.0` | Vulkan GPU memory allocation | Private (`NoxRHI::Core`, Vulkan) | [YaaZ/VulkanMemoryAllocator-Hpp](https://github.com/YaaZ/VulkanMemoryAllocator-Hpp) |
+| **VulkanMemoryAllocator-Hpp** (incl. VMA) | `v3.4.0+3` | Vulkan GPU memory allocation | Private (`NoxRHI::Core`, Vulkan) | [YaaZ/VulkanMemoryAllocator-Hpp](https://github.com/YaaZ/VulkanMemoryAllocator-Hpp) |
 | **D3D12MemoryAllocator** | `v3.1.0` | D3D12 GPU memory allocation | Private (`NoxRHI::Core`, D3D12) | [GPUOpen/D3D12MemoryAllocator](https://github.com/GPUOpen-LibrariesAndSDKs/D3D12MemoryAllocator) |
 | **Slang** | `v2026.14.1` | Runtime shader compiler (`NRI_ENABLE_SLANG=ON`) | Private (`NoxRHI::Core`, delay-loaded `slang.dll`) | [shader-slang/slang](https://github.com/shader-slang/slang) |
 | **vcpkg** + **SDL3** | `x64-windows` | Window/event loop for standalone examples only | `examples/` only (`NRI_BUILD_EXAMPLES=ON`) | [microsoft/vcpkg](https://github.com/Microsoft/vcpkg) |
