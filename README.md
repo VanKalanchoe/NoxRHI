@@ -11,10 +11,14 @@ Public headers expose **zero** backend SDK headers (`<vulkan/...>`, `<d3d12.h>`)
 1. **`include/NRI/` (`NoxRHI::Core`)** — Pure C11 ABI (`extern "C"`, `NRI_API`, opaque handles, POD structs) backed by private Vulkan (`vk::raii` + VMA) and D3D12 (`ComPtr` + D3D12MA) implementations inside `src/Core/`.
 2. **`include/NRI/Extensions/` (`NoxRHI::Core`)** — Modular C ABI extensions:
    - `NRIDeviceCreation.h`, `NRISwapchain.h`, `NRIRayTracing.h`, `NRIMeshShader.h`
-   - `NRIGpuProfiler.h`, `NRIShaderCompiler.h`
+   - `NRIGpuProfiler.h`, `NRIShaderCompiler.h`, `NRIImgui.h`
+   - `NRIUpscaler.h` (NVIDIA Streamline: DLSS Super Resolution & Ray Reconstruction)
+   - `NRIDenoiser.h` (NVIDIA Real-Time Denoisers: SIGMA Shadow, REBLUR, RELAX)
    - `NRIWrapperVK.h`, `NRIWrapperD3D12.h` (opt-in native interop using opaque `void*` / `uint64_t` handles)
-3. **`include/NRIHPP/` (`NoxRHI::HPP`)** — Header-only C++20 RAII wrappers (`namespace nri`) with move-only handles, `std::span`, and `std::string_view`.
+3. **`include/NRIHPP/` (`NoxRHI::HPP`)** — Header-only C++20 RAII wrappers (`namespace nri`, `NRI.hpp`, `NRIExtensions.hpp`) with move-only handles, `std::span`, and `std::string_view`.
 4. **`include/NRIRenderGraph/` + `src/RenderGraph/` (`NoxRHI::RenderGraph`)** — Standalone RenderGraph library built on `NoxRHI::HPP` with transient resource pooling, barrier planning, validation, and optional profiler/task hooks.
+
+> **Headless Mode (`NRI_WINDOW_SYSTEM_HEADLESS`):** Both Vulkan (`VK_KHR_swapchain` skipped cleanly) and Direct3D 12 support compute/offscreen rendering without creating any window or swapchain, with CPU readback via `NRI_BUFFER_USAGE_READBACK`.
 
 ---
 
@@ -35,6 +39,8 @@ Public headers expose **zero** backend SDK headers (`<vulkan/...>`, `<d3d12.h>`)
 | **Slang** | `v2026.14.1` | Runtime shader compiler (`NRI_ENABLE_SLANG=ON`) | Private (`NoxRHI::Core`, delay-loaded `slang.dll`) | [shader-slang/slang](https://github.com/shader-slang/slang) |
 | **vcpkg** + **SDL3** + **stb** | `x64-windows` | Window/event loop & `stb_image` texture loader for examples | `examples/` only (`NRI_BUILD_EXAMPLES=ON`) | [microsoft/vcpkg](https://github.com/Microsoft/vcpkg) |
 | **Dear ImGui** | `docking` branch | Docking + multi-viewport UI demo (`ImGuiDemo` via Layer 2 native wrappers) | `examples/ImGuiDemo/` only | [ocornut/imgui](https://github.com/ocornut/imgui) |
+| **NVIDIA Streamline SDK** | `v2.14.1` | DLSS Super Resolution & Ray Reconstruction (`NRI_ENABLE_STREAMLINE=ON`) | Private (`NoxRHI::Core`, delay-loaded `sl.interposer.dll`) | [NVIDIA-RTX/Streamline](https://github.com/NVIDIA-RTX/Streamline) |
+| **NVIDIA NRD** (+ **NRI**) | `v4.17.3` (`NRI v179`) | Real-time denoising: SIGMA / REBLUR / RELAX (`NRI_ENABLE_NRD=ON`) | Private (`NoxRHI::Core`, delay-loaded `NRD.dll` + `NRI.dll`) | [NVIDIA-RTX/NRD](https://github.com/NVIDIA-RTX/NRD) |
 
 > **D3D12 Shader Compilation Note:** Compiling Slang shaders to DXIL (`--d3d12`) at runtime uses `dxcompiler.dll` / `dxil.dll` (from the Windows SDK or Vulkan SDK on `PATH` / beside the executable).
 
@@ -46,7 +52,7 @@ Public headers expose **zero** backend SDK headers (`<vulkan/...>`, `<d3d12.h>`)
 ```bat
 scripts\install_dependencies.bat
 ```
-This downloads/bootstraps `VulkanMemoryAllocator-Hpp`, `D3D12MemoryAllocator`, `Slang`, `Dear ImGui (docking)`, and `vcpkg` + `sdl3` + `stb` into `vendors/` (gitignored). `vcpkg` caches built packages in `%TEMP%\vcpkg-cache` so subsequent runs restore quickly.
+This downloads/bootstraps `VulkanMemoryAllocator-Hpp`, `D3D12MemoryAllocator`, `Slang`, `Dear ImGui (docking)`, `vcpkg` + `sdl3` + `stb`, `NVIDIA Streamline SDK (2.14.1)`, and builds `NVIDIA NRD (v4.17.3)` into `vendors/` (gitignored). `vcpkg` caches built packages in `%TEMP%\vcpkg-cache` so subsequent runs restore quickly.
 
 ### 2. Generate the Solution (`.slnx`) for Rider / Visual Studio
 ```bat
@@ -60,16 +66,19 @@ scripts\setup_build.bat --msvc
 scripts\setup_build.bat -DNRI_STATIC_LIBRARY=ON
 ```
 
-Open **`build\NoxRHI.slnx`** in **JetBrains Rider** (or Visual Studio 2026) and build/run any target (`ClearScreen`, `RenderGraphTriangle`, `TexturedQuads`, `ImGuiDemo`).
+Open **`build\NoxRHI.slnx`** in **JetBrains Rider** (or Visual Studio 2026) and build/run any target (`ClearScreen`, `HeadlessRender`, `RenderGraphTriangle`, `TexturedQuads`, `ImGuiDemo`, `StreamlineNRDDemo`).
 
 ### 3. Example CLI Flags
-All examples use SDL3 main callbacks (`SDL_MAIN_USE_CALLBACKS`) and accept:
+Windowed examples (`ClearScreen`, `RenderGraphTriangle`, `TexturedQuads`, `ImGuiDemo`) use SDL3 main callbacks (`SDL_MAIN_USE_CALLBACKS`), while `HeadlessRender` and `StreamlineNRDDemo` run completely windowless (`NRI_WINDOW_SYSTEM_HEADLESS`):
 ```bat
+build\Debug\HeadlessRender.exe
+build\Debug\StreamlineNRDDemo.exe --frames 5
 build\Debug\ClearScreen.exe --frames 10 --resize-test
 build\Debug\RenderGraphTriangle.exe --frames 10 --resize-test
 build\Debug\TexturedQuads.exe --frames 10 --resize-test
 build\Debug\ImGuiDemo.exe --frames 10 --resize-test
 :: Add --d3d12 to run any example on Direct3D 12:
+build\Debug\StreamlineNRDDemo.exe --d3d12 --frames 5
 build\Debug\ImGuiDemo.exe --d3d12 --frames 10 --resize-test
 ```
 
@@ -85,8 +94,10 @@ build\Debug\ImGuiDemo.exe --d3d12 --frames 10 --resize-test
 | `NRI_ENABLE_VULKAN` | `ON` | Enable Vulkan 1.3/1.4 backend |
 | `NRI_ENABLE_D3D12` | `ON` | Enable Direct3D 12 backend (Windows) |
 | `NRI_ENABLE_SLANG` | `ON` | Enable Slang shader compiler extension |
+| `NRI_ENABLE_STREAMLINE` | `ON` | Enable NVIDIA Streamline (DLSS-SR / DLSS-RR) extension |
+| `NRI_ENABLE_NRD` | `ON` | Enable NVIDIA NRD (SIGMA / REBLUR / RELAX) denoiser extension |
 | `NRI_ENABLE_PCH` | `ON` | Use private precompiled headers inside `NoxRHI::Core` for faster builds |
-| `NRI_BUILD_EXAMPLES` | `ON` | Build `ClearScreen`, `RenderGraphTriangle`, `TexturedQuads`, and `ImGuiDemo` (`SDL3`) |
+| `NRI_BUILD_EXAMPLES` | `ON` | Build `HeadlessRender`, `StreamlineNRDDemo`, `ClearScreen`, `RenderGraphTriangle`, `TexturedQuads`, and `ImGuiDemo` |
 
 ---
 

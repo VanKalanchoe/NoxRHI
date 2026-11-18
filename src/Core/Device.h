@@ -20,6 +20,7 @@
 namespace NRI
 {
     class ShaderCompiler;
+    class StreamlineContext;
 
     class Device
     {
@@ -73,6 +74,9 @@ namespace NRI
         virtual uint32_t getShaderGroupHandleSize() const { return 32; }
         virtual uint32_t getShaderGroupBaseAlignment() const { return 64; }
         virtual GraphicsAPI getAPI() const = 0;
+
+        // Upscaler / Streamline extension hooks
+        virtual StreamlineContext* getStreamlineContext() const { return nullptr; }
 
         // Timeline-safe deferred deletion support
         virtual QueueTimelineValues getSubmittedTimelineValues() const { return {}; }

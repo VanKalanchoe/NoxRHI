@@ -42,6 +42,9 @@ namespace NRI
         std::string shaderCacheDir = "shader_cache";
         std::vector<std::string> extraInstanceExtensions;
         std::vector<std::string> extraDeviceExtensions;
+        bool enableStreamline = false;
+        uint32_t streamlineAppId = 0;
+        std::string streamlineProjectId;
     };
 
     struct Extent2D

@@ -93,6 +93,11 @@ namespace NRI
             memoryUsage = vma::MemoryUsage::eAuto;
             allocFlags = vma::AllocationCreateFlagBits::eHostAccessSequentialWrite | vma::AllocationCreateFlagBits::eMapped;
             break;
+        case BufferUsage::Readback:
+            usageFlags = vk::BufferUsageFlagBits2::eTransferDst | vk::BufferUsageFlagBits2::eTransferSrc;
+            memoryUsage = vma::MemoryUsage::eAuto;
+            allocFlags = vma::AllocationCreateFlagBits::eHostAccessRandom | vma::AllocationCreateFlagBits::eMapped;
+            break;
         }
 
         const std::span<const uint32_t> queueFamilies =

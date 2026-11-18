@@ -16,6 +16,8 @@ option(NRI_BUILD_RENDERGRAPH "Build NRIRenderGraph target on top of NRIHPP" ON)
 option(NRI_ENABLE_VULKAN     "Enable Vulkan backend" ON)
 option(NRI_ENABLE_D3D12      "Enable D3D12 backend" ON)
 option(NRI_ENABLE_SLANG      "Enable Slang shader compiler extension" ON)
+option(NRI_ENABLE_STREAMLINE "Enable NVIDIA Streamline (DLSS-SR / DLSS-RR) extension" ON)
+option(NRI_ENABLE_NRD        "Enable NVIDIA NRD (SIGMA / REBLUR / RELAX) denoiser extension" ON)
 option(NRI_ENABLE_PCH        "Enable private precompiled header for faster NoxRHI builds" ON)
 option(NRI_BUILD_EXAMPLES    "Build standalone NoxRHI examples" ON)
 
@@ -33,6 +35,10 @@ set(NOXRHI_CORE_SOURCES
     src/Extensions/Wrapper/WrapperVK.cpp
     src/Extensions/Wrapper/WrapperD3D12.cpp
     src/Extensions/Imgui/ImguiExtension.cpp
+    src/Extensions/Upscaler/StreamlineContext.cpp
+    src/Extensions/Upscaler/UpscalerExtension.cpp
+    src/Extensions/Denoiser/NrdIntegrationHost.cpp
+    src/Extensions/Denoiser/DenoiserExtension.cpp
 )
 
 if(NRI_ENABLE_VULKAN)
@@ -130,8 +136,55 @@ if(NRI_ENABLE_SLANG)
     endif()
 endif()
 
+set(NOXRHI_STREAMLINE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendors/Streamline")
+set(NOXRHI_HAS_STREAMLINE OFF)
+if(NRI_ENABLE_STREAMLINE AND EXISTS "${NOXRHI_STREAMLINE_DIR}/include/sl.h" AND EXISTS "${NOXRHI_STREAMLINE_DIR}/lib/x64/sl.interposer.lib")
+    set(NOXRHI_HAS_STREAMLINE ON)
+    target_compile_definitions(NoxRHI PRIVATE NRI_ENABLE_STREAMLINE=1)
+    target_include_directories(NoxRHI SYSTEM PRIVATE "${NOXRHI_STREAMLINE_DIR}/include")
+    if(WIN32)
+        target_link_libraries(NoxRHI PRIVATE "${NOXRHI_STREAMLINE_DIR}/lib/x64/sl.interposer.lib")
+        if(MSVC)
+            if(NRI_STATIC_LIBRARY)
+                target_link_options(NoxRHI INTERFACE "/DELAYLOAD:sl.interposer.dll")
+                target_link_libraries(NoxRHI INTERFACE delayimp)
+            else()
+                target_link_options(NoxRHI PRIVATE "/DELAYLOAD:sl.interposer.dll")
+                target_link_libraries(NoxRHI PRIVATE delayimp)
+            endif()
+        endif()
+    endif()
+endif()
+
+set(NOXRHI_NRD_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendors/NRD")
+set(NOXRHI_HAS_NRD OFF)
+if(NRI_ENABLE_NRD AND EXISTS "${NOXRHI_NRD_DIR}/Include/NRD.h" AND EXISTS "${NOXRHI_NRD_DIR}/Integration/NRDIntegration.hpp")
+    set(NOXRHI_HAS_NRD ON)
+    target_compile_definitions(NoxRHI PRIVATE NRI_ENABLE_NRD=1)
+    target_include_directories(NoxRHI SYSTEM PRIVATE
+        "${NOXRHI_NRD_DIR}/Include"
+        "${NOXRHI_NRD_DIR}/Integration"
+    )
+    if(WIN32)
+        target_link_libraries(NoxRHI PRIVATE
+            $<$<CONFIG:Debug>:${NOXRHI_NRD_DIR}/Lib/Debug/NRD.lib>
+            $<$<NOT:$<CONFIG:Debug>>:${NOXRHI_NRD_DIR}/Lib/Release/NRD.lib>
+        )
+        if(MSVC)
+            if(NRI_STATIC_LIBRARY)
+                target_link_options(NoxRHI INTERFACE "/DELAYLOAD:NRD.dll")
+                target_link_libraries(NoxRHI INTERFACE delayimp)
+            else()
+                target_link_options(NoxRHI PRIVATE "/DELAYLOAD:NRD.dll")
+                target_link_libraries(NoxRHI PRIVATE delayimp)
+            endif()
+        endif()
+    endif()
+endif()
+
 if(NRI_ENABLE_PCH)
     target_precompile_headers(NoxRHI PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/Core/NoxRHIPCH.h")
+    set_source_files_properties(src/Extensions/Denoiser/NrdIntegrationHost.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 endif()
 
 # -----------------------------------------------------------------------------
@@ -169,15 +222,50 @@ endif()
 if(NRI_BUILD_EXAMPLES)
     find_package(SDL3 CONFIG REQUIRED)
 
-    function(noxrhi_copy_runtime_deps target_name)
+    function(noxrhi_copy_core_dll target_name)
+        if(WIN32 AND NOT NRI_STATIC_LIBRARY)
+            add_custom_command(TARGET ${target_name} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    $<TARGET_FILE:NoxRHI>
+                    $<TARGET_FILE_DIR:${target_name}>
+            )
+        endif()
+    endfunction()
+
+    function(noxrhi_copy_streamline_nrd_deps target_name)
         if(WIN32)
-            if(NOT NRI_STATIC_LIBRARY)
+            if(NOXRHI_HAS_STREAMLINE)
+                file(GLOB STREAMLINE_DEBUG_DLLS "${NOXRHI_STREAMLINE_DIR}/bin/x64/development/*.dll")
+                file(GLOB STREAMLINE_RELEASE_DLLS "${NOXRHI_STREAMLINE_DIR}/bin/x64/*.dll")
+                foreach(SL_DLL ${STREAMLINE_DEBUG_DLLS})
+                    add_custom_command(TARGET ${target_name} POST_BUILD
+                        COMMAND ${CMAKE_COMMAND} -E $<$<CONFIG:Debug>:copy_if_different>$<$<NOT:$<CONFIG:Debug>>:true>
+                            "${SL_DLL}"
+                            $<TARGET_FILE_DIR:${target_name}>
+                    )
+                endforeach()
+                foreach(SL_DLL ${STREAMLINE_RELEASE_DLLS})
+                    add_custom_command(TARGET ${target_name} POST_BUILD
+                        COMMAND ${CMAKE_COMMAND} -E $<$<NOT:$<CONFIG:Debug>>:copy_if_different>$<$<CONFIG:Debug>:true>
+                            "${SL_DLL}"
+                            $<TARGET_FILE_DIR:${target_name}>
+                    )
+                endforeach()
+            endif()
+            if(NOXRHI_HAS_NRD)
                 add_custom_command(TARGET ${target_name} POST_BUILD
                     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                        $<TARGET_FILE:NoxRHI>
+                        "$<IF:$<CONFIG:Debug>,${NOXRHI_NRD_DIR}/Lib/Debug/NRD.dll,${NOXRHI_NRD_DIR}/Lib/Release/NRD.dll>"
+                        "$<IF:$<CONFIG:Debug>,${NOXRHI_NRD_DIR}/Lib/Debug/NRI.dll,${NOXRHI_NRD_DIR}/Lib/Release/NRI.dll>"
                         $<TARGET_FILE_DIR:${target_name}>
                 )
             endif()
+        endif()
+    endfunction()
+
+    function(noxrhi_copy_runtime_deps target_name)
+        noxrhi_copy_core_dll(${target_name})
+        if(WIN32)
             if(NRI_ENABLE_SLANG AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/vendors/slang/bin/slang.dll")
                 add_custom_command(TARGET ${target_name} POST_BUILD
                     COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -201,6 +289,15 @@ if(NRI_BUILD_EXAMPLES)
             )
         endif()
     endfunction()
+
+    add_executable(HeadlessRender examples/HeadlessRender/main.cpp)
+    target_link_libraries(HeadlessRender PRIVATE NoxRHI::HPP)
+    noxrhi_copy_core_dll(HeadlessRender)
+
+    add_executable(StreamlineNRDDemo examples/StreamlineNRDDemo/main.cpp)
+    target_link_libraries(StreamlineNRDDemo PRIVATE NoxRHI::HPP)
+    noxrhi_copy_core_dll(StreamlineNRDDemo)
+    noxrhi_copy_streamline_nrd_deps(StreamlineNRDDemo)
 
     add_executable(ClearScreen examples/ClearScreen/main.cpp)
     target_link_libraries(ClearScreen PRIVATE NoxRHI::HPP SDL3::SDL3)

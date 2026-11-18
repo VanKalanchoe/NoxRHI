@@ -197,7 +197,18 @@ namespace NRI
             .pImageIndices = &imageIndex
         };
         
-        const vk::Result result = queue.presentKHR(presentInfoKHR);
+        vk::Result result = vk::Result::eSuccess;
+        if (auto slPresent = (*m_ownedSurface != vk::SurfaceKHR{}) ? nullptr : reinterpret_cast<PFN_vkQueuePresentKHR>(m_deviceVK.getStreamlinePresentFn()))
+        {
+            result = static_cast<vk::Result>(slPresent(
+                static_cast<VkQueue>(*queue),
+                reinterpret_cast<const VkPresentInfoKHR*>(&presentInfoKHR)
+            ));
+        }
+        else
+        {
+            result = queue.presentKHR(presentInfoKHR);
+        }
         
         if ((result == vk::Result::eSuboptimalKHR) || (result == vk::Result::eErrorOutOfDateKHR))
         {

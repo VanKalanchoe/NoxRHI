@@ -33,6 +33,9 @@ typedef struct NriDeviceDesc
     uint32_t extraDeviceExtensionCount;
     NriLogCallback logCallback;
     void* logUserData;
+    bool enableStreamline;          // Initialize NVIDIA Streamline (manual hooking before device creation)
+    uint32_t streamlineAppId;       // Optional Streamline App ID (0 uses default)
+    const char* streamlineProjectId;// Optional Streamline Project GUID (NULL uses default)
 } NriDeviceDesc;
 
 NRI_API NriResult NRI_CALL nriCreateDevice(const NriDeviceDesc* desc, NriDevice* outDevice);

@@ -20,7 +20,8 @@ namespace NRI
         AccelerationStructure,        // DeviceLocal, AS storage (BLAS/TLAS backing)
         AccelerationStructureScratch, // DeviceLocal, Scratch buffer for AS build/update
         AccelerationStructureInstance, // HostVisible | Mapped, TLAS instance records
-        ShaderBindingTable            // HostVisible | Mapped | DeviceAddress, SBT backing
+        ShaderBindingTable,           // HostVisible | Mapped | DeviceAddress, SBT backing
+        Readback                      // HostVisible | Cached/Random read, TransferDst
     };
 
     // Pages [firstPage, firstPage + pageCount) of a sparse buffer (Buffer::getSparsePageSize bytes each).

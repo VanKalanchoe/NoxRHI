@@ -15,6 +15,8 @@
 #include <NRI/Extensions/NRIGpuProfiler.h>
 #include <NRI/Extensions/NRIShaderCompiler.h>
 #include <NRI/Extensions/NRIImgui.h>
+#include <NRI/Extensions/NRIUpscaler.h>
+#include <NRI/Extensions/NRIDenoiser.h>
 #include <NRI/Extensions/NRIWrapperVK.h>
 #include <NRI/Extensions/NRIWrapperD3D12.h>
 
@@ -51,6 +53,9 @@ namespace nri
         std::vector<std::string> extraDeviceExtensions;
         LogCallback logCallback = nullptr;
         void* logUserData = nullptr;
+        bool enableStreamline = false;
+        uint32_t streamlineAppId = 0;
+        std::string streamlineProjectId;
     };
 
     inline Device createDevice(const DeviceDesc& desc)
@@ -73,7 +78,10 @@ namespace nri
             .extraDeviceExtensions = devExts.empty() ? nullptr : devExts.data(),
             .extraDeviceExtensionCount = static_cast<uint32_t>(devExts.size()),
             .logCallback = desc.logCallback,
-            .logUserData = desc.logUserData
+            .logUserData = desc.logUserData,
+            .enableStreamline = desc.enableStreamline,
+            .streamlineAppId = desc.streamlineAppId,
+            .streamlineProjectId = desc.streamlineProjectId.empty() ? nullptr : desc.streamlineProjectId.c_str()
         };
         NriDevice dev = nullptr;
         checkResult(nriCreateDevice(&cDesc, &dev), "nriCreateDevice");
@@ -495,5 +503,175 @@ namespace nri
         NriImgui imgui = nullptr;
         checkResult(nriCreateImgui(device.handle(), &cDesc, &imgui), "nriCreateImgui");
         return Imgui(imgui);
+    }
+
+    // Upscaler extension (Streamline / DLSS Super Resolution / DLSS-RR)
+    using UpscalerType = NriUpscalerType;
+    using UpscalerMode = NriUpscalerMode;
+    using UpscalerDesc = NriUpscalerDesc;
+    using UpscalerOptimalSettings = NriUpscalerOptimalSettings;
+    using UpscalerEvaluateDesc = NriUpscalerEvaluateDesc;
+
+    inline bool isStreamlineInitialized(const Device& device) { return nriIsStreamlineInitialized(device.handle()); }
+    inline bool isUpscalerSupported(const Device& device, UpscalerType type) { return nriIsUpscalerSupported(device.handle(), type); }
+
+    class Upscaler
+    {
+    public:
+        Upscaler() = default;
+        explicit Upscaler(NriUpscaler handle) : m_handle(handle) {}
+        ~Upscaler() { reset(); }
+
+        Upscaler(const Upscaler&) = delete;
+        Upscaler& operator=(const Upscaler&) = delete;
+        Upscaler(Upscaler&& other) noexcept : m_handle(std::exchange(other.m_handle, nullptr)) {}
+        Upscaler& operator=(Upscaler&& other) noexcept
+        {
+            if (this != &other)
+            {
+                reset();
+                m_handle = std::exchange(other.m_handle, nullptr);
+            }
+            return *this;
+        }
+
+        void reset(NriUpscaler h = nullptr)
+        {
+            if (m_handle)
+                nriDestroyUpscaler(m_handle);
+            m_handle = h;
+        }
+        NriUpscaler release() { return std::exchange(m_handle, nullptr); }
+        NriUpscaler handle() const { return m_handle; }
+        explicit operator bool() const { return m_handle != nullptr; }
+
+        UpscalerOptimalSettings getOptimalSettings(UpscalerMode mode, Extent2D outputSize) const
+        {
+            UpscalerOptimalSettings out{};
+            checkResult(nriUpscalerGetOptimalSettings(m_handle, mode, outputSize, &out), "nriUpscalerGetOptimalSettings");
+            return out;
+        }
+
+        void resetViewport() const { nriUpscalerReset(m_handle); }
+
+        bool evaluate(const CommandBuffer& cmd, const UpscalerEvaluateDesc& desc) const
+        {
+            return nriCmdEvaluateUpscaler(cmd.handle(), m_handle, &desc);
+        }
+
+    private:
+        NriUpscaler m_handle = nullptr;
+    };
+
+    inline Upscaler createUpscaler(const Device& device, UpscalerType type = NRI_UPSCALER_TYPE_DLSS_SR)
+    {
+        const NriUpscalerDesc desc{ .type = type };
+        NriUpscaler up = nullptr;
+        checkResult(nriCreateUpscaler(device.handle(), &desc, &up), "nriCreateUpscaler");
+        return Upscaler(up);
+    }
+
+    // Denoiser extension (NVIDIA Real-Time Denoisers: SIGMA / REBLUR / RELAX)
+    using DenoiserMethod = NriDenoiserMethod;
+    using DenoiserInstanceDesc = NriDenoiserInstanceDesc;
+    using DenoiserCommonSettings = NriDenoiserCommonSettings;
+    using DenoiserSigmaSettings = NriDenoiserSigmaSettings;
+    using DenoiserReblurSettings = NriDenoiserReblurSettings;
+    using DenoiserRelaxSettings = NriDenoiserRelaxSettings;
+    using DenoiserResourcesDesc = NriDenoiserResourcesDesc;
+
+    struct DenoiserDesc
+    {
+        uint32_t width = 0;
+        uint32_t height = 0;
+        std::vector<DenoiserInstanceDesc> instances;
+        uint32_t queuedFrameNum = 3;
+        bool enableWholeLifetimeDescriptorCaching = false;
+    };
+
+    inline bool isDenoiserAvailable(const Device& device) { return nriIsDenoiserAvailable(device.handle()); }
+
+    class Denoiser
+    {
+    public:
+        Denoiser() = default;
+        explicit Denoiser(NriDenoiser handle) : m_handle(handle) {}
+        ~Denoiser() { reset(); }
+
+        Denoiser(const Denoiser&) = delete;
+        Denoiser& operator=(const Denoiser&) = delete;
+        Denoiser(Denoiser&& other) noexcept : m_handle(std::exchange(other.m_handle, nullptr)) {}
+        Denoiser& operator=(Denoiser&& other) noexcept
+        {
+            if (this != &other)
+            {
+                reset();
+                m_handle = std::exchange(other.m_handle, nullptr);
+            }
+            return *this;
+        }
+
+        void reset(NriDenoiser h = nullptr)
+        {
+            if (m_handle)
+                nriDestroyDenoiser(m_handle);
+            m_handle = h;
+        }
+        NriDenoiser release() { return std::exchange(m_handle, nullptr); }
+        NriDenoiser handle() const { return m_handle; }
+        explicit operator bool() const { return m_handle != nullptr; }
+
+        void resize(uint32_t width, uint32_t height) const
+        {
+            checkResult(nriResizeDenoiser(m_handle, width, height), "nriResizeDenoiser");
+        }
+
+        bool beginFrame(const DenoiserCommonSettings& settings) const
+        {
+            return nriDenoiserBeginFrame(m_handle, &settings);
+        }
+
+        void setSigmaSettings(uint32_t identifier, const DenoiserSigmaSettings& settings) const
+        {
+            nriDenoiserSetSigmaSettings(m_handle, identifier, &settings);
+        }
+
+        void setReblurSettings(uint32_t identifier, const DenoiserReblurSettings& settings) const
+        {
+            nriDenoiserSetReblurSettings(m_handle, identifier, &settings);
+        }
+
+        void setRelaxSettings(uint32_t identifier, const DenoiserRelaxSettings& settings) const
+        {
+            nriDenoiserSetRelaxSettings(m_handle, identifier, &settings);
+        }
+
+        bool denoise(const CommandBuffer& cmd, std::span<const uint32_t> identifiers, const DenoiserResourcesDesc& resources) const
+        {
+            return nriCmdDenoise(cmd.handle(), m_handle, identifiers.data(), static_cast<uint32_t>(identifiers.size()), &resources);
+        }
+
+        bool denoise(const CommandBuffer& cmd, uint32_t identifier, const DenoiserResourcesDesc& resources) const
+        {
+            return nriCmdDenoise(cmd.handle(), m_handle, &identifier, 1, &resources);
+        }
+
+    private:
+        NriDenoiser m_handle = nullptr;
+    };
+
+    inline Denoiser createDenoiser(const Device& device, const DenoiserDesc& desc)
+    {
+        const NriDenoiserDesc cDesc{
+            .width = desc.width,
+            .height = desc.height,
+            .instances = desc.instances.empty() ? nullptr : desc.instances.data(),
+            .instanceCount = static_cast<uint32_t>(desc.instances.size()),
+            .queuedFrameNum = desc.queuedFrameNum,
+            .enableWholeLifetimeDescriptorCaching = desc.enableWholeLifetimeDescriptorCaching
+        };
+        NriDenoiser den = nullptr;
+        checkResult(nriCreateDenoiser(device.handle(), &cDesc, &den), "nriCreateDenoiser");
+        return Denoiser(den);
     }
 }

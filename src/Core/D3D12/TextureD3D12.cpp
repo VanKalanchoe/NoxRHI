@@ -258,6 +258,18 @@ namespace NRI
 
         auto* list = cmdD3D12->getNativeCommandList();
 
+        if (m_currentState != D3D12_RESOURCE_STATE_COPY_SOURCE)
+        {
+            D3D12_RESOURCE_BARRIER barrier{};
+            barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            barrier.Transition.pResource = m_resource.Get();
+            barrier.Transition.StateBefore = m_currentState;
+            barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+            barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            list->ResourceBarrier(1, &barrier);
+            m_currentState = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        }
+
         D3D12_BOX srcBox{ x, y, 0, x + width, y + height, 1 };
 
         D3D12_TEXTURE_COPY_LOCATION src{};

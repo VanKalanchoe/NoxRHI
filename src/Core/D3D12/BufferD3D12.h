@@ -25,6 +25,7 @@ namespace NRI
         D3D12_RESOURCE_STATES getCurrentState() const { return m_currentState; }
         void setCurrentState(D3D12_RESOURCE_STATES state) { m_currentState = state; }
         bool isUploadHeap() const { return m_isUploadHeap; }
+        bool isReadbackHeap() const { return m_isReadbackHeap; }
 
     private:
         DeviceD3D12& m_deviceD3D12;
@@ -34,6 +35,7 @@ namespace NRI
         void* m_mappedPtr = nullptr;
         bool m_isMapped = false;
         bool m_isUploadHeap = false;
+        bool m_isReadbackHeap = false;
         D3D12_RESOURCE_STATES m_initialState = D3D12_RESOURCE_STATE_COMMON;
         D3D12_RESOURCE_STATES m_currentState = D3D12_RESOURCE_STATE_COMMON;
     };

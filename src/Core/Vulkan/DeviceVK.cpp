@@ -16,6 +16,7 @@
 
 #include "../Log.h"
 #include "../../Extensions/ShaderCompiler/ShaderCompiler.h"
+#include "../../Extensions/Upscaler/StreamlineContext.h"
 #include "SwapchainVK.h"
 #include "PipelineVK.h"
 #include "CommandAllocatorVK.h"
@@ -343,18 +344,50 @@ namespace NRI
         m_shuttingDown = true;
         drainDeferredDeletions();
         m_sparseRetired.clear();
+        if (m_streamline)
+        {
+            m_streamline->shutdown();
+            m_streamline.reset();
+        }
         m_deviceInitialized = false;
+    }
+
+    void* DeviceVK::getStreamlinePresentFn() const
+    {
+        return m_streamline ? m_streamline->getVkQueuePresentFn() : nullptr;
     }
 
     void DeviceVK::initVulkan(const DeviceInitDesc& desc)
     {
-        createInstance(desc);
+        m_headless = (desc.window.type == WindowSystemType::Headless);
+
+        DeviceInitDesc effectiveDesc = desc;
+        if (desc.enableStreamline)
+        {
+            m_streamline = std::make_unique<StreamlineContext>();
+            if (m_streamline->initBeforeDevice(GraphicsAPI::Vulkan, desc))
+            {
+                m_streamline->getRequiredVulkanExtensions(effectiveDesc.extraInstanceExtensions,
+                                                          effectiveDesc.extraDeviceExtensions);
+            }
+        }
+
+        createInstance(effectiveDesc);
         setupDebugMessenger();
-        createSurface(desc.window);
+        createSurface(effectiveDesc.window);
         pickPhysicalDevice();
         m_msaaSamples = getMaxUsableSampleCount();
-        createLogicalDevice(desc);
+        createLogicalDevice(effectiveDesc);
         initDeviceCapabilities();
+
+        if (m_streamline && m_streamline->isInitialized())
+        {
+            m_streamline->registerVulkanDevice(static_cast<VkInstance>(*m_instance),
+                                               static_cast<VkPhysicalDevice>(*m_physicalDevice),
+                                               static_cast<VkDevice>(*m_device),
+                                               m_queueIndex, 0,
+                                               hasAsyncComputeQueue() ? m_computeQueueIndex : m_queueIndex, 0);
+        }
     }
 
     void DeviceVK::createInstance(const DeviceInitDesc& desc)
@@ -473,8 +506,10 @@ namespace NRI
         auto availableDeviceExtensions = physicalDevice.enumerateDeviceExtensionProperties();
         bool supportsAllRequiredExtensions =
             std::ranges::all_of(kRequiredDeviceExtensions,
-                                [&availableDeviceExtensions](auto const& requiredDeviceExtension)
+                                [&](auto const& requiredDeviceExtension)
                                 {
+                                    if (m_headless && strcmp(requiredDeviceExtension, vk::KHRSwapchainExtensionName) == 0)
+                                        return true;
                                     return std::ranges::any_of(availableDeviceExtensions,
                                                                [requiredDeviceExtension](auto const& availableDeviceExtension)
                                                                {
@@ -577,7 +612,7 @@ namespace NRI
         m_pipelineStatisticsEnabled = features.template get<vk::PhysicalDeviceFeatures2>().features.pipelineStatisticsQuery &&
                                       features.template get<vk::PhysicalDeviceMeshShaderFeaturesEXT>().meshShaderQueries;
 
-        std::vector<const char*> enabledDeviceExtensions = kRequiredDeviceExtensions;
+        std::vector<const char*> enabledDeviceExtensions;
         const std::vector<vk::ExtensionProperties> availableDeviceExtensions = m_physicalDevice.enumerateDeviceExtensionProperties();
         auto isExtensionAvailable = [&availableDeviceExtensions](const char* name)
         {
@@ -586,6 +621,13 @@ namespace NRI
                 return strcmp(extension.extensionName, name) == 0;
             });
         };
+
+        for (const char* reqExt : kRequiredDeviceExtensions)
+        {
+            if (m_headless && strcmp(reqExt, vk::KHRSwapchainExtensionName) == 0)
+                continue;
+            enabledDeviceExtensions.push_back(reqExt);
+        }
 
         auto addIfNotPresent = [&enabledDeviceExtensions](const char* name)
         {
@@ -600,6 +642,13 @@ namespace NRI
         }
         for (const std::string& extraExt : desc.extraDeviceExtensions)
         {
+            if (strcmp(extraExt.c_str(), VK_EXT_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME) == 0 ||
+                strcmp(extraExt.c_str(), vk::KHRBufferDeviceAddressExtensionName) == 0)
+            {
+                continue;
+            }
+            if (m_headless && strcmp(extraExt.c_str(), vk::KHRSwapchainExtensionName) == 0)
+                continue;
             if (isExtensionAvailable(extraExt.c_str()))
                 addIfNotPresent(extraExt.c_str());
             else

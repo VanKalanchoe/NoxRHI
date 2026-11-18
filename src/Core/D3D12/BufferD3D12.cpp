@@ -10,13 +10,19 @@ namespace NRI
         D3D12_HEAP_TYPE heapType = D3D12_HEAP_TYPE_DEFAULT;
         D3D12_RESOURCE_FLAGS flags = D3D12_RESOURCE_FLAG_NONE;
 
+        bool isReadback = (desc.usage == BufferUsage::Readback);
         bool isUpload = (desc.usage == BufferUsage::Staging ||
                          desc.usage == BufferUsage::Uniform ||
                          desc.usage == BufferUsage::DescriptorHeap ||
                          desc.usage == BufferUsage::AccelerationStructureInstance ||
                          desc.usage == BufferUsage::ShaderBindingTable);
 
-        if (isUpload)
+        if (isReadback)
+        {
+            heapType = D3D12_HEAP_TYPE_READBACK;
+            m_initialState = D3D12_RESOURCE_STATE_COPY_DEST;
+        }
+        else if (isUpload)
         {
             heapType = D3D12_HEAP_TYPE_UPLOAD;
             m_initialState = D3D12_RESOURCE_STATE_GENERIC_READ;
@@ -43,6 +49,7 @@ namespace NRI
         m_buffer = m_deviceD3D12.getAllocator()->createBuffer(alignedSize, flags, m_initialState, heapType);
         m_gpuAddress = m_buffer.gpuAddress;
         m_isUploadHeap = isUpload;
+        m_isReadbackHeap = isReadback;
         m_currentState = m_initialState;
     }
 
@@ -58,10 +65,11 @@ namespace NRI
 
     void* BufferD3D12::map(uint64_t offset, uint64_t size)
     {
+        (void)size;
         if (!m_isMapped && m_buffer.resource)
         {
             D3D12_RANGE readRange{ 0, 0 };
-            ThrowIfFailed(m_buffer.resource->Map(0, &readRange, &m_mappedPtr), "Buffer Map");
+            ThrowIfFailed(m_buffer.resource->Map(0, m_isReadbackHeap ? nullptr : &readRange, &m_mappedPtr), "Buffer Map");
             m_isMapped = true;
         }
         return static_cast<uint8_t*>(m_mappedPtr) + offset;

@@ -16,6 +16,8 @@
 #include "NRI/Extensions/NRIGpuProfiler.h"
 #include "NRI/Extensions/NRIShaderCompiler.h"
 #include "NRI/Extensions/NRIImgui.h"
+#include "NRI/Extensions/NRIUpscaler.h"
+#include "NRI/Extensions/NRIDenoiser.h"
 
 #include "CHandles.h"
 #include "Log.h"
@@ -208,6 +210,10 @@ NriResult NRI_CALL nriCreateDevice(const NriDeviceDesc* desc, NriDevice* outDevi
         init.api = toCpp(desc->api);
         init.window = toCpp(desc->window);
         init.enableValidation = desc->enableValidation;
+        init.enableStreamline = desc->enableStreamline;
+        init.streamlineAppId = desc->streamlineAppId;
+        if (desc->streamlineProjectId && desc->streamlineProjectId[0] != '\0')
+            init.streamlineProjectId = desc->streamlineProjectId;
         if (desc->shaderCacheDir && desc->shaderCacheDir[0] != '\0')
             init.shaderCacheDir = desc->shaderCacheDir;
         if (desc->extraInstanceExtensions && desc->extraInstanceExtensionCount > 0)
@@ -2072,6 +2078,176 @@ void NRI_CALL nriImguiPresentViewport(NriImgui imgui, uint64_t viewportHandle)
 {
     if (imgui && imgui->impl)
         imgui->impl->presentViewport(viewportHandle);
+}
+
+// -----------------------------------------------------------------------------
+// Upscaler (Streamline / DLSS-SR / DLSS-RR)
+// -----------------------------------------------------------------------------
+
+bool NRI_CALL nriIsStreamlineInitialized(NriDevice device)
+{
+    auto* slCtx = (device && device->impl) ? device->impl->getStreamlineContext() : nullptr;
+    return slCtx ? slCtx->isInitialized() : false;
+}
+
+bool NRI_CALL nriIsUpscalerSupported(NriDevice device, NriUpscalerType type)
+{
+    auto* slCtx = (device && device->impl) ? device->impl->getStreamlineContext() : nullptr;
+    return slCtx ? slCtx->isUpscalerSupported(type) : false;
+}
+
+NriResult NRI_CALL nriCreateUpscaler(NriDevice device, const NriUpscalerDesc* desc, NriUpscaler* outUpscaler)
+{
+    if (!device || !device->impl || !desc || !outUpscaler)
+        return NRI_ERROR_INVALID_ARGUMENT;
+    *outUpscaler = nullptr;
+    try
+    {
+        auto wrap = std::make_unique<NriUpscaler_T>();
+        wrap->device = device->impl;
+        wrap->impl = std::make_unique<NRI::UpscalerExtension>(device->impl, desc->type);
+        *outUpscaler = wrap.release();
+        return NRI_SUCCESS;
+    }
+    catch (const std::exception& e)
+    {
+        return translateException(e);
+    }
+}
+
+void NRI_CALL nriDestroyUpscaler(NriUpscaler upscaler)
+{
+    if (!upscaler)
+        return;
+    std::unique_ptr<NriUpscaler_T> owned(upscaler);
+    owned->impl.reset();
+    owned->device.reset();
+}
+
+NriResult NRI_CALL nriUpscalerGetOptimalSettings(NriUpscaler upscaler, NriUpscalerMode mode, NriExtent2D outputSize,
+                                                NriUpscalerOptimalSettings* outSettings)
+{
+    if (!upscaler || !upscaler->impl || !outSettings)
+        return NRI_ERROR_INVALID_ARGUMENT;
+    return upscaler->impl->getOptimalSettings(mode, { outputSize.width, outputSize.height }, *outSettings);
+}
+
+void NRI_CALL nriUpscalerReset(NriUpscaler upscaler)
+{
+    if (upscaler && upscaler->impl)
+        upscaler->impl->reset();
+}
+
+bool NRI_CALL nriCmdEvaluateUpscaler(NriCommandBuffer cmd, NriUpscaler upscaler, const NriUpscalerEvaluateDesc* desc)
+{
+    if (!cmd || !cmd->impl || !upscaler || !upscaler->impl || !desc)
+        return false;
+
+    auto unwrapTex = [](NriTexture t) -> NRI::Texture2D* { return t ? t->impl.get() : nullptr; };
+    const NRI::UpscalerTextures textures{
+        .inputColor = unwrapTex(desc->inputColor),
+        .outputColor = unwrapTex(desc->outputColor),
+        .depth = unwrapTex(desc->depth),
+        .motionVectors = unwrapTex(desc->motionVectors),
+        .albedo = unwrapTex(desc->albedo),
+        .specularAlbedo = unwrapTex(desc->specularAlbedo),
+        .normal = unwrapTex(desc->normal),
+        .roughness = unwrapTex(desc->roughness),
+        .specularHitDistance = unwrapTex(desc->specularHitDistance),
+        .specularMotionVectors = unwrapTex(desc->specularMotionVectors),
+        .colorBeforeTransparency = unwrapTex(desc->colorBeforeTransparency)
+    };
+    return upscaler->impl->evaluate(*cmd->impl, textures, *desc);
+}
+
+// -----------------------------------------------------------------------------
+// Denoiser (NRD: SIGMA / REBLUR / RELAX)
+// -----------------------------------------------------------------------------
+
+bool NRI_CALL nriIsDenoiserAvailable(NriDevice device)
+{
+    return (device && device->impl) ? NRI::DenoiserExtension::isAvailable(*device->impl) : false;
+}
+
+NriResult NRI_CALL nriCreateDenoiser(NriDevice device, const NriDenoiserDesc* desc, NriDenoiser* outDenoiser)
+{
+    if (!device || !device->impl || !desc || !outDenoiser)
+        return NRI_ERROR_INVALID_ARGUMENT;
+    *outDenoiser = nullptr;
+    try
+    {
+        auto wrap = std::make_unique<NriDenoiser_T>();
+        wrap->device = device->impl;
+        wrap->impl = std::make_unique<NRI::DenoiserExtension>(device->impl, *desc);
+        *outDenoiser = wrap.release();
+        return NRI_SUCCESS;
+    }
+    catch (const std::exception& e)
+    {
+        return translateException(e);
+    }
+}
+
+void NRI_CALL nriDestroyDenoiser(NriDenoiser denoiser)
+{
+    if (!denoiser)
+        return;
+    std::unique_ptr<NriDenoiser_T> owned(denoiser);
+    owned->impl.reset();
+    owned->device.reset();
+}
+
+NriResult NRI_CALL nriResizeDenoiser(NriDenoiser denoiser, uint32_t width, uint32_t height)
+{
+    if (!denoiser || !denoiser->impl)
+        return NRI_ERROR_INVALID_ARGUMENT;
+    return denoiser->impl->resize(width, height);
+}
+
+bool NRI_CALL nriDenoiserBeginFrame(NriDenoiser denoiser, const NriDenoiserCommonSettings* settings)
+{
+    if (!denoiser || !denoiser->impl || !settings)
+        return false;
+    return denoiser->impl->beginFrame(*settings);
+}
+
+void NRI_CALL nriDenoiserSetSigmaSettings(NriDenoiser denoiser, uint32_t identifier, const NriDenoiserSigmaSettings* settings)
+{
+    if (denoiser && denoiser->impl && settings)
+        denoiser->impl->setSigmaSettings(identifier, *settings);
+}
+
+void NRI_CALL nriDenoiserSetReblurSettings(NriDenoiser denoiser, uint32_t identifier, const NriDenoiserReblurSettings* settings)
+{
+    if (denoiser && denoiser->impl && settings)
+        denoiser->impl->setReblurSettings(identifier, *settings);
+}
+
+void NRI_CALL nriDenoiserSetRelaxSettings(NriDenoiser denoiser, uint32_t identifier, const NriDenoiserRelaxSettings* settings)
+{
+    if (denoiser && denoiser->impl && settings)
+        denoiser->impl->setRelaxSettings(identifier, *settings);
+}
+
+bool NRI_CALL nriCmdDenoise(NriCommandBuffer cmd, NriDenoiser denoiser, const uint32_t* identifiers, uint32_t identifierCount,
+                            const NriDenoiserResourcesDesc* resources)
+{
+    if (!cmd || !cmd->impl || !denoiser || !denoiser->impl || !identifiers || identifierCount == 0 || !resources)
+        return false;
+
+    auto unwrapTex = [](NriTexture t) -> NRI::Texture2D* { return t ? t->impl.get() : nullptr; };
+    const NRI::DenoiserTextures textures{
+        .inMotionVectors = unwrapTex(resources->inMotionVectors),
+        .inNormalRoughness = unwrapTex(resources->inNormalRoughness),
+        .inViewZ = unwrapTex(resources->inViewZ),
+        .inPenumbra = unwrapTex(resources->inPenumbra),
+        .outShadowTranslucent = unwrapTex(resources->outShadowTranslucent),
+        .inSpecRadianceHitDist = unwrapTex(resources->inSpecRadianceHitDist),
+        .outSpecRadianceHitDist = unwrapTex(resources->outSpecRadianceHitDist),
+        .inDiffRadianceHitDist = unwrapTex(resources->inDiffRadianceHitDist),
+        .outDiffRadianceHitDist = unwrapTex(resources->outDiffRadianceHitDist)
+    };
+    return denoiser->impl->denoise(*cmd->impl, identifiers, identifierCount, textures, resources->restoreInitialState);
 }
 
 } // extern "C"

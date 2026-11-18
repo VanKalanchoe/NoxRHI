@@ -655,7 +655,7 @@ namespace NRI
 
     void CommandBufferD3D12::transitionBufferState(BufferD3D12& buffer, D3D12_RESOURCE_STATES afterState)
     {
-        if (buffer.isUploadHeap() || buffer.getCurrentState() == afterState)
+        if (buffer.isUploadHeap() || buffer.isReadbackHeap() || buffer.getCurrentState() == afterState)
             return;
 
         D3D12_RESOURCE_BARRIER barrier{};

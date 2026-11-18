@@ -3,6 +3,8 @@
 #include "Device.h"
 #include "../Extensions/ShaderCompiler/ShaderCompiler.h"
 #include "../Extensions/Imgui/ImguiExtension.h"
+#include "../Extensions/Upscaler/UpscalerExtension.h"
+#include "../Extensions/Denoiser/DenoiserExtension.h"
 
 struct NriTimelineSemaphore_T
 {
@@ -86,4 +88,16 @@ struct NriImgui_T
 {
     std::shared_ptr<NRI::Device> device;
     std::unique_ptr<NRI::ImguiExtension> impl;
+};
+
+struct NriUpscaler_T
+{
+    std::shared_ptr<NRI::Device> device;
+    std::unique_ptr<NRI::UpscalerExtension> impl;
+};
+
+struct NriDenoiser_T
+{
+    std::shared_ptr<NRI::Device> device;
+    std::unique_ptr<NRI::DenoiserExtension> impl;
 };

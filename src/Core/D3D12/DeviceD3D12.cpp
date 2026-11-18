@@ -11,6 +11,7 @@
 #include "GpuProfilerD3D12.h"
 #include "TimelineSemaphoreD3D12.h"
 #include "MemoryAllocatorD3D12.h"
+#include "../../Extensions/Upscaler/StreamlineContext.h"
 
 namespace NRI
 {
@@ -48,6 +49,12 @@ namespace NRI
     void DeviceD3D12::initD3D12(const DeviceInitDesc& desc)
     {
         m_hwnd = static_cast<HWND>(desc.window.hwnd);
+
+        if (desc.enableStreamline)
+        {
+            m_streamline = std::make_unique<StreamlineContext>();
+            m_streamline->initBeforeDevice(GraphicsAPI::D3D12, desc);
+        }
 
         UINT dxgiFlags = 0;
         if (desc.enableValidation)
@@ -145,6 +152,13 @@ namespace NRI
         {
             NRI_LOG_INFO("Mesh shaders: {}", opts7.MeshShaderTier == D3D12_MESH_SHADER_TIER_NOT_SUPPORTED ? "off" : "Tier 1");
         }
+
+        if (m_streamline && m_streamline->isInitialized())
+        {
+            m_streamline->registerD3D12Device(m_device.Get(),
+                                              reinterpret_cast<const uint8_t*>(&chosenDesc.AdapterLuid),
+                                              sizeof(chosenDesc.AdapterLuid));
+        }
     }
 
     void DeviceD3D12::createGlobalRootSignature()
@@ -185,6 +199,11 @@ namespace NRI
         waitIdle();
         m_shuttingDown = true;
         drainDeferredDeletions();
+        if (m_streamline)
+        {
+            m_streamline->shutdown();
+            m_streamline.reset();
+        }
         if (m_infoQueueCookie != 0 && m_device)
         {
             ComPtr<ID3D12InfoQueue1> infoQueue;

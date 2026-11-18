@@ -22,6 +22,8 @@ NRI_DECLARE_HANDLE(NriQueryPool);
 NRI_DECLARE_HANDLE(NriGpuProfiler);
 NRI_DECLARE_HANDLE(NriShaderCompiler);
 NRI_DECLARE_HANDLE(NriImgui);
+NRI_DECLARE_HANDLE(NriUpscaler);
+NRI_DECLARE_HANDLE(NriDenoiser);
 
 typedef enum NriResult
 {

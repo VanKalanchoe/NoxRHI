@@ -26,6 +26,8 @@ namespace NRI
 
         bool isDeviceInit() const { return m_deviceInitialized; }
         const std::string& getShaderCacheDir() const override { return m_shaderCacheDir; }
+        StreamlineContext* getStreamlineContext() const override { return m_streamline.get(); }
+        void* getStreamlinePresentFn() const;
 
         MemoryAllocatorVK& getAllocator() { return *m_allocator; }
 
@@ -130,8 +132,10 @@ namespace NRI
 
     private:
         bool m_deviceInitialized = false;
+        bool m_headless = false;
         bool m_validationEnabled = false;
         std::string m_shaderCacheDir = "shader_cache";
+        std::unique_ptr<StreamlineContext> m_streamline;
 
         vk::raii::Context m_context;
         vk::raii::Instance m_instance = nullptr;
