@@ -18,7 +18,9 @@ Public headers expose **zero** backend SDK headers (`<vulkan/...>`, `<d3d12.h>`)
 3. **`include/NRIHPP/` (`NoxRHI::HPP`)** — Header-only C++20 RAII wrappers (`namespace nri`, `NRI.hpp`, `NRIExtensions.hpp`) with move-only handles, `std::span`, and `std::string_view`.
 4. **`include/NRIRenderGraph/` + `src/RenderGraph/` (`NoxRHI::RenderGraph`)** — Standalone RenderGraph library built on `NoxRHI::HPP` with transient resource pooling, barrier planning, validation, and optional profiler/task hooks.
 
-> **Headless Mode (`NRI_WINDOW_SYSTEM_HEADLESS`):** Both Vulkan (`VK_KHR_swapchain` skipped cleanly) and Direct3D 12 support compute/offscreen rendering without creating any window or swapchain, with CPU readback via `NRI_BUFFER_USAGE_READBACK`.
+> **Two Headless Modes:**
+> - **No-GPU Null Backend (`NRI_GRAPHICS_API_NONE`):** Null/CPU-backed RHI (`NRI_ENABLE_NONE=ON`) for builds running with **zero** GPU drivers, Vulkan/D3D12 devices, or windows (`HeadlessNone` example). CPU-backed `map`/`copyBuffer`/`fillBuffer` and full `RenderGraph` ticks succeed cleanly while GPU extensions (`Streamline`, `NRD`) safely report unavailable.
+> - **Windowless GPU Rendering (`NRI_WINDOW_SYSTEM_HEADLESS`):** Real Vulkan (`VK_KHR_swapchain` skipped cleanly) and Direct3D 12 compute/offscreen rendering without any window or swapchain, with CPU readback via `NRI_BUFFER_USAGE_READBACK` (`HeadlessRender` and `StreamlineNRDDemo` examples).
 
 ---
 
@@ -66,11 +68,12 @@ scripts\setup_build.bat --msvc
 scripts\setup_build.bat -DNRI_STATIC_LIBRARY=ON
 ```
 
-Open **`build\NoxRHI.slnx`** in **JetBrains Rider** (or Visual Studio 2026) and build/run any target (`ClearScreen`, `HeadlessRender`, `RenderGraphTriangle`, `TexturedQuads`, `ImGuiDemo`, `StreamlineNRDDemo`).
+Open **`build\NoxRHI.slnx`** in **JetBrains Rider** (or Visual Studio 2026) and build/run any target (`HeadlessNone`, `HeadlessRender`, `ClearScreen`, `RenderGraphTriangle`, `TexturedQuads`, `ImGuiDemo`, `StreamlineNRDDemo`).
 
 ### 3. Example CLI Flags
-Windowed examples (`ClearScreen`, `RenderGraphTriangle`, `TexturedQuads`, `ImGuiDemo`) use SDL3 main callbacks (`SDL_MAIN_USE_CALLBACKS`), while `HeadlessRender` and `StreamlineNRDDemo` run completely windowless (`NRI_WINDOW_SYSTEM_HEADLESS`):
+Windowed examples (`ClearScreen`, `RenderGraphTriangle`, `TexturedQuads`, `ImGuiDemo`) use SDL3 main callbacks (`SDL_MAIN_USE_CALLBACKS`), `HeadlessNone` runs with no GPU/window (`NRI_GRAPHICS_API_NONE`), and `HeadlessRender` / `StreamlineNRDDemo` run windowless on the GPU (`NRI_WINDOW_SYSTEM_HEADLESS`):
 ```bat
+build\Debug\HeadlessNone.exe
 build\Debug\HeadlessRender.exe
 build\Debug\StreamlineNRDDemo.exe --frames 5
 build\Debug\ClearScreen.exe --frames 10 --resize-test
@@ -93,11 +96,12 @@ build\Debug\ImGuiDemo.exe --d3d12 --frames 10 --resize-test
 | `NRI_BUILD_RENDERGRAPH` | `ON` | Build static `NoxRHI::RenderGraph` library (requires `NRI_BUILD_HPP=ON`) |
 | `NRI_ENABLE_VULKAN` | `ON` | Enable Vulkan 1.3/1.4 backend |
 | `NRI_ENABLE_D3D12` | `ON` | Enable Direct3D 12 backend (Windows) |
+| `NRI_ENABLE_NONE` | `ON` | Enable No-GPU (`NRI_GRAPHICS_API_NONE`) backend |
 | `NRI_ENABLE_SLANG` | `ON` | Enable Slang shader compiler extension |
 | `NRI_ENABLE_STREAMLINE` | `ON` | Enable NVIDIA Streamline (DLSS-SR / DLSS-RR) extension |
 | `NRI_ENABLE_NRD` | `ON` | Enable NVIDIA NRD (SIGMA / REBLUR / RELAX) denoiser extension |
 | `NRI_ENABLE_PCH` | `ON` | Use private precompiled headers inside `NoxRHI::Core` for faster builds |
-| `NRI_BUILD_EXAMPLES` | `ON` | Build `HeadlessRender`, `StreamlineNRDDemo`, `ClearScreen`, `RenderGraphTriangle`, `TexturedQuads`, and `ImGuiDemo` |
+| `NRI_BUILD_EXAMPLES` | `ON` | Build `HeadlessNone`, `HeadlessRender`, `StreamlineNRDDemo`, `ClearScreen`, `RenderGraphTriangle`, `TexturedQuads`, and `ImGuiDemo` |
 
 ---
 

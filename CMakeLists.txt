@@ -15,6 +15,7 @@ option(NRI_BUILD_HPP         "Provide header-only C++20 NRIHPP target" ON)
 option(NRI_BUILD_RENDERGRAPH "Build NRIRenderGraph target on top of NRIHPP" ON)
 option(NRI_ENABLE_VULKAN     "Enable Vulkan backend" ON)
 option(NRI_ENABLE_D3D12      "Enable D3D12 backend" ON)
+option(NRI_ENABLE_NONE       "Enable No-GPU / Dedicated Server (None) backend" ON)
 option(NRI_ENABLE_SLANG      "Enable Slang shader compiler extension" ON)
 option(NRI_ENABLE_STREAMLINE "Enable NVIDIA Streamline (DLSS-SR / DLSS-RR) extension" ON)
 option(NRI_ENABLE_NRD        "Enable NVIDIA NRD (SIGMA / REBLUR / RELAX) denoiser extension" ON)
@@ -68,6 +69,13 @@ if(WIN32 AND NRI_ENABLE_D3D12)
     endif()
 endif()
 
+if(NRI_ENABLE_NONE)
+    list(APPEND NOXRHI_CORE_SOURCES
+        src/Core/None/DeviceNone.cpp
+        src/Core/None/DeviceNone.h
+    )
+endif()
+
 if(NRI_ENABLE_SLANG)
     list(APPEND NOXRHI_CORE_SOURCES
         src/Extensions/ShaderCompiler/SlangCompiler.cpp
@@ -115,6 +123,17 @@ if(WIN32 AND NRI_ENABLE_D3D12)
     if(TARGET D3D12MemoryAllocator)
         target_link_libraries(NoxRHI PRIVATE D3D12MemoryAllocator)
     endif()
+endif()
+
+if(NRI_ENABLE_NONE)
+    target_compile_definitions(NoxRHI PRIVATE NRI_ENABLE_NONE=1)
+endif()
+
+if(NRI_ENABLE_NONE)
+    list(APPEND NOXRHI_CORE_SOURCES
+        src/Core/None/DeviceNone.cpp
+        src/Core/None/DeviceNone.h
+    )
 endif()
 
 if(NRI_ENABLE_SLANG)
@@ -293,6 +312,12 @@ if(NRI_BUILD_EXAMPLES)
     add_executable(HeadlessRender examples/HeadlessRender/main.cpp)
     target_link_libraries(HeadlessRender PRIVATE NoxRHI::HPP)
     noxrhi_copy_core_dll(HeadlessRender)
+
+    if(NRI_BUILD_RENDERGRAPH)
+        add_executable(HeadlessNone examples/HeadlessNone/main.cpp)
+        target_link_libraries(HeadlessNone PRIVATE NoxRHI::RenderGraph)
+        noxrhi_copy_core_dll(HeadlessNone)
+    endif()
 
     add_executable(StreamlineNRDDemo examples/StreamlineNRDDemo/main.cpp)
     target_link_libraries(StreamlineNRDDemo PRIVATE NoxRHI::HPP)

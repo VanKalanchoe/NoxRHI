@@ -9,7 +9,8 @@ namespace NRI
     {
         Vulkan = 0,
         Metal = 1,
-        D3D12 = 2
+        D3D12 = 2,
+        None = 3
     };
 
     enum class WindowSystemType : uint8_t

@@ -1371,7 +1371,10 @@ bool NRI_CALL nriGetQueryPoolResults(NriQueryPool pool, uint32_t first, uint64_t
 
 NriResult NRI_CALL nriCreatePipeline(NriDevice device, const NriPipelineDesc* desc, NriShaderCompiler compiler, NriPipeline* outPipeline)
 {
-    if (!device || !device->impl || !desc || !compiler || !compiler->impl || !outPipeline)
+    if (!device || !device->impl || !desc || !outPipeline)
+        return NRI_ERROR_INVALID_ARGUMENT;
+    const bool isNoneApi = (device->impl->getAPI() == NRI::GraphicsAPI::None);
+    if (!isNoneApi && (!compiler || !compiler->impl))
         return NRI_ERROR_INVALID_ARGUMENT;
     *outPipeline = nullptr;
     try
@@ -1411,7 +1414,9 @@ NriResult NRI_CALL nriCreatePipeline(NriDevice device, const NriPipelineDesc* de
                 });
             }
         }
-        std::shared_ptr<NRI::Pipeline> impl = device->impl->createPipeline(cppDesc, *compiler->impl);
+        std::shared_ptr<NRI::Pipeline> impl = (compiler && compiler->impl)
+            ? device->impl->createPipeline(cppDesc, *compiler->impl)
+            : device->impl->createPipelineNoCompiler(cppDesc);
         *outPipeline = new NriPipeline_T{ device->impl, std::move(impl) };
         return NRI_SUCCESS;
     }

@@ -38,7 +38,8 @@ typedef enum NriGraphicsAPI
 {
     NRI_GRAPHICS_API_VULKAN = 0,
     NRI_GRAPHICS_API_METAL = 1,
-    NRI_GRAPHICS_API_D3D12 = 2
+    NRI_GRAPHICS_API_D3D12 = 2,
+    NRI_GRAPHICS_API_NONE = 3
 } NriGraphicsAPI;
 
 typedef enum NriLogLevel

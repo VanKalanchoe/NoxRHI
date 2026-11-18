@@ -29,6 +29,7 @@ namespace NRI
 
         virtual std::unique_ptr<Swapchain> createSwapchain(const SwapchainDesc& desc) = 0;
         virtual std::unique_ptr<Pipeline> createPipeline(const PipelineDesc& desc, ShaderCompiler& compiler) = 0;
+        virtual std::unique_ptr<Pipeline> createPipelineNoCompiler(const PipelineDesc&) { return nullptr; }
         virtual void precompileShaderModules(const std::vector<std::string>& sources, ShaderCompiler& compiler) {}
         virtual bool compileShaderModules(const std::vector<std::string>& sources, ShaderCompiler& compiler) { return true; }
         virtual std::unique_ptr<CommandAllocator> createCommandAllocator(CommandBufferReset resetMode, QueueType queue = QueueType::Graphics) = 0;

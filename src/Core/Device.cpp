@@ -7,6 +7,9 @@
 #if defined(_WIN32) && defined(NRI_ENABLE_D3D12)
 #include "D3D12/DeviceD3D12.h"
 #endif
+#ifdef NRI_ENABLE_NONE
+#include "None/DeviceNone.h"
+#endif
 
 namespace NRI
 {
@@ -27,6 +30,12 @@ namespace NRI
 #else
             throw std::runtime_error("D3D12 backend is disabled in this NoxRHI build.");
 #endif
+#endif
+        case GraphicsAPI::None:
+#ifdef NRI_ENABLE_NONE
+            return std::make_unique<DeviceNone>(desc);
+#else
+            throw std::runtime_error("None (no-GPU) backend is disabled in this NoxRHI build.");
 #endif
         case GraphicsAPI::Metal:
             throw std::runtime_error("Metal backend not implemented yet!");
