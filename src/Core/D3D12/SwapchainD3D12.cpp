@@ -68,7 +68,7 @@ namespace NRI
             TextureDesc texDesc{};
             texDesc.width = m_extent.width;
             texDesc.height = m_extent.height;
-            texDesc.format = ImageFormat::RGBA8;
+            texDesc.format = ImageFormat::Surface;
             texDesc.usage = TextureUsage::ColorAttachment;
             texDesc.mipLevels = 1;
             texDesc.arrayLayers = 1;

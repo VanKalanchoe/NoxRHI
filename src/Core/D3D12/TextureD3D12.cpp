@@ -10,7 +10,7 @@ namespace NRI
         switch (format)
         {
         case ImageFormat::None: return DXGI_FORMAT_UNKNOWN;
-        case ImageFormat::Surface: return DXGI_FORMAT_R8G8B8A8_UNORM;
+        case ImageFormat::Surface: return DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
         case ImageFormat::RGB8: return DXGI_FORMAT_R8G8B8A8_UNORM;
         case ImageFormat::SRGB8: return DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
         case ImageFormat::RGBA8: return DXGI_FORMAT_R8G8B8A8_UNORM;

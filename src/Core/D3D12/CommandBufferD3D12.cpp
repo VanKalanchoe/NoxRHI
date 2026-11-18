@@ -140,7 +140,12 @@ namespace NRI
                 D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = rtvStart;
                 rtvHandle.ptr += i * m_rtvDescriptorSize;
 
-                m_deviceD3D12.getNativeDevice()->CreateRenderTargetView(tex->getNativeResource(), nullptr, rtvHandle);
+                D3D12_RENDER_TARGET_VIEW_DESC rtvViewDesc{};
+                rtvViewDesc.Format = tex->getDxgiFormat();
+                rtvViewDesc.ViewDimension = tex->getDesc().sampleCount > 1
+                    ? D3D12_RTV_DIMENSION_TEXTURE2DMS
+                    : D3D12_RTV_DIMENSION_TEXTURE2D;
+                m_deviceD3D12.getNativeDevice()->CreateRenderTargetView(tex->getNativeResource(), &rtvViewDesc, rtvHandle);
                 rtvHandles.push_back(rtvHandle);
 
                 if (attach.loadOP == LoadOP::clear)
