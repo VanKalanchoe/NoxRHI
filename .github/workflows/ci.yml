@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-windows:
+    name: Windows x64 (${{ matrix.config }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [ Debug, Release ]
+
+    steps:
+      - name: Checkout NoxRHI
+        uses: actions/checkout@v4
+
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\vcpkg-cache
+          key: noxrhi-vcpkg-${{ runner.os }}-x64-v1
+
+      - name: Install Core Dependencies (D3D12MA, Slang, ImGui, SDL3, stb)
+        shell: cmd
+        run: |
+          if not exist vendors mkdir vendors
+          git clone --depth 1 --branch v3.1.0 https://github.com/GPUOpen-LibrariesAndSDKs/D3D12MemoryAllocator.git vendors\D3D12MemoryAllocator
+          curl -fSL https://github.com/shader-slang/slang/releases/download/v2026.14.1/slang-2026.14.1-windows-x86_64.zip -o "%TEMP%\slang.zip"
+          mkdir vendors\slang
+          tar -xf "%TEMP%\slang.zip" -C vendors\slang
+          git clone --depth 1 --branch docking https://github.com/ocornut/imgui.git vendors\imgui
+          if not exist "%TEMP%\vcpkg-cache" mkdir "%TEMP%\vcpkg-cache"
+          set "VCPKG_BINARY_SOURCES=clear;files,%TEMP%\vcpkg-cache,readwrite"
+          "%VCPKG_INSTALLATION_ROOT%\vcpkg.exe" install sdl3 stb --triplet=x64-windows
+
+      - name: Configure CMake
+        shell: pwsh
+        run: |
+          $toolchain = "$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+          cmake -S . -B build -A x64 `
+            "-DCMAKE_TOOLCHAIN_FILE=$toolchain" `
+            -DNRI_ENABLE_VULKAN=OFF `
+            -DNRI_ENABLE_D3D12=ON `
+            -DNRI_ENABLE_NONE=ON `
+            -DNRI_ENABLE_SLANG=ON `
+            -DNRI_ENABLE_STREAMLINE=OFF `
+            -DNRI_ENABLE_NRD=OFF `
+            -DNRI_BUILD_EXAMPLES=ON
+
+      - name: Build (${{ matrix.config }})
+        shell: pwsh
+        run: |
+          cmake --build build --config ${{ matrix.config }} --parallel
+
+      - name: Run Headless Smoke Tests (NRI_GRAPHICS_API_NONE)
+        shell: pwsh
+        run: |
+          ./build/${{ matrix.config }}/HeadlessNone.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./build/${{ matrix.config }}/HeadlessRender.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -1,5 +1,7 @@
 # NoxRHI
 
+[![CI](https://github.com/VanKalanchoe/NoxRHI/actions/workflows/ci.yml/badge.svg)](https://github.com/VanKalanchoe/NoxRHI/actions/workflows/ci.yml)
+
 A standalone C++20 Rendering Hardware Interface (**Vulkan** & **Direct3D 12**) and **RenderGraph** library with a pure C ABI boundary.
 
 Public headers expose **zero** backend SDK headers (`<vulkan/...>`, `<d3d12.h>`), engine headers, or windowing libraries. Consumers can link statically or consume the C ABI DLL across compiler toolchains (e.g., an MSVC application linking against a ClangCL-built `NoxRHI.dll`).
