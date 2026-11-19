@@ -5,8 +5,13 @@
 #include <string>
 #include <vector>
 
+#if __has_include(<slang.h>)
+#include <slang.h>
+#include <slang-com-ptr.h>
+#else
 #include <slang/slang.h>
 #include <slang/slang-com-ptr.h>
+#endif
 
 #include "ShaderCompiler.h"
 
