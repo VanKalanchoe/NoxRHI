@@ -92,6 +92,7 @@ jobs:
         shell: pwsh
         env:
           NOXRHI_D3D12_WARP: "1"
+          NOXRHI_D3D12_DRED: "1"
         run: |
           Push-Location ./build/${{ matrix.config }}
           $failed = 0

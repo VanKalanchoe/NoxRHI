@@ -72,6 +72,10 @@ namespace NRI
 
         bool supportsMeshShaders() const override { return m_meshShaders; }
 
+        // Logs why the device was removed: GetDeviceRemovedReason and, with DRED on, the unfinished command lists' breadcrumbs and any
+        // page fault. Once per device.
+        void reportDeviceRemoved();
+
     private:
         void initD3D12(const DeviceInitDesc& desc);
         void createGlobalRootSignature();
@@ -103,6 +107,8 @@ namespace NRI
         std::atomic<uint64_t> m_textureBytes = 0;
 
         std::unique_ptr<MemoryAllocatorD3D12> m_allocator;
+        bool m_dredEnabled = false;
+        bool m_removalReported = false;
         bool m_meshShaders = false;
     };
 }

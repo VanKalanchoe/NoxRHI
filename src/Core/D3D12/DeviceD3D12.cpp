@@ -15,6 +15,8 @@
 
 namespace NRI
 {
+    static DeviceD3D12* s_reportingDevice = nullptr; // (the device g_OnD3D12DeviceRemoved reports for)
+
     namespace
     {
         void CALLBACK onD3D12ValidationMessage(D3D12_MESSAGE_CATEGORY,
@@ -67,6 +69,20 @@ namespace NRI
             }
         }
 
+        // DRED (Device Removed Extended Data): with validation, or NOXRHI_D3D12_DRED=1. Must be set before the device is created.
+        char dredValue[8]{};
+        if (desc.enableValidation || (GetEnvironmentVariableA("NOXRHI_D3D12_DRED", dredValue, sizeof(dredValue)) > 0 && dredValue[0] == '1'))
+        {
+            ComPtr<ID3D12DeviceRemovedExtendedDataSettings1> dred;
+            if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dred))))
+            {
+                dred->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+                dred->SetBreadcrumbContextEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+                dred->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+                m_dredEnabled = true;
+            }
+        }
+
         ThrowIfFailed(CreateDXGIFactory2(dxgiFlags, IID_PPV_ARGS(&m_factory)), "CreateDXGIFactory2");
 
         ComPtr<IDXGIAdapter1> adapter1;
@@ -103,6 +119,12 @@ namespace NRI
         }
 
         ThrowIfFailed(D3D12CreateDevice(m_adapter.Get(), D3D_FEATURE_LEVEL_12_1, IID_PPV_ARGS(&m_device)), "D3D12CreateDevice");
+
+        s_reportingDevice = this;
+        g_OnD3D12DeviceRemoved = [] {
+            if (s_reportingDevice)
+                s_reportingDevice->reportDeviceRemoved();
+        };
 
         if (desc.enableValidation)
         {
@@ -205,8 +227,115 @@ namespace NRI
                                                     IID_PPV_ARGS(&m_globalRootSignature)), "CreateRootSignature");
     }
 
+    namespace
+    {
+        const char* BreadcrumbOpName(D3D12_AUTO_BREADCRUMB_OP op)
+        {
+            switch (op)
+            {
+            case D3D12_AUTO_BREADCRUMB_OP_SETMARKER: return "SetMarker";
+            case D3D12_AUTO_BREADCRUMB_OP_BEGINEVENT: return "BeginEvent";
+            case D3D12_AUTO_BREADCRUMB_OP_ENDEVENT: return "EndEvent";
+            case D3D12_AUTO_BREADCRUMB_OP_DRAWINSTANCED: return "DrawInstanced";
+            case D3D12_AUTO_BREADCRUMB_OP_DRAWINDEXEDINSTANCED: return "DrawIndexedInstanced";
+            case D3D12_AUTO_BREADCRUMB_OP_EXECUTEINDIRECT: return "ExecuteIndirect";
+            case D3D12_AUTO_BREADCRUMB_OP_DISPATCH: return "Dispatch";
+            case D3D12_AUTO_BREADCRUMB_OP_COPYBUFFERREGION: return "CopyBufferRegion";
+            case D3D12_AUTO_BREADCRUMB_OP_COPYTEXTUREREGION: return "CopyTextureRegion";
+            case D3D12_AUTO_BREADCRUMB_OP_COPYRESOURCE: return "CopyResource";
+            case D3D12_AUTO_BREADCRUMB_OP_RESOLVESUBRESOURCE: return "ResolveSubresource";
+            case D3D12_AUTO_BREADCRUMB_OP_CLEARRENDERTARGETVIEW: return "ClearRenderTargetView";
+            case D3D12_AUTO_BREADCRUMB_OP_CLEARUNORDEREDACCESSVIEW: return "ClearUnorderedAccessView";
+            case D3D12_AUTO_BREADCRUMB_OP_CLEARDEPTHSTENCILVIEW: return "ClearDepthStencilView";
+            case D3D12_AUTO_BREADCRUMB_OP_RESOURCEBARRIER: return "ResourceBarrier";
+            case D3D12_AUTO_BREADCRUMB_OP_EXECUTEBUNDLE: return "ExecuteBundle";
+            case D3D12_AUTO_BREADCRUMB_OP_PRESENT: return "Present";
+            case D3D12_AUTO_BREADCRUMB_OP_RESOLVEQUERYDATA: return "ResolveQueryData";
+            case D3D12_AUTO_BREADCRUMB_OP_BEGINSUBMISSION: return "BeginSubmission";
+            case D3D12_AUTO_BREADCRUMB_OP_ENDSUBMISSION: return "EndSubmission";
+            case D3D12_AUTO_BREADCRUMB_OP_BUILDRAYTRACINGACCELERATIONSTRUCTURE: return "BuildRaytracingAccelerationStructure";
+            case D3D12_AUTO_BREADCRUMB_OP_EMITRAYTRACINGACCELERATIONSTRUCTUREPOSTBUILDINFO: return "EmitRaytracingAccelerationStructurePostbuildInfo";
+            case D3D12_AUTO_BREADCRUMB_OP_COPYRAYTRACINGACCELERATIONSTRUCTURE: return "CopyRaytracingAccelerationStructure";
+            case D3D12_AUTO_BREADCRUMB_OP_DISPATCHRAYS: return "DispatchRays";
+            case D3D12_AUTO_BREADCRUMB_OP_DISPATCHMESH: return "DispatchMesh";
+            case D3D12_AUTO_BREADCRUMB_OP_BARRIER: return "Barrier";
+            default: return nullptr;
+            }
+        }
+
+        std::string Narrow(const wchar_t* text)
+        {
+            std::string out;
+            for (; text && *text; ++text)
+                out += *text < 128 ? static_cast<char>(*text) : '?';
+            return out;
+        }
+    }
+
+    void DeviceD3D12::reportDeviceRemoved()
+    {
+        if (m_removalReported || !m_device)
+            return;
+        m_removalReported = true;
+
+        const HRESULT reason = m_device->GetDeviceRemovedReason();
+        const char* reasonName = reason == DXGI_ERROR_DEVICE_HUNG ? "DEVICE_HUNG (the GPU stopped responding)"
+                               : reason == DXGI_ERROR_DEVICE_REMOVED ? "DEVICE_REMOVED"
+                               : reason == DXGI_ERROR_DEVICE_RESET ? "DEVICE_RESET (bad commands)"
+                               : reason == DXGI_ERROR_DRIVER_INTERNAL_ERROR ? "DRIVER_INTERNAL_ERROR"
+                               : reason == DXGI_ERROR_INVALID_CALL ? "INVALID_CALL" : "other";
+        NRI_LOG_ERROR("D3D12 device removed: reason 0x{:08X} {}", static_cast<unsigned int>(reason), reasonName);
+        if (!m_dredEnabled)
+        {
+            NRI_LOG_ERROR("D3D12: run with validation on (or NOXRHI_D3D12_DRED=1) for DRED breadcrumbs and page-fault data");
+            return;
+        }
+
+        ComPtr<ID3D12DeviceRemovedExtendedData> dred;
+        if (FAILED(m_device.As(&dred)))
+            return;
+
+        D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT breadcrumbs{};
+        if (SUCCEEDED(dred->GetAutoBreadcrumbsOutput(&breadcrumbs)))
+        {
+            for (const D3D12_AUTO_BREADCRUMB_NODE* node = breadcrumbs.pHeadAutoBreadcrumbNode; node; node = node->pNext)
+            {
+                const UINT completed = node->pLastBreadcrumbValue ? *node->pLastBreadcrumbValue : 0;
+                if (completed >= node->BreadcrumbCount)
+                    continue; // (this command list finished)
+                const std::string list = node->pCommandListDebugNameA ? node->pCommandListDebugNameA : Narrow(node->pCommandListDebugNameW);
+                NRI_LOG_ERROR("D3D12 DRED: command list '{}': {} of {} operations completed; around where the GPU stopped:",
+                              list.empty() ? "(unnamed)" : list, completed, node->BreadcrumbCount);
+                const UINT first = completed > 4 ? completed - 4 : 0, last = std::min(node->BreadcrumbCount, completed + 4);
+                for (UINT i = first; i < last; ++i)
+                {
+                    const char* name = BreadcrumbOpName(node->pCommandHistory[i]);
+                    NRI_LOG_ERROR("D3D12 DRED:   {} [{}] {}{}", i < completed ? "done   " : (i == completed ? "FAILED?" : "pending"), i,
+                                  name ? name : "op", name ? "" : std::to_string(static_cast<int>(node->pCommandHistory[i])));
+                }
+            }
+        }
+
+        D3D12_DRED_PAGE_FAULT_OUTPUT pageFault{};
+        if (SUCCEEDED(dred->GetPageFaultAllocationOutput(&pageFault)) && pageFault.PageFaultVA)
+        {
+            NRI_LOG_ERROR("D3D12 DRED: page fault at GPU address 0x{:016X}", static_cast<unsigned long long>(pageFault.PageFaultVA));
+            for (const D3D12_DRED_ALLOCATION_NODE* node = pageFault.pHeadExistingAllocationNode; node; node = node->pNext)
+                NRI_LOG_ERROR("D3D12 DRED:   allocation there: {} (type {})", node->ObjectNameA ? node->ObjectNameA : Narrow(node->ObjectNameW),
+                              static_cast<int>(node->AllocationType));
+            for (const D3D12_DRED_ALLOCATION_NODE* node = pageFault.pHeadRecentFreedAllocationNode; node; node = node->pNext)
+                NRI_LOG_ERROR("D3D12 DRED:   recently freed there: {} (type {})", node->ObjectNameA ? node->ObjectNameA : Narrow(node->ObjectNameW),
+                              static_cast<int>(node->AllocationType));
+        }
+    }
+
     void DeviceD3D12::shutdown()
     {
+        if (s_reportingDevice == this)
+        {
+            s_reportingDevice = nullptr;
+            g_OnD3D12DeviceRemoved = nullptr;
+        }
         if (m_shuttingDown)
             return;
         waitIdle();

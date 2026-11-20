@@ -67,7 +67,7 @@ bool Occluded(RaytracingAccelerationStructure tlas, float3 origin, float3 direct
     ray.Direction = direction;
     ray.TMin = 0.0;
     ray.TMax = maxDistance;
-    RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> query;
+    RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
     query.TraceRayInline(tlas, RAY_FLAG_NONE, 0xFF, ray);
     query.Proceed();
     return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
