@@ -96,6 +96,11 @@ jobs:
         run: |
           Push-Location ./build/${{ matrix.config }}
           $failed = 0
+          # (diagnosis of RayQueryShadows on WARP: no rays traced, then shadow rays only)
+          Write-Host "=== RayQueryShadows --no-shadows --ao 0 ==="
+          ./RayQueryShadows.exe --dx12 --frames 30 --no-shadows --ao 0
+          Write-Host "=== RayQueryShadows --ao 0 ==="
+          ./RayQueryShadows.exe --dx12 --frames 30 --ao 0
           foreach ($example in 'GpuParticles', 'BindlessScene', 'MeshletCulling', 'RayQueryShadows') {
             Write-Host "=== $example ==="
             & "./$example.exe" --dx12 --frames 30

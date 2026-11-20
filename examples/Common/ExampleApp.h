@@ -103,6 +103,8 @@ namespace nox
         virtual void Render(Host& host, nri::RenderGraph& graph, const FrameInfo& frame) = 0;
         virtual void Shutdown(Host&) {}
         virtual void OnKey(SDL_Keycode) {}
+        // Command-line arguments the host does not know (before Init); return how many were used (0: not this example's).
+        virtual int OnArgument(int /*argc*/, char** /*argv*/, int /*index*/) { return 0; }
     };
 
     class Host
@@ -277,6 +279,10 @@ namespace nox
                     m_MaxFrames = std::atoi(argv[++i]);
                 else if (!std::strcmp(argv[i], "--vsync"))
                     vsync = true;
+                else if (const int used = example.OnArgument(argc, argv, i); used > 0)
+                    i += used - 1;
+                else
+                    std::fprintf(stderr, "[%s] unknown argument '%s'\n", example.Name(), argv[i]);
             }
             if (const char* base = SDL_GetBasePath())
                 m_BaseDir = base;

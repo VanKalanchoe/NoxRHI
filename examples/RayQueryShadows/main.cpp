@@ -6,6 +6,7 @@
 // ambient-occlusion rays with RayQuery. The boxes move, so the top-level acceleration structure is rebuilt every frame (one per frame
 // in flight, so a rebuild never touches what an earlier frame still reads). Inspired by the Nox engine's ray-traced shadows / AO.
 //   S: shadows on / off     A: ambient-occlusion rays 0 / 2 / 4 / 8     Space: pause
+//   Start-up options: --no-shadows, --ao N (rays per pixel)
 
 #include "../Common/ExampleApp.h"
 
@@ -230,6 +231,21 @@ public:
                 cmd.pushData(&push, sizeof(push));
                 cmd.draw(36, objectCount);
             });
+    }
+
+    int OnArgument(int argc, char** argv, int index) override
+    {
+        if (!std::strcmp(argv[index], "--no-shadows"))
+        {
+            m_Shadows = false;
+            return 1;
+        }
+        if (!std::strcmp(argv[index], "--ao") && index + 1 < argc)
+        {
+            m_AoRays = uint32_t(std::atoi(argv[index + 1]));
+            return 2;
+        }
+        return 0;
     }
 
     void OnKey(SDL_Keycode key) override
