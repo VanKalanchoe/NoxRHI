@@ -301,10 +301,13 @@ if(NRI_BUILD_EXAMPLES)
         noxrhi_copy_core_dll(${target_name})
         if(WIN32)
             if(NRI_ENABLE_SLANG AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/vendors/slang/bin/slang.dll")
+                # Since Slang 2026.x slang.dll only forwards its exports to slang-compiler.dll (a missing one fails the first
+                # compile with delay-load error 0xC06D007F), and the compiler loads slang-glslang / slang-glsl-module itself:
+                # copy every slang*.dll but slang-llvm.dll (84 MB, CPU targets only).
+                file(GLOB SLANG_DLLS "${CMAKE_CURRENT_SOURCE_DIR}/vendors/slang/bin/slang*.dll")
+                list(FILTER SLANG_DLLS EXCLUDE REGEX "slang-llvm\\.dll$")
                 add_custom_command(TARGET ${target_name} POST_BUILD
-                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                        "${CMAKE_CURRENT_SOURCE_DIR}/vendors/slang/bin/slang.dll"
-                        $<TARGET_FILE_DIR:${target_name}>
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${SLANG_DLLS} $<TARGET_FILE_DIR:${target_name}>
                 )
                 file(GLOB SLANG_STD_MODULES LIST_DIRECTORIES true "${CMAKE_CURRENT_SOURCE_DIR}/vendors/slang/bin/slang-standard-module-*")
                 foreach(SLANG_MOD_DIR ${SLANG_STD_MODULES})
