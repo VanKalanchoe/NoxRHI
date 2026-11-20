@@ -8,7 +8,8 @@
 // 8-bit types.
 //   F: freeze the culling camera (fly away and look at what was culled)     C: meshlet / instance colours     Space: pause
 //   Start-up options (to narrow a problem down): --no-cull (every meshlet drawn), --no-stats (no counter atomic in the task shader),
-//   --mesh-only (no task shader: one mesh shader group per meshlet), --split-files (task and mesh shaders compiled from separate files)
+//   --mesh-only (no task shader: one mesh shader group per meshlet), --split-files (task and mesh shaders compiled from separate files),
+//   --no-readback (no counter reset / readback copies), --no-depth (no depth buffer), --groups N (dispatch only N groups)
 
 #include "../Common/ExampleApp.h"
 
@@ -214,15 +215,16 @@ public:
         else
             m_Pipeline = m_MeshOnly ? host.Mesh("meshlet_culling.slang", nullptr, "msMeshletDirect", "psMeshlet")
                                     : host.Mesh("meshlet_culling.slang", "tsCull", "msMeshlet", "psMeshlet");
-        std::printf("[MeshletCulling] %s%s%s, %s\n", m_MeshOnly ? "mesh shader only (no task shader)" : "task + mesh shaders",
-                    m_NoCull ? ", no culling" : "", m_NoStats ? ", no counter" : "", m_SplitFiles ? "task and mesh shaders from separate files" : "all shaders from one file");
+        std::printf("[MeshletCulling] %s%s%s%s%s, %s, groups: %s\n", m_MeshOnly ? "mesh shader only (no task shader)" : "task + mesh shaders",
+                    m_NoCull ? ", no culling" : "", m_NoStats ? ", no counter" : "", m_NoReadback ? ", no counter copies" : "", m_NoDepth ? ", no depth" : "",
+                    m_SplitFiles ? "task and mesh shaders from separate files" : "all shaders from one file", m_Groups ? std::to_string(m_Groups).c_str() : "all");
         std::printf("[MeshletCulling] %u meshlets per sphere (%zu triangles), %u spheres\n", m_MeshletCount, sphere.indices.size() / 3, m_InstanceCount);
     }
 
     void Render(nox::Host& host, nri::RenderGraph& graph, const nox::FrameInfo& frame) override
     {
         // The frame that last used this slot has finished (the swapchain waited for it): its count is ready.
-        if (frame.frameNumber >= nox::kFramesInFlight)
+        if (frame.frameNumber >= nox::kFramesInFlight && !m_NoReadback)
         {
             uint32_t drawn = 0;
             std::memcpy(&drawn, m_Readback[frame.frameSlot].map(0, 4), 4);
@@ -257,30 +259,34 @@ public:
         push.view = m_View.Write(frame.frameSlot, view);
 
         const nri::RGBuffer stats = graph.ImportBuffer("Stats", m_Stats);
-        const nri::RGTexture depth = graph.CreateTexture("Depth", { .Format = NRI_FORMAT_NONE, .Usage = NRI_TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT });
+        const nri::RGTexture depth = m_NoDepth ? nri::RGTexture{} : graph.CreateTexture("Depth", { .Format = NRI_FORMAT_NONE, .Usage = NRI_TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT });
 
-        graph.AddPass("ResetStats", nri::RGPassFlags::None,
-            [&](nri::RGBuilder& b) { b.Write(stats, nri::RGBufferAccess::CopyDestination); },
-            [this](nri::RGPassContext& ctx) { ctx.Cmd().copyBuffer(m_Zero, m_Stats, nri::BufferCopyRegion{ 0, 0, 4 }); });
+        if (!m_NoReadback)
+            graph.AddPass("ResetStats", nri::RGPassFlags::None,
+                [&](nri::RGBuilder& b) { b.Write(stats, nri::RGBufferAccess::CopyDestination); },
+                [this](nri::RGPassContext& ctx) { ctx.Cmd().copyBuffer(m_Zero, m_Stats, nri::BufferCopyRegion{ 0, 0, 4 }); });
 
         graph.AddPass("Meshlets", nri::RGPassFlags::Raster,
             [&](nri::RGBuilder& b) {
                 b.Write(stats);
                 b.SwapchainTarget(host.swapchain, frame.imageIndex, NRI_LOAD_OP_CLEAR, NRI_STORE_OP_STORE, { 0.08f, 0.09f, 0.12f, 1.0f });
-                b.DepthTarget(depth, NRI_LOAD_OP_CLEAR, NRI_STORE_OP_DONT_CARE, { 0.0f, 0 });
+                if (!m_NoDepth)
+                    b.DepthTarget(depth, NRI_LOAD_OP_CLEAR, NRI_STORE_OP_DONT_CARE, { 0.0f, 0 });
                 b.SetRenderArea(frame.extent);
             },
             [this, push](nri::RGPassContext& ctx) {
                 nri::CommandBuffer& cmd = ctx.Cmd();
-                nox::Host::SetRasterState(cmd, { .depthTest = true, .depthWrite = true, .cull = NRI_CULL_MODE_BACK });
+                nox::Host::SetRasterState(cmd, { .depthTest = !m_NoDepth, .depthWrite = !m_NoDepth, .cull = NRI_CULL_MODE_BACK });
                 cmd.bindPipeline(NRI_PIPELINE_BIND_POINT_GRAPHICS, m_Pipeline);
                 cmd.pushData(&push, sizeof(push));
-                if (m_MeshOnly)
-                    nri::drawMeshTasks(cmd, m_MeshletCount * m_InstanceCount);
-                else
-                    nri::drawMeshTasks(cmd, (m_MeshletCount * m_InstanceCount + kTaskGroupSize - 1) / kTaskGroupSize);
+                uint32_t groups = m_MeshOnly ? m_MeshletCount * m_InstanceCount : (m_MeshletCount * m_InstanceCount + kTaskGroupSize - 1) / kTaskGroupSize;
+                if (m_Groups > 0)
+                    groups = std::min(groups, m_Groups);
+                nri::drawMeshTasks(cmd, groups);
             });
 
+        if (m_NoReadback)
+            return;
         // (the readback buffer is this pass's output: declared, so the render graph keeps the pass -- a pass that only reads is culled)
         const nri::RGBuffer readback = graph.ImportBuffer("StatsReadback", m_Readback[frame.frameSlot]);
         graph.AddPass("ReadStats", nri::RGPassFlags::None,
@@ -301,6 +307,15 @@ public:
             m_MeshOnly = true;
         else if (!std::strcmp(argv[index], "--split-files"))
             m_SplitFiles = true;
+        else if (!std::strcmp(argv[index], "--no-readback"))
+            m_NoReadback = true;
+        else if (!std::strcmp(argv[index], "--no-depth"))
+            m_NoDepth = true;
+        else if (!std::strcmp(argv[index], "--groups") && argv[index + 1])
+        {
+            m_Groups = uint32_t(std::strtoul(argv[index + 1], nullptr, 10));
+            return 2;
+        }
         else
             return 0;
         return 1;
@@ -335,7 +350,8 @@ private:
     nox::Float3 m_CullPosition;
     float m_AnimTime = 0.0f;
     bool m_Frozen = false, m_Paused = false;
-    bool m_NoCull = false, m_NoStats = false, m_MeshOnly = false, m_SplitFiles = false;
+    bool m_NoCull = false, m_NoStats = false, m_MeshOnly = false, m_SplitFiles = false, m_NoReadback = false, m_NoDepth = false;
+    uint32_t m_Groups = 0; // (0: all)
 };
 
 NOX_EXAMPLE_MAIN(MeshletCulling)
