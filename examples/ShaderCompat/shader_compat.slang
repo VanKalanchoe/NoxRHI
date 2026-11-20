@@ -111,6 +111,48 @@ void csBufferCopy(uint3 id : SV_DispatchThreadID, uniform Push pc)
         StoreOut(pc, id.x, LoadIn(pc, id.x) * 3u + 1u);
 }
 
+// --- 2b. a struct through nox_gpu.slang's BufferRef (what the cross-API examples use): same layout and stride on both APIs -------------
+
+#include "nox_gpu.slang"
+
+struct LayoutProbe   // C++: ShaderCompat's LayoutProbe, 120 bytes
+{
+    float4 a;        //   0
+    float3 b;        //  16
+    uint c;          //  28
+    uint64_t d;      //  32
+    float2 e;        //  40
+    uint f;          //  48
+    uint g;          //  52
+    Mat4 m;          //  56
+};
+
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void csStructLayout(uint3 id : SV_DispatchThreadID, uniform Push pc)
+{
+    BufferRef<LayoutProbe> probes;
+    BufferRef<uint> words;
+#ifdef NOX_VULKAN
+    probes.handle = pc.inAddress;
+#else
+    probes.handle = pc.inSlot;
+#endif
+    words.handle = probes.handle;
+    const LayoutProbe p = probes[1]; // (element 1: the array stride counts too)
+    uint o = 0;
+    StoreOutFloat(pc, o++, p.a.x); StoreOutFloat(pc, o++, p.a.y); StoreOutFloat(pc, o++, p.a.z); StoreOutFloat(pc, o++, p.a.w);
+    StoreOutFloat(pc, o++, p.b.x); StoreOutFloat(pc, o++, p.b.y); StoreOutFloat(pc, o++, p.b.z);
+    StoreOut(pc, o++, p.c);
+    StoreOut(pc, o++, uint(p.d & 0xFFFFFFFFull)); StoreOut(pc, o++, uint(p.d >> 32));
+    StoreOutFloat(pc, o++, p.e.x); StoreOutFloat(pc, o++, p.e.y);
+    StoreOut(pc, o++, p.f); StoreOut(pc, o++, p.g);
+    const float4 t = p.m.Transform(float4(1.0, 2.0, 3.0, 4.0));
+    StoreOutFloat(pc, o++, t.x); StoreOutFloat(pc, o++, t.y); StoreOutFloat(pc, o++, t.z); StoreOutFloat(pc, o++, t.w);
+    for (uint i = 0; i < 8; ++i) // bytes 120 .. 127 (element 1's first bytes), through LoadByte
+        StoreOut(pc, o++, LoadByte(words, 120 + i));
+}
+
 // --- 3. groupshared memory and barriers: a tree sum per group of 64 ---------------------------------------------------------------------
 
 groupshared uint gSum[64];

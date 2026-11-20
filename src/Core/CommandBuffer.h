@@ -151,6 +151,7 @@ namespace NRI
         constexpr uint32_t AccelerationStructureBuild = 1 << 7;
         constexpr uint32_t Indirect = 1 << 8; // fetch of indirect arguments and draw counts
         constexpr uint32_t RayTracing = 1 << 9;
+        constexpr uint32_t Vertex = 1 << 10;
     }
 
     struct ResourceState

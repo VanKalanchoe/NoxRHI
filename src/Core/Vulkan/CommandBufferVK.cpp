@@ -1061,7 +1061,10 @@ namespace NRI
             case AccelerationStructureBarrierType::BuildToShaderRead:
                 barrier.srcStageMask  = vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR;
                 barrier.srcAccessMask = vk::AccessFlagBits2::eAccelerationStructureWriteKHR;
-                barrier.dstStageMask  = vk::PipelineStageFlagBits2::eFragmentShader | vk::PipelineStageFlagBits2::eComputeShader;
+                // (every stage that can trace or query: ray tracing pipelines and ray queries in any graphics or compute shader)
+                barrier.dstStageMask  = vk::PipelineStageFlagBits2::eFragmentShader | vk::PipelineStageFlagBits2::eComputeShader |
+                                        vk::PipelineStageFlagBits2::eRayTracingShaderKHR | vk::PipelineStageFlagBits2::eVertexShader |
+                                        vk::PipelineStageFlagBits2::eTaskShaderEXT | vk::PipelineStageFlagBits2::eMeshShaderEXT;
                 barrier.dstAccessMask = vk::AccessFlagBits2::eAccelerationStructureReadKHR | vk::AccessFlagBits2::eShaderRead;
                 break;
 
@@ -1134,6 +1137,7 @@ vk::AccessFlagBits2::eColorAttachmentWrite | vk::AccessFlagBits2::eDepthStencilA
         vk::PipelineStageFlags2 translateStageBits(uint32_t stages)
         {
             vk::PipelineStageFlags2 flags = vk::PipelineStageFlagBits2::eNone;
+            if (stages & StageBits::Vertex) flags |= vk::PipelineStageFlagBits2::eVertexShader;
             if (stages & StageBits::Task) flags |= vk::PipelineStageFlagBits2::eTaskShaderEXT;
             if (stages & StageBits::Mesh) flags |= vk::PipelineStageFlagBits2::eMeshShaderEXT;
             if (stages & StageBits::Fragment) flags |= vk::PipelineStageFlagBits2::eFragmentShader;

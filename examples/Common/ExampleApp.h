@@ -1,0 +1,582 @@
+#pragma once
+// ExampleApp.h -- what every cross-API example shares: an SDL window, the API picked on the command line, the device, swapchain,
+// descriptor heaps, shader compiler and render graph, the frame loop, and the host side of nox_gpu.slang's buffer references.
+//
+//   <Example>.exe --vk | --dx12 [--frames N] [--vsync]
+//
+// The window title names the API, so two runs side by side show the same Slang source on both. --frames N renders N frames and exits
+// (non-zero when NoxRHI or the render graph reported an error), for smoke tests.
+//
+// An example derives from nox::Example and ends its main.cpp with NOX_EXAMPLE_MAIN(TheExample).
+
+#define SDL_MAIN_USE_CALLBACKS 1
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_main.h>
+
+#include <algorithm>
+#include <chrono>
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+#include <NRIHPP/NRI.hpp>
+#include <NRIHPP/NRIExtensions.hpp>
+#include <NRIRenderGraph/RenderGraph.h>
+
+#include "ExampleMath.h"
+
+namespace nox
+{
+    inline int g_Errors = 0;
+
+    inline void NRI_CALL OnNriLog(NriLogLevel level, const char* message, void*)
+    {
+        if (level == NRI_LOG_INFO)
+            return;
+        std::fprintf(stderr, "[NoxRHI][%s] %s\n", level == NRI_LOG_ERROR ? "ERROR" : "WARN", message);
+        if (level == NRI_LOG_ERROR)
+            ++g_Errors;
+    }
+
+    inline void OnGraphLog(nri::RGLogLevel level, std::string_view message, void*)
+    {
+        if (level == nri::RGLogLevel::Info)
+            return;
+        std::fprintf(stderr, "[RenderGraph][%s] %.*s\n", level == nri::RGLogLevel::Error ? "ERROR" : "WARN", static_cast<int>(message.size()), message.data());
+        if (level == nri::RGLogLevel::Error)
+            ++g_Errors;
+    }
+
+    constexpr uint32_t kFramesInFlight = 2;
+
+    // Sampler heap slots every example can use.
+    enum SamplerSlot : uint32_t
+    {
+        kSamplerLinearRepeat = 0,
+        kSamplerLinearClamp = 1,
+        kSamplerNearestClamp = 2,
+    };
+
+    // A buffer as nox_gpu.slang's BufferRef<T> (read) and RWBufferRef<T> (write) see it: the device address on Vulkan (both the same),
+    // descriptor slots on D3D12 (an SRV for reading, a UAV for writing -- a pass that reads a buffer has it in a shader-resource state,
+    // where D3D12 allows only the SRV). `write` is 0 for buffers that cannot be written (Uniform: CPU-written, upload heap on D3D12).
+    struct BufferRefs
+    {
+        uint64_t read = 0;
+        uint64_t write = 0;
+    };
+
+    // Fixed-function state set before a draw (everything is dynamic state in NoxRHI; D3D12 picks a matching pipeline variant).
+    struct RasterState
+    {
+        bool depthTest = false;
+        bool depthWrite = false;
+        nri::CompareOp depthCompare = NRI_COMPARE_GREATER; // reverse-Z
+        nri::CullMode cull = NRI_CULL_MODE_NONE;
+        enum class Blend { Off, Alpha, Additive } blend = Blend::Off;
+    };
+
+    struct FrameInfo
+    {
+        uint64_t frameNumber = 0;
+        uint32_t frameSlot = 0;  // 0 .. kFramesInFlight - 1: which per-frame resources the CPU may write now
+        uint32_t imageIndex = 0; // the swapchain image to draw into
+        nri::Extent2D extent{};
+        float time = 0.0f;       // seconds since start
+        float deltaTime = 0.0f;  // seconds since the last frame (clamped)
+        float Aspect() const { return extent.height ? float(extent.width) / float(extent.height) : 1.0f; }
+    };
+
+    class Host;
+
+    class Example
+    {
+    public:
+        virtual ~Example() = default;
+        virtual const char* Name() const = 0;
+        virtual void Init(Host& host) = 0;
+        // Adds this frame's passes; the last one draws into the swapchain image (RGBuilder::SwapchainTarget).
+        virtual void Render(Host& host, nri::RenderGraph& graph, const FrameInfo& frame) = 0;
+        virtual void Shutdown(Host&) {}
+        virtual void OnKey(SDL_Keycode) {}
+    };
+
+    class Host
+    {
+    public:
+        NriGraphicsAPI api = NRI_GRAPHICS_API_VULKAN;
+        nri::Device device;
+        nri::Swapchain swapchain;
+        nri::DescriptorHeap resources;
+        nri::DescriptorHeap samplers;
+        nri::ShaderCompiler compiler;
+        nri::RenderGraph graph;
+        bool vsync = false;
+
+        bool IsD3D12() const { return api == NRI_GRAPHICS_API_D3D12; }
+        // Text shown after the API and fps in the window title (and printed when it changes, at most once a second).
+        void SetStatus(std::string status) { m_Status = std::move(status); }
+        const char* ApiName() const { return IsD3D12() ? "Direct3D 12" : "Vulkan"; }
+
+        // --- shaders and pipelines -------------------------------------------------------------------------------------------------
+
+        std::string ShaderPath(const char* file) const { return (m_BaseDir / file).string(); }
+
+        nri::Pipeline Compute(const char* file, const char* entry)
+        {
+            nri::Pipeline p = device.createPipeline({ .type = NRI_PIPELINE_COMPUTE, .shaders = { { NRI_SHADER_STAGE_COMPUTE, entry, ShaderPath(file) } },
+                                                      .buildNow = true }, compiler.handle());
+            device.finishPipelineBuilds();
+            return p;
+        }
+
+        // Vertex + fragment.
+        nri::Pipeline Graphics(const char* file, const char* vertex, const char* fragment, std::vector<nri::ImageFormat> colorFormats = { NRI_FORMAT_SURFACE })
+        {
+            nri::Pipeline p = device.createPipeline({ .type = NRI_PIPELINE_GRAPHICS,
+                                                      .shaders = { { NRI_SHADER_STAGE_VERTEX, vertex, ShaderPath(file) }, { NRI_SHADER_STAGE_FRAGMENT, fragment, ShaderPath(file) } },
+                                                      .colorFormats = std::move(colorFormats), .buildNow = true }, compiler.handle());
+            device.finishPipelineBuilds();
+            return p;
+        }
+
+        // Task (optional: nullptr) + mesh + fragment.
+        nri::Pipeline Mesh(const char* file, const char* task, const char* mesh, const char* fragment, std::vector<nri::ImageFormat> colorFormats = { NRI_FORMAT_SURFACE })
+        {
+            nri::PipelineDesc desc{ .type = NRI_PIPELINE_GRAPHICS, .colorFormats = std::move(colorFormats), .buildNow = true };
+            if (task)
+                desc.shaders.push_back({ NRI_SHADER_STAGE_TASK, task, ShaderPath(file) });
+            desc.shaders.push_back({ NRI_SHADER_STAGE_MESH, mesh, ShaderPath(file) });
+            desc.shaders.push_back({ NRI_SHADER_STAGE_FRAGMENT, fragment, ShaderPath(file) });
+            nri::Pipeline p = device.createPipeline(desc, compiler.handle());
+            device.finishPipelineBuilds();
+            return p;
+        }
+
+        static void SetRasterState(nri::CommandBuffer& cmd, const RasterState& s)
+        {
+            cmd.setDepthTestEnable(s.depthTest);
+            cmd.setDepthWriteEnable(s.depthWrite);
+            cmd.setDepthCompareOp(s.depthTest ? s.depthCompare : NRI_COMPARE_ALWAYS);
+            cmd.setCullMode(s.cull);
+            cmd.setColorBlendEnable(0, s.blend != RasterState::Blend::Off);
+            if (s.blend == RasterState::Blend::Alpha)
+                cmd.setColorBlendEquation(0, { NRI_BLEND_FACTOR_SRC_ALPHA, NRI_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, NRI_BLEND_OP_ADD,
+                                               NRI_BLEND_FACTOR_ONE, NRI_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, NRI_BLEND_OP_ADD });
+            else if (s.blend == RasterState::Blend::Additive)
+                cmd.setColorBlendEquation(0, { NRI_BLEND_FACTOR_ONE, NRI_BLEND_FACTOR_ONE, NRI_BLEND_OP_ADD,
+                                               NRI_BLEND_FACTOR_ONE, NRI_BLEND_FACTOR_ONE, NRI_BLEND_OP_ADD });
+        }
+
+        // --- buffers -------------------------------------------------------------------------------------------------------------
+
+        // A buffer, filled with `data` when given (through a staging buffer for GPU-local usages, mapped for CPU-visible ones).
+        nri::Buffer CreateBuffer(uint64_t size, nri::BufferUsage usage, const void* data = nullptr)
+        {
+            nri::Buffer buffer = device.createBuffer({ .size = size, .usage = usage });
+            if (data)
+            {
+                const bool cpuVisible = usage == NRI_BUFFER_USAGE_UNIFORM || usage == NRI_BUFFER_USAGE_STAGING || usage == NRI_BUFFER_USAGE_ACCELERATION_STRUCTURE_INSTANCE;
+                if (cpuVisible)
+                {
+                    std::memcpy(buffer.map(0, size), data, size);
+                    buffer.unmap();
+                }
+                else
+                {
+                    nri::Buffer staging = device.createBuffer({ .size = size, .usage = NRI_BUFFER_USAGE_STAGING });
+                    std::memcpy(staging.map(0, size), data, size);
+                    staging.unmap();
+                    Submit([&](nri::CommandBuffer& cmd) {
+                        cmd.copyBuffer(staging, buffer, nri::BufferCopyRegion{ 0, 0, size });
+                        const nri::BufferBarrierDesc barrier{ buffer.handle(), { NRI_ACCESS_TRANSFER_WRITE, NRI_STAGE_TRANSFER },
+                                                              { NRI_ACCESS_SHADER_READ, NRI_STAGE_COMPUTE | NRI_STAGE_FRAGMENT | NRI_STAGE_VERTEX | NRI_STAGE_TASK | NRI_STAGE_MESH } };
+                        cmd.resourceBarriers({}, { &barrier, 1 });
+                    });
+                }
+            }
+            return buffer;
+        }
+
+        // The references a shader needs for `buffer` (see BufferRefs). Call once per buffer: on D3D12 it registers descriptors.
+        BufferRefs Refs(const nri::Buffer& buffer, uint64_t size, bool writable)
+        {
+            if (!IsD3D12())
+            {
+                const uint64_t address = buffer.getDeviceAddress();
+                return { address, writable ? address : 0 };
+            }
+            BufferRefs refs;
+            refs.read = resources.registerBuffer(buffer, size);
+            if (writable)
+                refs.write = resources.registerStorageBuffer(buffer, size);
+            return refs;
+        }
+
+        // The TLAS reference for nox_gpu.slang's LoadTlas: its address on Vulkan, a descriptor slot on D3D12.
+        uint64_t TlasRef(const nri::AccelerationStructure& tlas)
+        {
+            return IsD3D12() ? nriRegisterAccelerationStructure(resources.handle(), tlas.handle(), ~0u) : tlas.getDeviceAddress();
+        }
+
+        // --- textures ------------------------------------------------------------------------------------------------------------
+
+        // A sampled RGBA8 (sRGB) texture from pixels; returns the slot a shader passes to Tex2D (image heap offset included).
+        uint32_t CreateTexture(uint32_t width, uint32_t height, const uint32_t* rgba, std::vector<nri::Texture>& keep)
+        {
+            nri::Texture texture = device.createTexture({ .width = width, .height = height, .usage = NRI_TEXTURE_USAGE_SHADER_RESOURCE, .format = NRI_FORMAT_SRGBA8 });
+            const uint64_t rowPitch = (uint64_t(width) * 4 + 255) & ~255ull; // (256-byte rows: what D3D12 needs, honoured by Vulkan too)
+            nri::Buffer staging = device.createBuffer({ .size = rowPitch * height, .usage = NRI_BUFFER_USAGE_STAGING });
+            auto* mapped = static_cast<uint8_t*>(staging.map(0, rowPitch * height));
+            for (uint32_t y = 0; y < height; ++y)
+                std::memcpy(mapped + y * rowPitch, rgba + y * width, width * 4);
+            staging.unmap();
+            Submit([&](nri::CommandBuffer& cmd) {
+                const NriTextureRegionUpload region{ .stagingOffset = 0, .x = 0, .y = 0, .width = width, .height = height, .rowPitch = static_cast<uint32_t>(rowPitch) };
+                nriTextureRecordRegionUploads(texture.handle(), cmd.handle(), staging.handle(), &region, 1);
+                const nri::TextureBarrierDesc barrier{ texture.handle(), { NRI_ACCESS_TRANSFER_WRITE, NRI_STAGE_TRANSFER }, { NRI_ACCESS_SHADER_READ, NRI_STAGE_FRAGMENT | NRI_STAGE_COMPUTE } };
+                cmd.resourceBarriers({ &barrier, 1 }, {});
+            });
+            resources.registerTexture(texture);
+            const uint32_t slot = texture.getDescriptorSlot() + resources.getImageHeapIndexOffset();
+            keep.push_back(std::move(texture));
+            return slot;
+        }
+
+        uint32_t ImageSlot(uint32_t textureSlot) const { return textureSlot + resources.getImageHeapIndexOffset(); }
+
+        // Records `record` into a one-off command buffer and waits for the GPU to finish it.
+        template <class F>
+        void Submit(F&& record)
+        {
+            nri::CommandAllocator allocator = device.createCommandAllocator(NRI_COMMAND_BUFFER_RESET_WITH_ALLOCATOR, NRI_QUEUE_GRAPHICS);
+            nri::CommandBuffer cmd = allocator.allocateCommandBuffer(1);
+            cmd.begin(0, true);
+            cmd.bindDescriptorHeaps(&resources, &samplers);
+            record(cmd);
+            cmd.end(0);
+            device.submitAndWait(cmd, 0);
+        }
+
+        // --- the app -------------------------------------------------------------------------------------------------------------
+
+        bool Start(Example& example, int argc, char** argv)
+        {
+            m_Example = &example;
+            for (int i = 1; i < argc; ++i)
+            {
+                if (!std::strcmp(argv[i], "--vk") || !std::strcmp(argv[i], "--vulkan"))
+                    api = NRI_GRAPHICS_API_VULKAN;
+                else if (!std::strcmp(argv[i], "--dx12") || !std::strcmp(argv[i], "--d3d12"))
+                    api = NRI_GRAPHICS_API_D3D12;
+                else if (!std::strcmp(argv[i], "--frames") && i + 1 < argc)
+                    m_MaxFrames = std::atoi(argv[++i]);
+                else if (!std::strcmp(argv[i], "--vsync"))
+                    vsync = true;
+            }
+            if (const char* base = SDL_GetBasePath())
+                m_BaseDir = base;
+
+            if (!SDL_Init(SDL_INIT_VIDEO))
+            {
+                std::fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
+                return false;
+            }
+            m_Window = SDL_CreateWindow(Title(0.0f).c_str(), m_Width, m_Height, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+            if (!m_Window)
+            {
+                std::fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
+                return false;
+            }
+            SDL_GetWindowSizeInPixels(m_Window, &m_Width, &m_Height);
+
+            try
+            {
+                nri::DeviceDesc desc{};
+                desc.api = api;
+#ifdef _WIN32
+                desc.window.type = NRI_WINDOW_SYSTEM_WIN32;
+                desc.window.hwnd = SDL_GetPointerProperty(SDL_GetWindowProperties(m_Window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr);
+#endif
+#ifndef NDEBUG
+                desc.enableValidation = true;
+#endif
+                const std::string cache = std::string("shader_cache_") + example.Name() + (IsD3D12() ? "_dx12" : "_vk");
+                desc.shaderCacheDir = cache.c_str();
+                desc.logCallback = OnNriLog;
+                device = nri::createDevice(desc);
+                swapchain = nri::createSwapchain(device, { uint32_t(m_Width), uint32_t(m_Height), vsync });
+
+                resources = device.createDescriptorHeap({ .type = NRI_DESCRIPTOR_HEAP_RESOURCE, .maxBufferDescriptors = 256, .maxImageDescriptors = 256 });
+                nri::SamplerDesc linearRepeat{};
+                linearRepeat.magFilter = linearRepeat.minFilter = NRI_FILTER_LINEAR;
+                linearRepeat.mipmapMode = NRI_SAMPLER_MIPMAP_LINEAR;
+                linearRepeat.addressModeU = linearRepeat.addressModeV = linearRepeat.addressModeW = NRI_SAMPLER_ADDRESS_REPEAT;
+                linearRepeat.maxLod = 1000.0f;
+                nri::SamplerDesc linearClamp = linearRepeat;
+                linearClamp.addressModeU = linearClamp.addressModeV = linearClamp.addressModeW = NRI_SAMPLER_ADDRESS_CLAMP_TO_EDGE;
+                nri::SamplerDesc nearestClamp = linearClamp;
+                nearestClamp.magFilter = nearestClamp.minFilter = NRI_FILTER_NEAREST;
+                nearestClamp.mipmapMode = NRI_SAMPLER_MIPMAP_NEAREST;
+                samplers = device.createDescriptorHeap({ .type = NRI_DESCRIPTOR_HEAP_SAMPLER, .maxSamplerDescriptors = 8, .samplers = { linearRepeat, linearClamp, nearestClamp } });
+
+                compiler = nri::createSlangCompiler();
+                compiler.setTargetAPI(api);
+                compiler.addSearchPath(m_BaseDir.string()); // (nox_gpu.slang sits beside the executable)
+
+                graph.SetLogCallback(OnGraphLog);
+#ifndef NDEBUG
+                graph.SetValidationEnabled(true);
+#endif
+                graph.Initialize(device, resources, kFramesInFlight);
+                graph.SetCommandBufferSetup([this](nri::CommandBuffer& cmd, nri::QueueType queue) {
+                    cmd.bindDescriptorHeaps(&resources, &samplers);
+                    if (queue == NRI_QUEUE_GRAPHICS)
+                        BaselineState(cmd);
+                });
+
+                std::printf("[%s] %s\n", example.Name(), ApiName());
+                example.Init(*this);
+            }
+            catch (const std::exception& e)
+            {
+                std::fprintf(stderr, "[%s] start-up failed on %s: %s\n", example.Name(), ApiName(), e.what());
+                return false;
+            }
+            m_Start = m_LastFrame = std::chrono::steady_clock::now();
+            return true;
+        }
+
+        SDL_AppResult Event(const SDL_Event& event)
+        {
+            if (event.type == SDL_EVENT_QUIT)
+                return SDL_APP_SUCCESS;
+            if (event.type == SDL_EVENT_KEY_DOWN)
+            {
+                if (event.key.key == SDLK_ESCAPE)
+                    return SDL_APP_SUCCESS;
+                m_Example->OnKey(event.key.key);
+            }
+            if (event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED || event.type == SDL_EVENT_WINDOW_RESIZED || event.type == SDL_EVENT_WINDOW_RESTORED)
+            {
+                SDL_GetWindowSizeInPixels(m_Window, &m_Width, &m_Height);
+                m_NeedsResize = true;
+            }
+            return SDL_APP_CONTINUE;
+        }
+
+        SDL_AppResult Iterate()
+        {
+            if (m_MaxFrames >= 0 && int(m_FrameNumber) >= m_MaxFrames)
+                return g_Errors ? SDL_APP_FAILURE : SDL_APP_SUCCESS;
+            try
+            {
+                if ((SDL_GetWindowFlags(m_Window) & SDL_WINDOW_MINIMIZED) || m_Width <= 0 || m_Height <= 0)
+                {
+                    SDL_Delay(16);
+                    return SDL_APP_CONTINUE;
+                }
+                if (m_NeedsResize)
+                {
+                    device.waitIdle();
+                    graph.ReleaseResources();
+                    swapchain.reset();
+                    swapchain = nri::createSwapchain(device, { uint32_t(m_Width), uint32_t(m_Height), vsync });
+                    m_NeedsResize = false;
+                }
+
+                device.beginFrame(uint32_t(m_FrameNumber));
+                FrameInfo frame;
+                frame.frameNumber = m_FrameNumber;
+                frame.frameSlot = uint32_t(m_FrameNumber % kFramesInFlight);
+                if (swapchain.acquireNextImage(frame.frameSlot, frame.imageIndex) == NRI_FRAME_RESULT_RESIZE_REQUIRED)
+                {
+                    m_NeedsResize = true;
+                    return SDL_APP_CONTINUE;
+                }
+                frame.extent = swapchain.getExtent();
+                if (!frame.extent.width || !frame.extent.height)
+                {
+                    m_NeedsResize = true;
+                    return SDL_APP_CONTINUE;
+                }
+                const auto now = std::chrono::steady_clock::now();
+                frame.time = std::chrono::duration<float>(now - m_Start).count();
+                frame.deltaTime = std::min(std::chrono::duration<float>(now - m_LastFrame).count(), 0.1f);
+                m_LastFrame = now;
+
+                graph.Reset({ m_FrameNumber, frame.extent, frame.extent });
+                m_Example->Render(*this, graph, frame);
+                graph.Compile();
+                const auto submissions = graph.Execute(frame.frameSlot);
+                for (size_t s = 0; s < submissions.size(); ++s)
+                {
+                    const auto& sub = submissions[s];
+                    if (s + 1 == submissions.size())
+                        device.submitCommandBuffers(sub.CommandBuffers, swapchain.handle(), frame.frameSlot, frame.imageIndex, sub.Waits);
+                    else
+                        device.submit(sub.Queue, sub.CommandBuffers, sub.Waits, sub.Signals);
+                }
+                if (swapchain.present(frame.frameSlot, frame.imageIndex) == NRI_FRAME_RESULT_RESIZE_REQUIRED)
+                    m_NeedsResize = true;
+
+                ++m_FrameNumber;
+                ++m_FramesThisSecond;
+                const float sinceTitle = std::chrono::duration<float>(now - m_TitleTime).count();
+                if (sinceTitle >= 1.0f)
+                {
+                    SDL_SetWindowTitle(m_Window, Title(float(m_FramesThisSecond) / sinceTitle).c_str());
+                    if (!m_Status.empty() && m_Status != m_PrintedStatus)
+                    {
+                        std::printf("[%s] %s: %s\n", m_Example->Name(), ApiName(), m_Status.c_str());
+                        m_PrintedStatus = m_Status;
+                    }
+                    m_TitleTime = now;
+                    m_FramesThisSecond = 0;
+                }
+            }
+            catch (const std::exception& e)
+            {
+                std::fprintf(stderr, "[%s] frame %llu on %s: %s\n", m_Example->Name(), static_cast<unsigned long long>(m_FrameNumber), ApiName(), e.what());
+                return SDL_APP_FAILURE;
+            }
+            return SDL_APP_CONTINUE;
+        }
+
+        void Quit(SDL_AppResult result)
+        {
+            if (device)
+            {
+                device.waitIdle();
+                m_Example->Shutdown(*this);
+                graph.ReleaseResources();
+            }
+            const bool failed = result == SDL_APP_FAILURE || g_Errors > 0;
+            if (m_Example)
+                std::printf("[%s] %s: %llu frames, %d error(s)%s\n", m_Example->Name(), ApiName(), static_cast<unsigned long long>(m_FrameNumber), g_Errors,
+                            failed ? "" : " -- clean exit");
+        }
+
+        // Resets the state every raster pass starts from (the RenderGraph calls it for each graphics command buffer).
+        static void BaselineState(nri::CommandBuffer& cmd)
+        {
+            cmd.setVertexInput();
+            cmd.setPrimitiveTopology(NRI_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+            cmd.setPrimitiveRestartEnable(false);
+            cmd.setRasterizerDiscardEnable(false);
+            cmd.setPolygonMode(NRI_POLYGON_MODE_FILL);
+            cmd.setFrontFace(NRI_FRONT_FACE_COUNTER_CLOCKWISE);
+            cmd.setDepthBiasEnable(false);
+            cmd.setDepthClampEnable(false);
+            cmd.setLineWidth(1.0f);
+            cmd.setRasterizationSamples(1);
+            cmd.setSampleMask(1, 0xFFFFFFFFu);
+            cmd.setAlphaToCoverageEnable(false);
+            cmd.setAlphaToOneEnable(false);
+            cmd.setDepthBoundsTestEnable(false);
+            cmd.setStencilTestEnable(false);
+            cmd.setColorWriteMask(0, nri::ColorComponent::All);
+            cmd.setLogicOpEnable(false);
+            SetRasterState(cmd, {});
+        }
+
+        ~Host()
+        {
+            graph.ReleaseResources();
+            compiler.reset();
+            samplers.reset();
+            resources.reset();
+            swapchain.reset();
+            device.reset();
+            if (m_Window)
+                SDL_DestroyWindow(m_Window);
+        }
+
+    private:
+        std::string Title(float fps) const
+        {
+            char text[160];
+            std::snprintf(text, sizeof(text), "NoxRHI %s -- %s", m_Example ? m_Example->Name() : "", ApiName());
+            std::string title = text;
+            if (fps > 0)
+            {
+                std::snprintf(text, sizeof(text), " -- %.0f fps", fps);
+                title += text;
+            }
+            if (!m_Status.empty())
+                title += " -- " + m_Status;
+            return title;
+        }
+
+        Example* m_Example = nullptr;
+        std::string m_Status, m_PrintedStatus;
+        SDL_Window* m_Window = nullptr;
+        std::filesystem::path m_BaseDir = ".";
+        int m_Width = 1280, m_Height = 720;
+        int m_MaxFrames = -1;
+        bool m_NeedsResize = false;
+        uint64_t m_FrameNumber = 0;
+        uint32_t m_FramesThisSecond = 0;
+        std::chrono::steady_clock::time_point m_Start, m_LastFrame, m_TitleTime;
+    };
+
+    // Per-frame constants a shader reads through BufferRef<T>: one CPU-written buffer per frame in flight, so the CPU never
+    // overwrites what the GPU is still reading.
+    template <class T>
+    class FrameConstants
+    {
+    public:
+        void Create(Host& host)
+        {
+            for (uint32_t i = 0; i < kFramesInFlight; ++i)
+            {
+                m_Buffers[i] = host.device.createBuffer({ .size = sizeof(T), .usage = NRI_BUFFER_USAGE_UNIFORM });
+                m_Refs[i] = host.Refs(m_Buffers[i], sizeof(T), false).read;
+            }
+        }
+        // Writes this frame's values and returns the reference to pass to the shader.
+        uint64_t Write(uint32_t frameSlot, const T& value)
+        {
+            std::memcpy(m_Buffers[frameSlot].map(0, sizeof(T)), &value, sizeof(T));
+            m_Buffers[frameSlot].unmap();
+            return m_Refs[frameSlot];
+        }
+        void Reset()
+        {
+            for (auto& b : m_Buffers)
+                b.reset();
+        }
+
+    private:
+        nri::Buffer m_Buffers[kFramesInFlight];
+        uint64_t m_Refs[kFramesInFlight]{};
+    };
+}
+
+// The SDL entry points for one example class.
+#define NOX_EXAMPLE_MAIN(ExampleType)                                                                                                       \
+    struct NoxExampleState                                                                                                                  \
+    {                                                                                                                                       \
+        nox::Host host;       /* (declared first: destroyed last, after the example's buffers and pipelines) */                           \
+        ExampleType example;                                                                                                                \
+    };                                                                                                                                      \
+    SDL_AppResult SDL_AppInit(void** appstate, int argc, char** argv)                                                                       \
+    {                                                                                                                                       \
+        auto* state = new NoxExampleState();                                                                                                \
+        *appstate = state;                                                                                                                  \
+        return state->host.Start(state->example, argc, argv) ? SDL_APP_CONTINUE : SDL_APP_FAILURE;                                          \
+    }                                                                                                                                       \
+    SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event) { return static_cast<NoxExampleState*>(appstate)->host.Event(*event); }    \
+    SDL_AppResult SDL_AppIterate(void* appstate) { return static_cast<NoxExampleState*>(appstate)->host.Iterate(); }                        \
+    void SDL_AppQuit(void* appstate, SDL_AppResult result)                                                                                  \
+    {                                                                                                                                       \
+        if (auto* state = static_cast<NoxExampleState*>(appstate))                                                                          \
+        {                                                                                                                                   \
+            state->host.Quit(result);                                                                                                       \
+            delete state;                                                                                                                   \
+        }                                                                                                                                   \
+    }

@@ -85,3 +85,22 @@ jobs:
           Write-Host ("ShaderCompat exit code: {0} (0x{0:X8})" -f $code)
           Pop-Location
           if ($code -ne 0) { exit $code }
+
+      # The windowed cross-API examples on D3D12 (WARP, debug layer on in Debug): 30 frames each; a D3D12, NoxRHI or render-graph
+      # error fails the step. (Vulkan needs a GPU driver with VK_EXT_descriptor_heap: run them with --vk on a real machine.)
+      - name: Run cross-API examples on D3D12 (WARP)
+        if: always()
+        shell: pwsh
+        env:
+          NOXRHI_D3D12_WARP: "1"
+        run: |
+          Push-Location ./build/${{ matrix.config }}
+          $failed = 0
+          foreach ($example in 'GpuParticles', 'BindlessScene', 'MeshletCulling', 'RayQueryShadows') {
+            Write-Host "=== $example ==="
+            & "./$example.exe" --dx12 --frames 30
+            $code = $LASTEXITCODE
+            if ($code -ne 0) { Write-Host ("$example exit code: {0} (0x{0:X8})" -f $code); $failed = 1 }
+          }
+          Pop-Location
+          exit $failed

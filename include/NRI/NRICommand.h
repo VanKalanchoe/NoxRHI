@@ -162,7 +162,8 @@ enum NriStageBits
     NRI_STAGE_TRANSFER = 1u << 6,
     NRI_STAGE_ACCELERATION_STRUCTURE_BUILD = 1u << 7,
     NRI_STAGE_INDIRECT = 1u << 8,
-    NRI_STAGE_RAY_TRACING = 1u << 9
+    NRI_STAGE_RAY_TRACING = 1u << 9,
+    NRI_STAGE_VERTEX = 1u << 10 // vertex shaders (a buffer a vertex shader pulls from)
 };
 
 typedef struct NriResourceState

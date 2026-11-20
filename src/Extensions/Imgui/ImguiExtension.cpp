@@ -527,7 +527,7 @@ float4 fragMain(VSOut input, uniform PushConstants pc) : SV_Target
             {
                 .buffer = geom.vtxGpu.get(),
                 .before = { AccessBits::TransferWrite, StageBits::Transfer },
-                .after = { AccessBits::ShaderRead, StageBits::Fragment | StageBits::Compute | StageBits::Task | StageBits::Mesh }
+                .after = { AccessBits::ShaderRead, StageBits::Fragment | StageBits::Compute | StageBits::Task | StageBits::Mesh | StageBits::Vertex }
             }
         };
         cmd.resourceBarriers({}, barriers);

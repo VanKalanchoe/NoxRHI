@@ -81,6 +81,7 @@ namespace nri
         inline constexpr uint32_t AccelerationStructureBuild = NRI_STAGE_ACCELERATION_STRUCTURE_BUILD;
         inline constexpr uint32_t Indirect = NRI_STAGE_INDIRECT;
         inline constexpr uint32_t RayTracing = NRI_STAGE_RAY_TRACING;
+        inline constexpr uint32_t Vertex = NRI_STAGE_VERTEX;
     }
 
     namespace ColorComponent

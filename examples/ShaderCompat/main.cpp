@@ -732,6 +732,62 @@ namespace
             return Compare(got, want, "out");
         } });
 
+        tests.push_back({ "csStructLayout", "a struct through nox_gpu.slang's BufferRef: layout, stride, Mat4, LoadByte", false, true, [](Suite& s, nri::Pipeline& p)
+        {
+            struct LayoutProbe
+            {
+                float a[4];
+                float b[3];
+                uint32_t c;
+                uint64_t d;
+                float e[2];
+                uint32_t f, g;
+                float m[16]; // column-major
+            };
+            static_assert(sizeof(LayoutProbe) == 120 && offsetof(LayoutProbe, d) == 32 && offsetof(LayoutProbe, m) == 56, "LayoutProbe must match shader_compat.slang");
+            LayoutProbe probes[2]{};
+            for (int k = 0; k < 2; ++k)
+            {
+                LayoutProbe& p = probes[k];
+                const float base = k == 0 ? -100.0f : 1.0f; // (element 0 is a decoy: reading it instead of element 1 fails)
+                for (int i = 0; i < 4; ++i) p.a[i] = base + float(i);
+                for (int i = 0; i < 3; ++i) p.b[i] = base + 10.0f + float(i);
+                p.c = 0xC0DE0000u + uint32_t(k);
+                p.d = 0x0123456789ABCDEFull + uint64_t(k);
+                p.e[0] = base + 20.0f; p.e[1] = base + 21.0f;
+                p.f = 0xF00Du + uint32_t(k); p.g = 0x600Du + uint32_t(k);
+                for (int i = 0; i < 16; ++i) p.m[i] = base + 30.0f + float(i);
+            }
+            std::vector<uint32_t> in(sizeof(probes) / 4);
+            std::memcpy(in.data(), probes, sizeof(probes));
+            Push push = s.BasePush();
+            const std::vector<uint32_t> got = s.Run(p, in, 30, 1, 1, push);
+
+            const LayoutProbe& p = probes[1];
+            std::vector<uint32_t> want;
+            for (float v : p.a) want.push_back(AsUint(v));
+            for (float v : p.b) want.push_back(AsUint(v));
+            want.push_back(p.c);
+            want.push_back(uint32_t(p.d));
+            want.push_back(uint32_t(p.d >> 32));
+            want.push_back(AsUint(p.e[0]));
+            want.push_back(AsUint(p.e[1]));
+            want.push_back(p.f);
+            want.push_back(p.g);
+            const float v[4] = { 1, 2, 3, 4 };
+            for (int row = 0; row < 4; ++row)
+            {
+                float sum = 0;
+                for (int column = 0; column < 4; ++column)
+                    sum += p.m[column * 4 + row] * v[column];
+                want.push_back(AsUint(sum));
+            }
+            const auto* bytes = reinterpret_cast<const uint8_t*>(probes);
+            for (int i = 0; i < 8; ++i)
+                want.push_back(bytes[120 + i]);
+            return Compare(got, want, "word");
+        } });
+
         tests.push_back({ "csGroupShared", "groupshared memory + barriers (tree sum)", false, true, [](Suite& s, nri::Pipeline& p)
         {
             const uint32_t n = 64 * 20 - 13;

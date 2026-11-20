@@ -117,7 +117,8 @@ namespace nri
         uint32_t ShaderStages(RGPassFlags flags)
         {
             if (HasFlag(flags, RGPassFlags::RayTracing)) return StageBits::RayTracing;
-            return HasFlag(flags, RGPassFlags::Raster) ? StageBits::Task | StageBits::Mesh | StageBits::Fragment : StageBits::Compute;
+            // (raster passes draw with vertex shaders as well as task / mesh shaders: a buffer a vertex shader reads needs its stage)
+            return HasFlag(flags, RGPassFlags::Raster) ? StageBits::Vertex | StageBits::Task | StageBits::Mesh | StageBits::Fragment : StageBits::Compute;
         }
 
         ResourceState TextureState(RGTextureAccess access, RGPassFlags flags)

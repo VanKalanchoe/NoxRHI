@@ -345,6 +345,9 @@ if(NRI_BUILD_EXAMPLES)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CMAKE_CURRENT_SOURCE_DIR}/examples/ShaderCompat/shader_compat.slang"
             $<TARGET_FILE_DIR:ShaderCompat>/shader_compat.slang
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/examples/Common/nox_gpu.slang"
+            $<TARGET_FILE_DIR:ShaderCompat>/nox_gpu.slang
     )
 
     add_executable(StreamlineNRDDemo examples/StreamlineNRDDemo/main.cpp)
@@ -365,6 +368,23 @@ if(NRI_BUILD_EXAMPLES)
                 "${CMAKE_CURRENT_SOURCE_DIR}/examples/RenderGraphTriangle/triangle.slang"
                 $<TARGET_FILE_DIR:RenderGraphTriangle>/triangle.slang
         )
+
+        # Cross-API examples: one Slang source each, run with --vk or --dx12 (examples/Common: the shared window / device / frame
+        # loop and nox_gpu.slang, the one header that hides what differs between Vulkan and D3D12 shaders).
+        function(noxrhi_add_cross_api_example name)
+            add_executable(${name} examples/${name}/main.cpp examples/Common/ExampleApp.h examples/Common/ExampleMath.h)
+            target_link_libraries(${name} PRIVATE NoxRHI::RenderGraph SDL3::SDL3)
+            noxrhi_copy_runtime_deps(${name})
+            file(GLOB example_shaders "${CMAKE_CURRENT_SOURCE_DIR}/examples/${name}/*.slang")
+            add_custom_command(TARGET ${name} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different ${example_shaders}
+                    "${CMAKE_CURRENT_SOURCE_DIR}/examples/Common/nox_gpu.slang" $<TARGET_FILE_DIR:${name}>
+            )
+        endfunction()
+        noxrhi_add_cross_api_example(GpuParticles)
+        noxrhi_add_cross_api_example(BindlessScene)
+        noxrhi_add_cross_api_example(MeshletCulling)
+        noxrhi_add_cross_api_example(RayQueryShadows)
 
         find_package(Stb QUIET)
         if(Stb_FOUND OR DEFINED Stb_INCLUDE_DIR)
