@@ -181,6 +181,9 @@ already work on both and need nothing.
    expose the typed reference with a Slang `property` (no space):
    `uint64_t aRef; property BufferRef<A> a { get { return BufferRef<A>(aRef); } }`. All four examples do this; their push layouts were
    checked in the DXIL against the C++ structs. (Structs *inside buffers*, read through `BufferRef`, use the C-like layout on both.)
+   **NoxRHI reports it:** every D3D12 compile compares the entry point's push data with Vulkan's scalar layout and logs an error naming
+   the first field that moved (`Push data of 'csFoo' (file.slang) differs between the APIs: 'pc.b' is at byte 16 on D3D12 but byte 8 on
+   Vulkan ...`) -- `src/Extensions/ShaderCompiler/PushLayoutCheck.h`.
 1. **Buffer pointers.** D3D12 shaders have no pointers. Every `(T*)push.someReference` (the engine reaches its UBO, lights, instances, meshlets
    and particles this way) becomes a `BufferRef<T>` (read) or `RWBufferRef<T>` (write) from `nox_gpu.slang`: a 64-bit value that is the device
    address on Vulkan and a descriptor slot on D3D12 (`ByteAddressBuffer` / `RWByteAddressBuffer` handles). The push data layout does not change

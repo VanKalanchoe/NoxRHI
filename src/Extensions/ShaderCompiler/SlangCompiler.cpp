@@ -1,3 +1,4 @@
+#include "PushLayoutCheck.h"
 #include "SlangCompiler.h"
 
 #include <algorithm>
@@ -332,6 +333,17 @@ namespace NRI
             }
             if (SLANG_FAILED(result) || !linked)
                 throw std::runtime_error("Slang failed to link entry point '" + entryName + "' in: " + path);
+
+            // D3D12 packs push data as a constant buffer; Vulkan (scalar layout) packs it like the host's C++ struct. A difference reads
+            // the wrong bytes on D3D12 with no other error, so it is reported here.
+            if (m_targetAPI == GraphicsAPI::D3D12)
+            {
+                if (const std::string difference = CheckPushLayoutMatchesScalar(linked.get()); !difference.empty())
+                    NRI_LOG_ERROR("Push data of '{}' ({}) differs between the APIs: {}. D3D12 packs push data as a constant buffer -- a struct "
+                                  "member starts a new 16-byte row and a vector may not cross one -- while Vulkan packs it tightly. Keep "
+                                  "structs out of push data (a uint64_t reference with a property, see nox_gpu.slang) and keep vectors "
+                                  "inside 16-byte rows.", entryName, path, difference);
+            }
 
             result = linked->getEntryPointCode(0, 0, targetCode.writeRef(), targetDiagnostics.writeRef());
         }

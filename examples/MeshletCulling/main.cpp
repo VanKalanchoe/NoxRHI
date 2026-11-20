@@ -260,8 +260,13 @@ public:
                 nri::drawMeshTasks(cmd, (m_MeshletCount * m_InstanceCount + kTaskGroupSize - 1) / kTaskGroupSize);
             });
 
+        // (the readback buffer is this pass's output: declared, so the render graph keeps the pass -- a pass that only reads is culled)
+        const nri::RGBuffer readback = graph.ImportBuffer("StatsReadback", m_Readback[frame.frameSlot]);
         graph.AddPass("ReadStats", nri::RGPassFlags::None,
-            [&](nri::RGBuilder& b) { b.Read(stats, nri::RGBufferAccess::CopySource); },
+            [&](nri::RGBuilder& b) {
+                b.Read(stats, nri::RGBufferAccess::CopySource);
+                b.Write(readback, nri::RGBufferAccess::CopyDestination);
+            },
             [this, slot = frame.frameSlot](nri::RGPassContext& ctx) { ctx.Cmd().copyBuffer(m_Stats, m_Readback[slot], nri::BufferCopyRegion{ 0, 0, 4 }); });
     }
 
