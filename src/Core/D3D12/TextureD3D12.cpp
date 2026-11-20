@@ -116,6 +116,7 @@ namespace NRI
 
         m_image = m_deviceD3D12.getAllocator()->createImage(resDesc, initialState, pClearValue);
         m_resource = m_image.resource;
+        m_needsInitialDiscard = (resDesc.Flags & (D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)) != 0;
     }
 
     void TextureD3D12::uploadFromBuffer(CommandBuffer& cmdBuffer, Buffer& stagingBuffer, uint32_t width, uint32_t height,
@@ -274,6 +275,7 @@ namespace NRI
         if (!cmdD3D12 || !bufferD3D12) return;
 
         auto* list = cmdD3D12->getNativeCommandList();
+        cmdD3D12->initializeTarget(*this);
 
         if (m_currentState != D3D12_RESOURCE_STATE_COPY_SOURCE)
         {

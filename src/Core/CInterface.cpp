@@ -292,6 +292,11 @@ bool NRI_CALL nriIsMemoryBudgetSupported(NriDevice device)
     return device && device->impl ? device->impl->isMemoryBudgetSupported() : false;
 }
 
+bool NRI_CALL nriSupportsMeshShaders(NriDevice device)
+{
+    return device && device->impl ? device->impl->supportsMeshShaders() : false;
+}
+
 bool NRI_CALL nriSupportsSparseBuffers(NriDevice device)
 {
     return device && device->impl ? device->impl->supportsSparseBuffers() : false;

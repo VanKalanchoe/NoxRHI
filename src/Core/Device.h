@@ -46,6 +46,8 @@ namespace NRI
 
         virtual void beginFrame(uint32_t frameNumber) = 0;
         virtual bool supportsSparseBuffers() const { return false; }
+        // Task (amplification) + mesh shader pipelines. Vulkan picks only devices with VK_EXT_mesh_shader, so it is always true there.
+        virtual bool supportsMeshShaders() const { return true; }
         virtual uint64_t getSparseBufferReserveLimit() const { return 0; }
         virtual bool updateSparseBuffer(Buffer& buffer, std::span<const SparsePageRange> commits, std::span<const SparsePageRange> releases)
         {

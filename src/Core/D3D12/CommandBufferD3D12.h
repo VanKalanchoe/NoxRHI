@@ -109,6 +109,10 @@ namespace NRI
         void beginDebugLabel(const char* label) override;
         void endDebugLabel() override;
 
+        // Discards a render-target / depth texture in placed memory before its first use (see TextureD3D12::needsInitialDiscard);
+        // nothing for any other texture. Recording marks it initialized.
+        void initializeTarget(class TextureD3D12& texture);
+
     private:
         void ensureGraphicsPipelineState();
         void transitionBufferState(class BufferD3D12& buffer, D3D12_RESOURCE_STATES afterState);

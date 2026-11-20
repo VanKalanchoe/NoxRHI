@@ -31,6 +31,10 @@ namespace NRI
         DXGI_FORMAT getDxgiFormat() const { return m_dxgiFormat; }
         D3D12_RESOURCE_STATES getCurrentState() const { return m_currentState; }
         void setCurrentState(D3D12_RESOURCE_STATES state) { m_currentState = state; }
+        // Render-target / depth textures in placed (D3D12MA) memory hold no defined contents: D3D12 requires a Discard, Clear or Copy
+        // before any other use. CommandBufferD3D12::initializeTarget discards them on their first use.
+        bool needsInitialDiscard() const { return m_needsInitialDiscard; }
+        void markContentsInitialized() { m_needsInitialDiscard = false; }
 
         void uploadFromBuffer(CommandBuffer& cmdBuffer, Buffer& stagingBuffer, uint32_t width, uint32_t height,
                               uint32_t mipLevels, const std::vector<size_t>& mipOffsets) override;
@@ -54,5 +58,6 @@ namespace NRI
         uint32_t m_descriptorSlot = ~0u;
         bool m_ownsResource = true;
         D3D12_RESOURCE_STATES m_currentState = D3D12_RESOURCE_STATE_COMMON;
+        bool m_needsInitialDiscard = false;
     };
 }

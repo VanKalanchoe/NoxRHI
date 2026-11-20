@@ -13,6 +13,8 @@ NRI_API bool NRI_CALL nriHasAsyncComputeQueue(NriDevice device);
 NRI_API bool NRI_CALL nriIsSurfaceFormatBGRA(NriDevice device);
 NRI_API bool NRI_CALL nriIsMemoryBudgetSupported(NriDevice device);
 NRI_API bool NRI_CALL nriSupportsSparseBuffers(NriDevice device);
+// Task + mesh shader pipelines (always on Vulkan, which needs VK_EXT_mesh_shader; D3D12: mesh shader tier 1).
+NRI_API bool NRI_CALL nriSupportsMeshShaders(NriDevice device);
 NRI_API uint64_t NRI_CALL nriGetSparseBufferReserveLimit(NriDevice device);
 NRI_API NriTimelinePoint NRI_CALL nriGetSparseTimelinePoint(NriDevice device);
 NRI_API uint64_t NRI_CALL nriGetTextureBytes(NriDevice device);

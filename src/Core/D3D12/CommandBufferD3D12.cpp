@@ -120,6 +120,7 @@ namespace NRI
 
             if (tex)
             {
+                initializeTarget(*tex);
                 if (tex->getCurrentState() != D3D12_RESOURCE_STATE_RENDER_TARGET)
                 {
                     D3D12_RESOURCE_BARRIER barrier{};
@@ -156,6 +157,7 @@ namespace NRI
         if (desc.depthAttachment.attachment)
         {
             auto* depthTex = dynamic_cast<TextureD3D12*>(desc.depthAttachment.attachment);
+            initializeTarget(*depthTex);
             if (depthTex->getCurrentState() != D3D12_RESOURCE_STATE_DEPTH_WRITE)
             {
                 D3D12_RESOURCE_BARRIER barrier{};
@@ -469,6 +471,8 @@ namespace NRI
     {
         auto* srcD3D12 = static_cast<TextureD3D12*>(&srcTexture);
         auto* dstD3D12 = static_cast<TextureD3D12*>(&dstTexture);
+        initializeTarget(*srcD3D12);
+        initializeTarget(*dstD3D12); // (a resolve is not one of the operations that initialize a target)
         // ResolveSubresource needs RESOLVE_SOURCE / RESOLVE_DEST, which no ResourceState maps to: transitioned here, the tracked states
         // updated, so the next barrier starts from them.
         D3D12_RESOURCE_BARRIER barriers[2]{};
@@ -499,6 +503,8 @@ namespace NRI
     {
         auto* srcD3D12 = static_cast<TextureD3D12*>(&srcTexture);
         auto* dstD3D12 = static_cast<TextureD3D12*>(&dstTexture);
+        initializeTarget(*srcD3D12);
+        dstD3D12->markContentsInitialized(); // (a copy initializes its destination)
 
         D3D12_TEXTURE_COPY_LOCATION dstLoc{};
         dstLoc.pResource = dstD3D12->getNativeResource();
@@ -518,6 +524,8 @@ namespace NRI
     {
         auto* srcD3D12 = static_cast<TextureD3D12*>(&srcTexture);
         auto* dstD3D12 = static_cast<TextureD3D12*>(&dstTexture);
+        initializeTarget(*srcD3D12);
+        dstD3D12->markContentsInitialized();
 
         for (uint32_t i = 0; i < mipCount; ++i)
         {
@@ -615,6 +623,28 @@ namespace NRI
         b.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
         b.UAV.pResource = nullptr;
         m_cmdList->ResourceBarrier(1, &b);
+    }
+
+    void CommandBufferD3D12::initializeTarget(TextureD3D12& texture)
+    {
+        if (!texture.needsInitialDiscard())
+            return;
+        // DiscardResource wants a render target in RENDER_TARGET and a depth target in DEPTH_WRITE.
+        const D3D12_RESOURCE_STATES state = texture.getUsage() == TextureUsage::DepthStencilAttachment ? D3D12_RESOURCE_STATE_DEPTH_WRITE
+                                                                                                       : D3D12_RESOURCE_STATE_RENDER_TARGET;
+        if (texture.getCurrentState() != state)
+        {
+            D3D12_RESOURCE_BARRIER barrier{};
+            barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            barrier.Transition.pResource = texture.getNativeResource();
+            barrier.Transition.StateBefore = texture.getCurrentState();
+            barrier.Transition.StateAfter = state;
+            barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            m_cmdList->ResourceBarrier(1, &barrier);
+            texture.setCurrentState(state);
+        }
+        m_cmdList->DiscardResource(texture.getNativeResource(), nullptr);
+        texture.markContentsInitialized();
     }
 
     void CommandBufferD3D12::transitionBufferState(BufferD3D12& buffer, D3D12_RESOURCE_STATES afterState)

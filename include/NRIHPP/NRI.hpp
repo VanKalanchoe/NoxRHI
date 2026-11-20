@@ -779,6 +779,7 @@ namespace nri
         bool isSurfaceFormatBGRA() const { return nriIsSurfaceFormatBGRA(m_handle); }
         bool isMemoryBudgetSupported() const { return nriIsMemoryBudgetSupported(m_handle); }
         bool supportsSparseBuffers() const { return nriSupportsSparseBuffers(m_handle); }
+        bool supportsMeshShaders() const { return nriSupportsMeshShaders(m_handle); }
         uint64_t getSparseBufferReserveLimit() const { return nriGetSparseBufferReserveLimit(m_handle); }
         TimelinePoint getSparseTimelinePoint() const
         {

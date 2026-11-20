@@ -409,7 +409,7 @@ struct MeshPayload
 {
     uint unused;
 };
-groupshared MeshPayload gMeshPayload;
+groupshared MeshPayload gMeshPayload; // (the mesh shader must take the payload the task shader sends: D3D12 checks their sizes match)
 
 [shader("amplification")]
 [numthreads(1, 1, 1)]
@@ -422,7 +422,7 @@ void tsGfx()
 [shader("mesh")]
 [outputtopology("triangle")]
 [numthreads(3, 1, 1)]
-void msGfx(uint tid : SV_GroupIndex, out indices uint3 triangles[1], out vertices GfxOut verts[3], uniform Push pc)
+void msGfx(uint tid : SV_GroupIndex, in payload MeshPayload meshPayload, out indices uint3 triangles[1], out vertices GfxOut verts[3], uniform Push pc)
 {
     SetMeshOutputCounts(3, 1);
     const float2 p[3] = { float2(-1, 1), float2(0, 1), float2(-1, 0) };

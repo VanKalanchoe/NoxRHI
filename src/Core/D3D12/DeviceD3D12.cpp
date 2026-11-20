@@ -162,7 +162,8 @@ namespace NRI
         D3D12_FEATURE_DATA_D3D12_OPTIONS7 opts7{};
         if (SUCCEEDED(m_device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS7, &opts7, sizeof(opts7))))
         {
-            NRI_LOG_INFO("Mesh shaders: {}", opts7.MeshShaderTier == D3D12_MESH_SHADER_TIER_NOT_SUPPORTED ? "off" : "Tier 1");
+            m_meshShaders = opts7.MeshShaderTier != D3D12_MESH_SHADER_TIER_NOT_SUPPORTED;
+            NRI_LOG_INFO("Mesh shaders: {}", m_meshShaders ? "Tier 1" : "off");
         }
 
         if (m_streamline && m_streamline->isInitialized())

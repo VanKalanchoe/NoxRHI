@@ -266,6 +266,7 @@ namespace
         }
 
         NriGraphicsAPI Api() const { return m_Api; }
+        bool SupportsMeshShaders() const { return m_Device.supportsMeshShaders(); }
         const Push& BasePush() const { return m_BasePush; }
 
         // The pipeline of one entry point; empty with `error` set when it cannot be made (not compiled, or the device lacks a feature).
@@ -1024,7 +1025,7 @@ namespace
             return Compare(image, want, "texel");
         } });
 
-        tests.push_back({ "csRayQuery", "inline ray tracing (RayQuery) against a TLAS", true, true, [](Suite& s, nri::Pipeline& p)
+        tests.push_back({ "csRayQuery", "inline ray tracing (RayQuery) against a TLAS", true, false, [](Suite& s, nri::Pipeline& p)
         {
             Push push = s.BasePush();
             std::string error;
@@ -1043,7 +1044,19 @@ namespace
                     const float ox = -0.23f + (static_cast<float>(x) + 0.5f) * (1.5f / 8.0f), oy = -0.23f + (static_cast<float>(y) + 0.5f) * (1.5f / 8.0f);
                     want[y * 8 + x] = AsUint(ox >= 0.0f && oy >= 0.0f && ox + oy <= 1.0f ? 5.0f : -1.0f);
                 }
-            return Compare(got, want, "ray");
+            // Hit or miss must match exactly; the hit distance within a few float steps (WARP gives 5.0000005: implementations
+            // intersect with their own arithmetic, and neither API asks for an exact t).
+            Result r;
+            r.raw = got;
+            for (uint32_t i = 0; i < 64; ++i)
+                if ((AsFloat(want[i]) < 0.0f) != (AsFloat(got[i]) < 0.0f) || !Near(AsFloat(got[i]), AsFloat(want[i]), 0.0f, 1e-6f))
+                {
+                    r.status = Status::Fail;
+                    r.detail = "ray[" + std::to_string(i) + "] = " + std::to_string(AsFloat(got[i])) + ", expected " + std::to_string(AsFloat(want[i]));
+                    return r;
+                }
+            r.status = Status::Pass;
+            return r;
         } });
 
         // --- graphics (raster pipeline vsGfx / psGfx, mesh pipeline tsGfx / msGfx / psGfx) -------------------------------------------
@@ -1138,7 +1151,7 @@ namespace
             return r;
         }, 1 });
 
-        tests.push_back({ "gfxMeshShader", "task + mesh shader (the orientation triangle)", true, true,
+        tests.push_back({ "gfxMeshShader", "task + mesh shader (the orientation triangle)", false, true,
                           [orientation](Suite& s, nri::Pipeline& p) { return orientation(s, p, true); }, 2 });
 
         return tests;
@@ -1169,6 +1182,13 @@ namespace
             Result result;
             std::string error;
             const int errorsBefore = g_ValidationErrors;
+            if (test.graphics == 2 && !suite->SupportsMeshShaders())
+            {
+                result.detail = "the device has no mesh shaders";
+                std::printf("  %-4s %-17s %s -- %s\n", StatusText(result.status), test.entry.c_str(), test.what.c_str(), result.detail.c_str());
+                results[test.entry] = std::move(result);
+                continue;
+            }
             SetStage(std::string(apiName) + ": compiling " + test.entry);
             nri::Pipeline* pipeline = test.graphics == 1 ? suite->GetGfxPipeline(false, error)
                                     : test.graphics == 2 ? suite->GetGfxPipeline(true, error)

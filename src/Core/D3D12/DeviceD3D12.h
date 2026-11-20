@@ -70,6 +70,8 @@ namespace NRI
         QueueTimelineValues getSubmittedTimelineValues() const override;
         QueueTimelineValues getCompletedTimelineValues() const override;
 
+        bool supportsMeshShaders() const override { return m_meshShaders; }
+
     private:
         void initD3D12(const DeviceInitDesc& desc);
         void createGlobalRootSignature();
@@ -101,5 +103,6 @@ namespace NRI
         std::atomic<uint64_t> m_textureBytes = 0;
 
         std::unique_ptr<MemoryAllocatorD3D12> m_allocator;
+        bool m_meshShaders = false;
     };
 }

@@ -41,6 +41,7 @@ namespace NRI
         void beginFrame(uint32_t frameNumber) override;
         const std::string& getShaderCacheDir() const override { return m_shaderCacheDir; }
         bool isMemoryBudgetSupported() const override { return false; }
+        bool supportsMeshShaders() const override { return false; }
         void getMemoryStats(std::vector<MemoryHeapStats>& outHeaps) const override;
         uint64_t getTextureBytes() const override { return m_textureBytes.load(std::memory_order_relaxed); }
         void addTextureBytes(int64_t delta) { m_textureBytes.fetch_add(static_cast<uint64_t>(delta), std::memory_order_relaxed); }
