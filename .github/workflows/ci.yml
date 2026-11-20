@@ -80,7 +80,8 @@ jobs:
           Expand-Archive "$env:TEMP\dxc.zip" "$env:TEMP\dxc" -Force
           Copy-Item "$env:TEMP\dxc\bin\x64\dxcompiler.dll", "$env:TEMP\dxc\bin\x64\dxil.dll" ./build/${{ matrix.config }}/
           Push-Location ./build/${{ matrix.config }}
-          ./ShaderCompat.exe --dx12
+          ./ShaderCompat.exe --dx12 --verbose
           $code = $LASTEXITCODE
+          Write-Host ("ShaderCompat exit code: {0} (0x{0:X8})" -f $code)
           Pop-Location
           if ($code -ne 0) { exit $code }

@@ -324,3 +324,110 @@ void csRayQuery(uint3 id : SV_DispatchThreadID, uniform Push pc)
     const float t = query.CommittedStatus() == COMMITTED_TRIANGLE_HIT ? query.CommittedRayT() : -1.0;
     StoreOutFloat(pc, id.y * 8 + id.x, t);
 }
+
+// =====================================================================================================================================
+// Graphics: rendered offscreen into a 64 x 64 RGBA8 target (cleared to opaque black) with NoxRHI's +Y-up viewport
+// (setViewportWithCount with a negative height: Vulkan is flipped to D3D's convention, D3D12 needs no flip), then copied back.
+// uparams.x picks the shape; the host knows which pixels each shape must touch.
+// =====================================================================================================================================
+
+struct GfxOut
+{
+    float4 position : SV_Position;
+    float4 color : COLOR0;
+    nointerpolation float4 flatColor : COLOR1;
+};
+
+GfxOut MakeVertex(float2 xy, float z, float4 color)
+{
+    GfxOut o;
+    o.position = float4(xy, z, 1.0);
+    o.color = color;
+    o.flatColor = color;
+    return o;
+}
+
+// One of six quads' corners: quad q spans x0..x1 over the whole height at depth z.
+GfxOut QuadVertex(uint vid, float x0, float x1, float z, float4 color)
+{
+    static const float2 corners[6] = { float2(0, 0), float2(1, 0), float2(1, 1), float2(0, 0), float2(1, 1), float2(0, 1) };
+    const float2 c = corners[vid % 6];
+    return MakeVertex(float2(lerp(x0, x1, c.x), lerp(-1.0, 1.0, c.y)), z, color);
+}
+
+[shader("vertex")]
+GfxOut vsGfx(uint vid : SV_VertexID, uniform Push pc)
+{
+    const float4 red = float4(1, 0, 0, 1), green = float4(0, 1, 0, 1), blue = float4(0, 0, 1, 1), white = float4(1, 1, 1, 1);
+    switch (pc.uparams.x)
+    {
+    case 0: // orientation: a triangle in the top-left corner (NDC +Y up)
+    {
+        const float2 p[3] = { float2(-1, 1), float2(0, 1), float2(-1, 0) };
+        return MakeVertex(p[vid], 0.5, red);
+    }
+    case 1: // culling: a counter-clockwise triangle on the left (green), a clockwise one on the right (blue)
+    {
+        const float2 p[6] = { float2(-0.9, -0.5), float2(-0.1, -0.5), float2(-0.5, 0.5),
+                              float2(0.1, -0.5), float2(0.5, 0.5), float2(0.9, -0.5) };
+        return MakeVertex(p[vid], 0.5, vid < 3 ? green : blue);
+    }
+    case 2: // depth: far green over everything, near blue on the left half, middle red on the right 3/4, drawn in that order
+    {
+        const uint quad = vid / 6;
+        if (quad == 0) return QuadVertex(vid, -1.0, 1.0, 0.8, green);
+        if (quad == 1) return QuadVertex(vid, -1.0, 0.0, 0.2, blue);
+        return QuadVertex(vid, -0.5, 1.0, 0.5, red);
+    }
+    case 3: // blending: the whole target, colour (1, 0.5, 0.25) at alpha 0.5
+        return QuadVertex(vid, -1.0, 1.0, 0.5, float4(1.0, 0.5, 0.25, 0.5));
+    case 4: // interpolation: a triangle over the whole target, red / green / blue corners (the flat colour: the first vertex's)
+    {
+        const float2 p[3] = { float2(-1, -1), float2(3, -1), float2(-1, 3) };
+        const float4 c[3] = { red, green, blue };
+        return MakeVertex(p[vid], 0.5, c[vid]);
+    }
+    default: // 5, MSAA: white below the diagonal from the top-left to the bottom-right corner
+    {
+        const float2 p[3] = { float2(-1, -1), float2(1, -1), float2(-1, 1) };
+        return MakeVertex(p[vid], 0.5, white);
+    }
+    }
+}
+
+[shader("fragment")]
+float4 psGfx(GfxOut input, uniform Push pc) : SV_Target
+{
+    // Interpolation: the smooth colour, and in alpha the red of the flat (provoking vertex) colour -- 1 when the first vertex provokes.
+    if (pc.uparams.x == 4)
+        return float4(input.color.rgb, input.flatColor.r);
+    return input.color;
+}
+
+// Mesh shading: the orientation test's triangle from a task + mesh shader pair.
+struct MeshPayload
+{
+    uint unused;
+};
+groupshared MeshPayload gMeshPayload;
+
+[shader("amplification")]
+[numthreads(1, 1, 1)]
+void tsGfx()
+{
+    gMeshPayload.unused = 0;
+    DispatchMesh(1, 1, 1, gMeshPayload);
+}
+
+[shader("mesh")]
+[outputtopology("triangle")]
+[numthreads(3, 1, 1)]
+void msGfx(uint tid : SV_GroupIndex, out indices uint3 triangles[1], out vertices GfxOut verts[3], uniform Push pc)
+{
+    SetMeshOutputCounts(3, 1);
+    const float2 p[3] = { float2(-1, 1), float2(0, 1), float2(-1, 0) };
+    if (tid < 3)
+        verts[tid] = MakeVertex(p[tid], 0.5, float4(1, 0, 0, 1));
+    if (tid == 0)
+        triangles[0] = uint3(0, 1, 2);
+}

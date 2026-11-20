@@ -26,12 +26,51 @@
 
 #include <NRIHPP/NRI.hpp>
 #include <NRIHPP/NRIExtensions.hpp>
+#include <NRI/Extensions/NRIMeshShader.h>
+
+#include <csignal>
+#include <exception>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#endif
 #include <NRI/Extensions/NRIRayTracing.h>
 
 namespace
 {
     int g_ValidationErrors = 0;
     bool g_Verbose = false;
+    bool g_Finished = false;
+    const char* g_Stage = "starting"; // what the program was doing, printed if it dies (a crash, terminate, or a library calling exit)
+    std::string g_StageText;
+
+    void SetStage(std::string text)
+    {
+        g_StageText = std::move(text);
+        g_Stage = g_StageText.c_str();
+        if (g_Verbose)
+            std::fprintf(stderr, "[ShaderCompat] %s\n", g_Stage);
+    }
+
+    void InstallDeathReports()
+    {
+        std::atexit([] {
+            if (!g_Finished)
+                std::fprintf(stderr, "[ShaderCompat] the process exited early (a library called exit) while: %s\n", g_Stage);
+        });
+        std::set_terminate([] {
+            std::fprintf(stderr, "[ShaderCompat] std::terminate (an exception nobody caught) while: %s\n", g_Stage);
+            std::abort();
+        });
+        std::signal(SIGABRT, [](int) { std::fprintf(stderr, "[ShaderCompat] abort() while: %s\n", g_Stage); });
+#ifdef _WIN32
+        SetUnhandledExceptionFilter([](EXCEPTION_POINTERS* info) -> LONG {
+            std::fprintf(stderr, "[ShaderCompat] crashed (exception 0x%08lX) while: %s\n", info->ExceptionRecord->ExceptionCode, g_Stage);
+            return EXCEPTION_CONTINUE_SEARCH;
+        });
+#endif
+    }
 
     void NRI_CALL OnNriLog(NriLogLevel level, const char* message, void*)
     {
@@ -378,6 +417,137 @@ namespace
             }
         }
 
+        // --- graphics ------------------------------------------------------------------------------------------------------------------
+
+        struct GfxOptions
+        {
+            uint32_t shape = 0;
+            uint32_t vertexCount = 3;
+            bool depth = false;
+            bool blend = false;
+            bool cullBack = false;
+            uint32_t samples = 1;
+            bool mesh = false;
+        };
+
+        nri::Pipeline* GetGfxPipeline(bool mesh, std::string& error)
+        {
+            const std::string key = mesh ? "#mesh" : "#raster";
+            if (auto found = m_Pipelines.find(key); found != m_Pipelines.end())
+                return &found->second;
+            try
+            {
+                nri::PipelineDesc desc{ .type = NRI_PIPELINE_GRAPHICS, .colorFormats = { NRI_FORMAT_RGBA8 }, .buildNow = true };
+                if (mesh)
+                    desc.shaders = { { NRI_SHADER_STAGE_TASK, "tsGfx", m_ShaderPath }, { NRI_SHADER_STAGE_MESH, "msGfx", m_ShaderPath },
+                                     { NRI_SHADER_STAGE_FRAGMENT, "psGfx", m_ShaderPath } };
+                else
+                    desc.shaders = { { NRI_SHADER_STAGE_VERTEX, "vsGfx", m_ShaderPath }, { NRI_SHADER_STAGE_FRAGMENT, "psGfx", m_ShaderPath } };
+                nri::Pipeline pipeline = m_Device.createPipeline(desc, m_Compiler.handle());
+                m_Device.finishPipelineBuilds();
+                return &m_Pipelines.emplace(key, std::move(pipeline)).first->second;
+            }
+            catch (const std::exception& e)
+            {
+                error = e.what();
+                return nullptr;
+            }
+        }
+
+        // Renders one shape into the 64 x 64 target (multisampled and resolved when samples > 1) and returns its texels (RGBA8 words).
+        std::vector<uint32_t> RunGfx(nri::Pipeline& pipeline, const GfxOptions& o)
+        {
+            nri::Texture& target = o.samples > 1 ? m_MsaaTarget : m_ColorTarget;
+            nri::CommandBuffer& cmd = m_Cmd;
+            cmd.begin(0, true);
+            cmd.bindDescriptorHeaps(&m_Resources, &m_Samplers);
+
+            const nri::ResourceState colorWrite{ NRI_ACCESS_COLOR_ATTACHMENT_WRITE, NRI_STAGE_COLOR_ATTACHMENT_OUTPUT };
+            const nri::ResourceState depthWrite{ NRI_ACCESS_DEPTH_STENCIL_WRITE | NRI_ACCESS_DEPTH_STENCIL_READ, NRI_STAGE_FRAGMENT_TESTS };
+            const nri::ResourceState transferRead{ NRI_ACCESS_TRANSFER_READ, NRI_STAGE_TRANSFER };
+            const nri::ResourceState transferWrite{ NRI_ACCESS_TRANSFER_WRITE, NRI_STAGE_TRANSFER };
+            std::vector<nri::TextureBarrierDesc> barriers = { { target.handle(), transferRead, colorWrite } };
+            if (o.depth)
+                barriers.push_back({ m_DepthTarget.handle(), {}, depthWrite });
+            cmd.resourceBarriers(barriers, {});
+
+            nri::RenderDesc render{};
+            render.renderArea = { kStorageSize, kStorageSize };
+            render.colorAttachments.push_back({ .attachment = target.handle(), .loadOp = NRI_LOAD_OP_CLEAR, .storeOp = NRI_STORE_OP_STORE,
+                                                .clearColor = { 0.0f, 0.0f, 0.0f, 1.0f } });
+            if (o.depth)
+            {
+                render.depthAttachment = { .attachment = m_DepthTarget.handle(), .loadOp = NRI_LOAD_OP_CLEAR, .storeOp = NRI_STORE_OP_STORE,
+                                           .clearDepth = { 1.0f, 0 } };
+                render.hasDepthAttachment = true;
+            }
+            cmd.beginRendering(render);
+            // NoxRHI's +Y-up convention (the RenderGraph's FlippedY): a negative height flips Vulkan; D3D12 un-negates it.
+            cmd.setViewportWithCount({ 0.0f, static_cast<float>(kStorageSize), static_cast<float>(kStorageSize), -static_cast<float>(kStorageSize) }, 0.0f, 1.0f);
+            cmd.setScissorWithCount({ kStorageSize, kStorageSize });
+            cmd.setVertexInput();
+            cmd.setPrimitiveTopology(NRI_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+            cmd.setPrimitiveRestartEnable(false);
+            cmd.setRasterizerDiscardEnable(false);
+            cmd.setPolygonMode(NRI_POLYGON_MODE_FILL);
+            cmd.setCullMode(o.cullBack ? NRI_CULL_MODE_BACK : NRI_CULL_MODE_NONE);
+            cmd.setFrontFace(NRI_FRONT_FACE_COUNTER_CLOCKWISE);
+            cmd.setDepthBiasEnable(false);
+            cmd.setDepthClampEnable(false);
+            cmd.setLineWidth(1.0f);
+            cmd.setRasterizationSamples(o.samples);
+            cmd.setSampleMask(o.samples, 0xFFFFFFFFu);
+            cmd.setAlphaToCoverageEnable(false);
+            cmd.setAlphaToOneEnable(false);
+            cmd.setDepthTestEnable(o.depth);
+            cmd.setDepthWriteEnable(o.depth);
+            cmd.setDepthCompareOp(NRI_COMPARE_LESS);
+            cmd.setDepthBoundsTestEnable(false);
+            cmd.setStencilTestEnable(false);
+            cmd.setColorBlendEnable(0, o.blend);
+            cmd.setColorBlendEquation(0, nri::ColorBlendEquation{ .srcColorBlendFactor = NRI_BLEND_FACTOR_SRC_ALPHA,
+                                                                  .dstColorBlendFactor = NRI_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+                                                                  .colorBlendOp = NRI_BLEND_OP_ADD,
+                                                                  .srcAlphaBlendFactor = NRI_BLEND_FACTOR_ONE,
+                                                                  .dstAlphaBlendFactor = NRI_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+                                                                  .alphaBlendOp = NRI_BLEND_OP_ADD });
+            cmd.setColorWriteMask(0, nri::ColorComponent::All);
+            cmd.setLogicOpEnable(false);
+            cmd.bindPipeline(NRI_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+            Push push = m_BasePush;
+            push.uparams[0] = o.shape;
+            cmd.pushData(&push, sizeof(push));
+            if (o.mesh)
+                nri::drawMeshTasks(cmd, 1);
+            else
+                cmd.draw(o.vertexCount);
+            cmd.endRendering();
+
+            nri::Texture& readFrom = o.samples > 1 ? m_ResolveTarget : m_ColorTarget;
+            if (o.samples > 1)
+            {
+                const nri::TextureBarrierDesc resolveBarriers[2] = { { m_MsaaTarget.handle(), colorWrite, transferRead },
+                                                                     { m_ResolveTarget.handle(), transferRead, transferWrite } };
+                cmd.resourceBarriers(resolveBarriers, {});
+                cmd.resolveImage(m_MsaaTarget, m_ResolveTarget, kStorageSize, kStorageSize);
+                const nri::TextureBarrierDesc after[1] = { { m_ResolveTarget.handle(), transferWrite, transferRead } };
+                cmd.resourceBarriers(after, {});
+            }
+            else
+            {
+                const nri::TextureBarrierDesc after[1] = { { m_ColorTarget.handle(), colorWrite, transferRead } };
+                cmd.resourceBarriers(after, {});
+            }
+            readFrom.copyToBuffer(cmd.handle(), m_StorageReadback.handle(), 0, 0, kStorageSize, kStorageSize);
+            cmd.end(0);
+            m_Device.submitAndWait(cmd, 0);
+
+            std::vector<uint32_t> image(kStorageSize * kStorageSize);
+            std::memcpy(image.data(), m_StorageReadback.map(0, image.size() * 4), image.size() * 4);
+            m_StorageReadback.unmap();
+            return image;
+        }
+
     private:
         void CreateTextures()
         {
@@ -398,15 +568,21 @@ namespace
 
             m_StorageTexture = m_Device.createTexture({ .width = kStorageSize, .height = kStorageSize, .usage = NRI_TEXTURE_USAGE_STORAGE, .format = NRI_FORMAT_RGBA8 });
             m_StorageReadback = m_Device.createBuffer({ .size = kStorageSize * kStorageSize * 4, .usage = NRI_BUFFER_USAGE_READBACK });
+            m_ColorTarget = m_Device.createTexture({ .width = kStorageSize, .height = kStorageSize, .usage = NRI_TEXTURE_USAGE_COLOR_ATTACHMENT, .format = NRI_FORMAT_RGBA8 });
+            m_ResolveTarget = m_Device.createTexture({ .width = kStorageSize, .height = kStorageSize, .usage = NRI_TEXTURE_USAGE_COLOR_ATTACHMENT, .format = NRI_FORMAT_RGBA8 });
+            m_MsaaTarget = m_Device.createTexture({ .width = kStorageSize, .height = kStorageSize, .sampleCount = 4, .usage = NRI_TEXTURE_USAGE_COLOR_ATTACHMENT, .format = NRI_FORMAT_RGBA8 });
+            m_DepthTarget = m_Device.createTexture({ .width = kStorageSize, .height = kStorageSize, .usage = NRI_TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT, .format = NRI_FORMAT_NONE });
 
             nri::CommandBuffer& cmd = m_Cmd;
             cmd.begin(0, true);
             const nri::TextureRegionUpload region{ 0, 0, 0, kTexSize, kTexSize, 256 };
             m_SampledTexture.recordRegionUploads(cmd.handle(), m_Upload.handle(), { &region, 1 });
             const nri::ResourceState uploaded{ NRI_ACCESS_TRANSFER_WRITE, NRI_STAGE_TRANSFER };
-            const nri::TextureBarrierDesc barriers[2] = {
+            const nri::ResourceState copySource{ NRI_ACCESS_TRANSFER_READ, NRI_STAGE_TRANSFER };
+            const nri::TextureBarrierDesc barriers[5] = {
                 { m_SampledTexture.handle(), uploaded, { NRI_ACCESS_SHADER_READ, NRI_STAGE_COMPUTE } },
-                { m_StorageTexture.handle(), {}, { NRI_ACCESS_TRANSFER_READ, NRI_STAGE_TRANSFER } } };
+                { m_StorageTexture.handle(), {}, copySource }, { m_ColorTarget.handle(), {}, copySource },
+                { m_ResolveTarget.handle(), {}, copySource }, { m_MsaaTarget.handle(), {}, copySource } };
             cmd.resourceBarriers(barriers, {});
             cmd.end(0);
             m_Device.submitAndWait(cmd, 0);
@@ -422,7 +598,7 @@ namespace
         nri::DescriptorHeap m_Resources, m_Samplers;
         nri::ShaderCompiler m_Compiler;
         nri::Buffer m_In, m_Out, m_Upload, m_Zeros, m_Readback, m_StorageReadback;
-        nri::Texture m_SampledTexture, m_StorageTexture;
+        nri::Texture m_SampledTexture, m_StorageTexture, m_ColorTarget, m_ResolveTarget, m_MsaaTarget, m_DepthTarget;
         nri::CommandAllocator m_Allocator;
         nri::CommandBuffer m_Cmd;
         Push m_BasePush;
@@ -440,6 +616,7 @@ namespace
         bool featureGated = false; // a pipeline that does not build means the device lacks the feature: SKIP
         bool exactAcrossApis = true;
         std::function<Result(Suite&, nri::Pipeline&)> run;
+        int graphics = 0; // 0: a compute entry point; 1: the raster pipeline (vsGfx / psGfx); 2: the mesh pipeline (tsGfx / msGfx / psGfx)
     };
 
     std::vector<uint32_t> RandomWords(uint32_t count, uint32_t seed)
@@ -462,6 +639,46 @@ namespace
                 r.detail = std::string(what) + "[" + std::to_string(i) + "] = " + Hex(got[i]) + ", expected " + Hex(want[i]);
                 return r;
             }
+        r.status = Status::Pass;
+        return r;
+    }
+
+    // --- graphics checks ----------------------------------------------------------------------------------------------------------------
+
+    uint32_t Rgba(int r, int g, int b, int a) { return static_cast<uint32_t>(r) | (static_cast<uint32_t>(g) << 8) | (static_cast<uint32_t>(b) << 16) | (static_cast<uint32_t>(a) << 24); }
+    constexpr uint32_t kBlack = 0xFF000000u, kRed = 0xFF0000FFu, kGreen = 0xFF00FF00u, kBlue = 0xFFFF0000u;
+
+    std::string PixelText(uint32_t v)
+    {
+        return "(" + std::to_string(v & 0xFF) + "," + std::to_string((v >> 8) & 0xFF) + "," + std::to_string((v >> 16) & 0xFF) + "," + std::to_string(v >> 24) + ")";
+    }
+
+    struct PixelCheck
+    {
+        uint32_t x, y;
+        uint32_t want;
+        int tolerance; // per channel
+        const char* what;
+    };
+
+    Result CheckPixels(const std::vector<uint32_t>& image, const std::vector<PixelCheck>& checks)
+    {
+        Result r;
+        r.raw = image;
+        for (const PixelCheck& c : checks)
+        {
+            const uint32_t got = image[c.y * kStorageSize + c.x];
+            for (int channel = 0; channel < 4; ++channel)
+            {
+                const int g = static_cast<int>((got >> (channel * 8)) & 0xFF), w = static_cast<int>((c.want >> (channel * 8)) & 0xFF);
+                if (std::abs(g - w) > c.tolerance)
+                {
+                    r.status = Status::Fail;
+                    r.detail = std::string(c.what) + ": pixel (" + std::to_string(c.x) + "," + std::to_string(c.y) + ") = " + PixelText(got) + ", expected " + PixelText(c.want);
+                    return r;
+                }
+            }
+        }
         r.status = Status::Pass;
         return r;
     }
@@ -798,6 +1015,101 @@ namespace
             return Compare(got, want, "ray");
         } });
 
+        // --- graphics (raster pipeline vsGfx / psGfx, mesh pipeline tsGfx / msGfx / psGfx) -------------------------------------------
+
+        const auto orientation = [](Suite& s, nri::Pipeline& p, bool mesh)
+        {
+            Suite::GfxOptions o;
+            o.shape = 0;
+            o.mesh = mesh;
+            const std::vector<uint32_t> image = s.RunGfx(p, o);
+            return CheckPixels(image, { { 4, 4, kRed, 0, "inside the top-left triangle (NDC +Y is up, row 0 is the top)" },
+                                        { 60, 4, kBlack, 0, "top right" }, { 4, 60, kBlack, 0, "bottom left" }, { 60, 60, kBlack, 0, "bottom right" } });
+        };
+
+        tests.push_back({ "gfxOrientation", "viewport / NDC orientation (+Y up, origin top-left)", false, true,
+                          [orientation](Suite& s, nri::Pipeline& p) { return orientation(s, p, false); }, 1 });
+
+        tests.push_back({ "gfxCulling", "winding: back faces culled, counter-clockwise is front", false, true, [](Suite& s, nri::Pipeline& p)
+        {
+            Suite::GfxOptions o;
+            o.shape = 1;
+            o.vertexCount = 6;
+            o.cullBack = true;
+            const std::vector<uint32_t> image = s.RunGfx(p, o);
+            return CheckPixels(image, { { 16, 37, kGreen, 0, "the counter-clockwise (front) triangle" },
+                                        { 48, 37, kBlack, 0, "the clockwise (back) triangle, culled" } });
+        }, 1 });
+
+        tests.push_back({ "gfxDepth", "depth buffer: LESS test and writes (D32)", false, true, [](Suite& s, nri::Pipeline& p)
+        {
+            Suite::GfxOptions o;
+            o.shape = 2;
+            o.vertexCount = 18;
+            o.depth = true;
+            const std::vector<uint32_t> image = s.RunGfx(p, o);
+            return CheckPixels(image, { { 8, 32, kBlue, 0, "near blue over far green" }, { 24, 32, kBlue, 0, "near blue over the later middle red" },
+                                        { 48, 32, kRed, 0, "middle red over far green" } });
+        }, 1 });
+
+        tests.push_back({ "gfxBlend", "alpha blending (src alpha, one minus src alpha)", false, false, [](Suite& s, nri::Pipeline& p)
+        {
+            Suite::GfxOptions o;
+            o.shape = 3;
+            o.vertexCount = 6;
+            o.blend = true;
+            const std::vector<uint32_t> image = s.RunGfx(p, o);
+            // (1, 0.5, 0.25) at 0.5 over opaque black: colour halved; alpha 0.5 * 1 + 1 * 0.5 = 1.
+            return CheckPixels(image, { { 32, 32, Rgba(128, 64, 32, 255), 1, "blended" } });
+        }, 1 });
+
+        tests.push_back({ "gfxInterpolation", "attribute interpolation; flat colour from the first vertex", false, false, [](Suite& s, nri::Pipeline& p)
+        {
+            Suite::GfxOptions o;
+            o.shape = 4;
+            const std::vector<uint32_t> image = s.RunGfx(p, o);
+            std::vector<PixelCheck> checks;
+            for (uint32_t y = 4; y < kStorageSize; y += 18)
+                for (uint32_t x = 4; x < kStorageSize; x += 18)
+                {
+                    // Pixel centre in NDC; barycentrics of the corners (-1,-1) red, (3,-1) green, (-1,3) blue.
+                    const float nx = (static_cast<float>(x) + 0.5f) / 32.0f - 1.0f, ny = 1.0f - (static_cast<float>(y) + 0.5f) / 32.0f;
+                    const float g = (nx + 1.0f) / 4.0f, b = (ny + 1.0f) / 4.0f, r = 1.0f - g - b;
+                    const auto byte = [](float v) { return static_cast<int>(std::lround(std::clamp(v, 0.0f, 1.0f) * 255.0f)); };
+                    checks.push_back({ x, y, Rgba(byte(r), byte(g), byte(b), 255), 2, "smooth colour (alpha: the flat colour's red, 255 = first vertex)" });
+                }
+            return CheckPixels(image, checks);
+        }, 1 });
+
+        tests.push_back({ "gfxMsaa", "4x MSAA with the standard sample pattern, resolved", false, false, [](Suite& s, nri::Pipeline& p)
+        {
+            Suite::GfxOptions o;
+            o.shape = 5;
+            o.samples = 4;
+            const std::vector<uint32_t> image = s.RunGfx(p, o);
+            // The standard 4x pattern (D3D and Vulkan alike), from the pixel's top-left corner; the triangle covers y > x (pixels, y down).
+            const float samples[4][2] = { { 0.375f, 0.125f }, { 0.875f, 0.375f }, { 0.125f, 0.625f }, { 0.625f, 0.875f } };
+            std::vector<PixelCheck> checks;
+            uint32_t partial = 0;
+            for (uint32_t y = 0; y < kStorageSize; ++y)
+                for (uint32_t x = 0; x < kStorageSize; ++x)
+                {
+                    int covered = 0;
+                    for (const auto& sp : samples)
+                        covered += (static_cast<float>(y) + sp[1] > static_cast<float>(x) + sp[0]) ? 1 : 0;
+                    partial += (covered > 0 && covered < 4) ? 1 : 0;
+                    const int v = static_cast<int>(std::lround(255.0 * covered / 4.0));
+                    checks.push_back({ x, y, Rgba(v, v, v, 255), 1, covered > 0 && covered < 4 ? "an edge pixel (partly covered)" : "a pixel" });
+                }
+            Result r = CheckPixels(image, checks);
+            if (r.status == Status::Pass)
+                r.detail = std::to_string(partial) + " edge pixels averaged";
+            return r;
+        }, 1 });
+
+        tests.push_back({ "gfxMeshShader", "task + mesh shader (the orientation triangle)", true, true,
+                          [orientation](Suite& s, nri::Pipeline& p) { return orientation(s, p, true); }, 2 });
+
         return tests;
     }
 
@@ -809,6 +1121,7 @@ namespace
         std::unique_ptr<Suite> suite;
         try
         {
+            SetStage(std::string("creating the ") + apiName + " device and resources");
             suite = std::make_unique<Suite>(api, shaderPath);
         }
         catch (const std::exception& e)
@@ -825,10 +1138,15 @@ namespace
             Result result;
             std::string error;
             const int errorsBefore = g_ValidationErrors;
-            if (nri::Pipeline* pipeline = suite->GetPipeline(test.entry, error))
+            SetStage(std::string(apiName) + ": compiling " + test.entry);
+            nri::Pipeline* pipeline = test.graphics == 1 ? suite->GetGfxPipeline(false, error)
+                                    : test.graphics == 2 ? suite->GetGfxPipeline(true, error)
+                                                         : suite->GetPipeline(test.entry, error);
+            if (pipeline)
             {
                 try
                 {
+                    SetStage(std::string(apiName) + ": running " + test.entry);
                     result = test.run(*suite, *pipeline);
                 }
                 catch (const std::exception& e)
@@ -851,6 +1169,7 @@ namespace
                         result.detail.c_str());
             results[test.entry] = std::move(result);
         }
+        SetStage(std::string("destroying the ") + apiName + " device");
         return results;
     }
 }
@@ -858,6 +1177,7 @@ namespace
 int main(int argc, char** argv)
 {
     std::setvbuf(stdout, nullptr, _IONBF, 0); // (every line out at once: a CI log keeps it even if the process dies)
+    InstallDeathReports();
     std::vector<NriGraphicsAPI> apis;
     std::string only;
     for (int i = 1; i < argc; ++i)
@@ -882,6 +1202,7 @@ int main(int argc, char** argv)
         else
         {
             std::printf("usage: ShaderCompat [--vk] [--dx12] [--all] [--none] [--only <entry>] [--verbose]\n");
+            g_Finished = true;
             return 2;
         }
     }
@@ -949,5 +1270,6 @@ int main(int argc, char** argv)
     }
 
     std::printf("\n%s: %d failure(s)%s\n", failures == 0 ? "OK" : "FAILED", failures, g_ValidationErrors ? " (API errors were reported)" : "");
+    g_Finished = true;
     return failures == 0 ? 0 : 1;
 }
