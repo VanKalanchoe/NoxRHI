@@ -369,9 +369,16 @@ void csRayQuery(uint3 id : SV_DispatchThreadID, uniform Push pc)
 
 // --- 13b. ray queries against instances (RayQueryShadows' scene in miniature): closest hit, its instance, and a first-hit query --------
 
-[shader("compute")]
-[numthreads(8, 8, 1)]
-void csRayQueryInstances(uint3 id : SV_DispatchThreadID, uniform Push pc)
+RaytracingAccelerationStructure PushTlas(Push pc)
+{
+#ifdef NOX_VULKAN
+    return RaytracingAccelerationStructure(pc.tlasAddress);
+#else
+    return RaytracingAccelerationStructure.Handle(uint2(pc.tlasSlot, 0));
+#endif
+}
+
+void TraceInstances(uint3 id, Push pc)
 {
 #ifdef NOX_VULKAN
     RaytracingAccelerationStructure tlas = RaytracingAccelerationStructure(pc.tlasAddress);
@@ -396,6 +403,21 @@ void csRayQueryInstances(uint3 id : SV_DispatchThreadID, uniform Push pc)
     any.TraceRayInline(tlas, RAY_FLAG_NONE, 0xFF, desc);
     any.Proceed();
     StoreOut(pc, ray * 3 + 2, any.CommittedStatus() == COMMITTED_TRIANGLE_HIT ? 1u : 0u);
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void csRayQueryInstances(uint3 id : SV_DispatchThreadID, uniform Push pc)
+{
+    TraceInstances(id, pc);
+}
+
+// The same, with the TLAS rebuilt in the same command list just before (RayQueryShadows rebuilds it every frame).
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void csRayQueryRebuild(uint3 id : SV_DispatchThreadID, uniform Push pc)
+{
+    TraceInstances(id, pc);
 }
 
 // =====================================================================================================================================
@@ -505,4 +527,26 @@ void msGfx(uint tid : SV_GroupIndex, in payload MeshPayload meshPayload, OutputI
         verts[tid] = MakeVertex(p[tid], 0.5, float4(1, 0, 0, 1));
     if (tid == 0)
         triangles[0] = uint3(0, 1, 2);
+}
+
+// Ray queries in a pixel shader (RayQueryShadows traces from its fragment shader): each pixel of the 64 x 64 target traces the instanced
+// scene along +Z from (-5 + x * 10 / 64, 3 - y * 6 / 64); red: (instance + 1) / 4, green: hit, blue: a first-hit query's hit.
+[shader("fragment")]
+float4 psRayQuery(GfxOut input, uniform Push pc) : SV_Target
+{
+    const RaytracingAccelerationStructure tlas = PushTlas(pc);
+    RayDesc desc;
+    desc.Origin = float3(-5.0 + input.position.x * (10.0 / 64.0), 3.0 - input.position.y * (6.0 / 64.0), 0.0);
+    desc.Direction = float3(0.0, 0.0, 1.0);
+    desc.TMin = 0.0;
+    desc.TMax = 100.0;
+    RayQuery<RAY_FLAG_FORCE_OPAQUE> closest;
+    closest.TraceRayInline(tlas, RAY_FLAG_NONE, 0xFF, desc);
+    closest.Proceed();
+    const bool hit = closest.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
+    RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> any;
+    any.TraceRayInline(tlas, RAY_FLAG_NONE, 0xFF, desc);
+    any.Proceed();
+    const bool anyHit = any.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
+    return float4(hit ? float(closest.CommittedInstanceIndex() + 1) * 0.25 : 0.0, hit ? 1.0 : 0.0, anyHit ? 1.0 : 0.0, 1.0);
 }

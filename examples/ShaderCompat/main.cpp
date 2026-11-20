@@ -306,6 +306,8 @@ namespace
             nri::CommandBuffer& cmd = m_Cmd;
             cmd.begin(0, true);
             cmd.bindDescriptorHeaps(&m_Resources, &m_Samplers);
+            if (m_PreDispatch)
+                m_PreDispatch(cmd);
             if (!input.empty())
                 cmd.copyBuffer(m_Upload, m_In, nri::BufferCopyRegion{ 0, 0, inBytes });
             cmd.copyBuffer(m_Zeros, m_Out, nri::BufferCopyRegion{ 0, 0, outBytes });
@@ -455,6 +457,7 @@ namespace
 
                 push.tlasAddress = m_CubeTlas.getDeviceAddress();
                 push.tlasSlot = nriRegisterAccelerationStructure(m_Resources.handle(), m_CubeTlas.handle(), ~0u);
+                m_CubeInstanceCount = instanceCount;
                 return true;
             }
             catch (const std::exception& e)
@@ -463,6 +466,20 @@ namespace
                 return false;
             }
         }
+
+        // Records a rebuild of the instanced scene's TLAS (BuildInstancedScene first) and the barrier before shaders read it.
+        void RecordCubeTlasRebuild(nri::CommandBuffer& cmd)
+        {
+            NriAccelerationStructureBuildDesc tlasBuild{};
+            tlasBuild.type = NRI_ACCELERATION_STRUCTURE_TOP_LEVEL;
+            tlasBuild.flags = NRI_AS_BUILD_PREFER_FAST_BUILD;
+            tlasBuild.instances = { m_CubeInstances.getDeviceAddress(), m_CubeInstanceCount };
+            nriCmdBuildAccelerationStructure(cmd.handle(), &tlasBuild, m_CubeTlasScratch.getDeviceAddress(), m_CubeTlas.handle());
+            nriCmdAccelerationStructureBarrier(cmd.handle(), NRI_AS_BARRIER_BUILD_TO_SHADER_READ);
+        }
+
+        // Called right after the descriptor heaps are bound in Run (a test's extra commands before the dispatch); null: none.
+        std::function<void(nri::CommandBuffer&)> m_PreDispatch;
 
         // Builds a BLAS of one triangle and a TLAS of one instance; false (with `error`) when the device cannot.
         bool BuildRayTracingScene(Push& push, std::string& error)
@@ -564,11 +581,12 @@ namespace
             bool cullBack = false;
             uint32_t samples = 1;
             bool mesh = false;
+                    const Push* push = nullptr; // (null: the base push data)
         };
 
-        nri::Pipeline* GetGfxPipeline(bool mesh, std::string& error)
+        nri::Pipeline* GetGfxPipeline(bool mesh, std::string& error, const char* fragment = "psGfx")
         {
-            const std::string key = mesh ? "#mesh" : "#raster";
+            const std::string key = std::string(mesh ? "#mesh" : "#raster") + fragment;
             if (auto found = m_Pipelines.find(key); found != m_Pipelines.end())
                 return &found->second;
             try
@@ -576,9 +594,9 @@ namespace
                 nri::PipelineDesc desc{ .type = NRI_PIPELINE_GRAPHICS, .colorFormats = { NRI_FORMAT_RGBA8 }, .buildNow = true };
                 if (mesh)
                     desc.shaders = { { NRI_SHADER_STAGE_TASK, "tsGfx", m_ShaderPath }, { NRI_SHADER_STAGE_MESH, "msGfx", m_ShaderPath },
-                                     { NRI_SHADER_STAGE_FRAGMENT, "psGfx", m_ShaderPath } };
+                                     { NRI_SHADER_STAGE_FRAGMENT, fragment, m_ShaderPath } };
                 else
-                    desc.shaders = { { NRI_SHADER_STAGE_VERTEX, "vsGfx", m_ShaderPath }, { NRI_SHADER_STAGE_FRAGMENT, "psGfx", m_ShaderPath } };
+                    desc.shaders = { { NRI_SHADER_STAGE_VERTEX, "vsGfx", m_ShaderPath }, { NRI_SHADER_STAGE_FRAGMENT, fragment, m_ShaderPath } };
                 nri::Pipeline pipeline = m_Device.createPipeline(desc, m_Compiler.handle());
                 m_Device.finishPipelineBuilds();
                 return &m_Pipelines.emplace(key, std::move(pipeline)).first->second;
@@ -650,7 +668,7 @@ namespace
             cmd.setColorWriteMask(0, nri::ColorComponent::All);
             cmd.setLogicOpEnable(false);
             cmd.bindPipeline(NRI_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-            Push push = m_BasePush;
+            Push push = o.push ? *o.push : m_BasePush;
             push.uparams[0] = o.shape;
             cmd.pushData(&push, sizeof(push));
             if (o.mesh)
@@ -743,6 +761,7 @@ namespace
         nri::AccelerationStructure m_Blas, m_Tlas;
         nri::Buffer m_CubeVertices, m_CubeIndices, m_CubeInstances, m_CubeBlasStorage, m_CubeTlasStorage, m_CubeBlasScratch, m_CubeTlasScratch;
         nri::AccelerationStructure m_CubeBlas, m_CubeTlas;
+        uint32_t m_CubeInstanceCount = 0;
     };
 
     // --- The tests -----------------------------------------------------------------------------------------------------------------------
@@ -1236,38 +1255,47 @@ namespace
             return r;
         } });
 
-        tests.push_back({ "csRayQueryInstances", "ray queries against scaled + translated instances of a cube (fast-build TLAS)", true, false,
-                          [](Suite& s, nri::Pipeline& p)
+        // translation xyz, scale xyz -- rays along +Z from a 16 x 16 grid at z = 0, at least 0.0625 from every box edge
+        static const float kInstances[3][6] = { { 0, 0, 10, 1, 1, 1 }, { 3, 0, 6, 0.5f, 2, 0.5f }, { -3, 1, 8, 1.5f, 0.5f, 1 } };
+        // The closest box a ray along +Z from (ox, oy) hits: its index and distance (-1: none); `margin`: how near an edge it passes.
+        const auto expectedHit = [](float ox, float oy, float& t, float& margin) {
+            uint32_t instance = ~0u;
+            t = -1.0f;
+            margin = 1e9f;
+            for (uint32_t i = 0; i < 3; ++i)
+            {
+                const float* b = kInstances[i];
+                margin = std::min({ margin, std::fabs(std::fabs(ox - b[0]) - b[3]), std::fabs(std::fabs(oy - b[1]) - b[4]) });
+                if (std::fabs(ox - b[0]) < b[3] && std::fabs(oy - b[1]) < b[4] && (t < 0 || b[2] - b[5] < t))
+                {
+                    t = b[2] - b[5]; // the front face
+                    instance = i;
+                }
+            }
+            return instance;
+        };
+        const auto instancedRays = [expectedHit](Suite& s, nri::Pipeline& p, bool rebuildFirst)
         {
-            // translation xyz, scale xyz -- rays along +Z from a 16 x 16 grid at z = 0, at least 0.0625 from every box edge
-            static const float instances[3][6] = { { 0, 0, 10, 1, 1, 1 }, { 3, 0, 6, 0.5f, 2, 0.5f }, { -3, 1, 8, 1.5f, 0.5f, 1 } };
             Push push = s.BasePush();
             std::string error;
-            if (!s.BuildInstancedScene(push, instances, 3, error))
+            if (!s.BuildInstancedScene(push, kInstances, 3, error))
             {
                 Result r;
                 r.status = Status::Skip;
                 r.detail = "acceleration structures: " + error;
                 return r;
             }
+            if (rebuildFirst)
+                s.m_PreDispatch = [&s](nri::CommandBuffer& cmd) { s.RecordCubeTlasRebuild(cmd); };
             const std::vector<uint32_t> got = s.Run(p, {}, 256 * 3, 2, 2, push);
+            s.m_PreDispatch = nullptr;
             Result r;
             r.raw = got;
             for (uint32_t y = 0; y < 16; ++y)
                 for (uint32_t x = 0; x < 16; ++x)
                 {
-                    const float ox = -5.0f + (x + 0.5f) * (10.0f / 16.0f), oy = -3.0f + (y + 0.5f) * (6.0f / 16.0f);
-                    float wantT = -1.0f;
-                    uint32_t wantInstance = ~0u;
-                    for (uint32_t i = 0; i < 3; ++i)
-                    {
-                        const float* b = instances[i];
-                        if (std::fabs(ox - b[0]) < b[3] && std::fabs(oy - b[1]) < b[4] && (wantT < 0 || b[2] - b[5] < wantT))
-                        {
-                            wantT = b[2] - b[5]; // the front face
-                            wantInstance = i;
-                        }
-                    }
+                    float wantT, margin;
+                    const uint32_t wantInstance = expectedHit(-5.0f + (x + 0.5f) * (10.0f / 16.0f), -3.0f + (y + 0.5f) * (6.0f / 16.0f), wantT, margin);
                     const uint32_t ray = y * 16 + x;
                     const float gotT = AsFloat(got[ray * 3 + 0]);
                     const bool hitOk = (wantT < 0) == (gotT < 0) && (wantT < 0 || Near(gotT, wantT, 0.0f, 1e-5f));
@@ -1282,7 +1310,12 @@ namespace
                 }
             r.status = Status::Pass;
             return r;
-        } });
+        };
+
+        tests.push_back({ "csRayQueryInstances", "ray queries against scaled + translated instances of a cube (fast-build TLAS)", true, false,
+                          [instancedRays](Suite& s, nri::Pipeline& p) { return instancedRays(s, p, false); } });
+        tests.push_back({ "csRayQueryRebuild", "the same, the TLAS rebuilt in the same command list just before", true, false,
+                          [instancedRays](Suite& s, nri::Pipeline& p) { return instancedRays(s, p, true); } });
 
         // --- graphics (raster pipeline vsGfx / psGfx, mesh pipeline tsGfx / msGfx / psGfx) -------------------------------------------
 
@@ -1379,6 +1412,36 @@ namespace
         tests.push_back({ "gfxMeshShader", "task + mesh shader (the orientation triangle)", false, true,
                           [orientation](Suite& s, nri::Pipeline& p) { return orientation(s, p, true); }, 2 });
 
+        tests.push_back({ "gfxRayQuery", "ray queries in a pixel shader (the instanced scene, every pixel checked)", true, false,
+                          [expectedHit](Suite& s, nri::Pipeline& p)
+        {
+            Push push = s.BasePush();
+            std::string error;
+            if (!s.BuildInstancedScene(push, kInstances, 3, error))
+            {
+                Result r;
+                r.status = Status::Skip;
+                r.detail = "acceleration structures: " + error;
+                return r;
+            }
+            Suite::GfxOptions o;
+            o.shape = 4; // (a fullscreen triangle)
+            o.push = &push;
+            const std::vector<uint32_t> image = s.RunGfx(p, o);
+            std::vector<PixelCheck> checks;
+            for (uint32_t y = 0; y < kStorageSize; ++y)
+                for (uint32_t x = 0; x < kStorageSize; ++x)
+                {
+                    float t, margin;
+                    const uint32_t instance = expectedHit(-5.0f + (x + 0.5f) * (10.0f / 64.0f), 3.0f - (y + 0.5f) * (6.0f / 64.0f), t, margin);
+                    if (margin < 0.02f)
+                        continue; // (pixels a box edge passes through: where exactly is up to the implementation)
+                    const int red = instance == ~0u ? 0 : int(std::lround((instance + 1) * 0.25f * 255.0f));
+                    checks.push_back({ x, y, Rgba(red, instance == ~0u ? 0 : 255, instance == ~0u ? 0 : 255, 255), 1, "a traced pixel" });
+                }
+            return CheckPixels(image, checks);
+        }, 3 });
+
         return tests;
     }
 
@@ -1417,6 +1480,7 @@ namespace
             SetStage(std::string(apiName) + ": compiling " + test.entry);
             nri::Pipeline* pipeline = test.graphics == 1 ? suite->GetGfxPipeline(false, error)
                                     : test.graphics == 2 ? suite->GetGfxPipeline(true, error)
+                                    : test.graphics == 3 ? suite->GetGfxPipeline(false, error, "psRayQuery")
                                                          : suite->GetPipeline(test.entry, error);
             if (pipeline)
             {
