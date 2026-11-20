@@ -89,7 +89,6 @@ jobs:
       # The windowed cross-API examples on D3D12 (WARP, debug layer on in Debug): 30 frames each; a D3D12, NoxRHI or render-graph
       # error fails the step. (Vulkan needs a GPU driver with VK_EXT_descriptor_heap: run them with --vk on a real machine.)
       - name: Run cross-API examples on D3D12 (WARP)
-        if: always()
         shell: pwsh
         env:
           NOXRHI_D3D12_WARP: "1"

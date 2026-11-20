@@ -748,38 +748,38 @@ namespace
             LayoutProbe probes[2]{};
             for (int k = 0; k < 2; ++k)
             {
-                LayoutProbe& p = probes[k];
+                LayoutProbe& probe = probes[k];
                 const float base = k == 0 ? -100.0f : 1.0f; // (element 0 is a decoy: reading it instead of element 1 fails)
-                for (int i = 0; i < 4; ++i) p.a[i] = base + float(i);
-                for (int i = 0; i < 3; ++i) p.b[i] = base + 10.0f + float(i);
-                p.c = 0xC0DE0000u + uint32_t(k);
-                p.d = 0x0123456789ABCDEFull + uint64_t(k);
-                p.e[0] = base + 20.0f; p.e[1] = base + 21.0f;
-                p.f = 0xF00Du + uint32_t(k); p.g = 0x600Du + uint32_t(k);
-                for (int i = 0; i < 16; ++i) p.m[i] = base + 30.0f + float(i);
+                for (int i = 0; i < 4; ++i) probe.a[i] = base + float(i);
+                for (int i = 0; i < 3; ++i) probe.b[i] = base + 10.0f + float(i);
+                probe.c = 0xC0DE0000u + uint32_t(k);
+                probe.d = 0x0123456789ABCDEFull + uint64_t(k);
+                probe.e[0] = base + 20.0f; probe.e[1] = base + 21.0f;
+                probe.f = 0xF00Du + uint32_t(k); probe.g = 0x600Du + uint32_t(k);
+                for (int i = 0; i < 16; ++i) probe.m[i] = base + 30.0f + float(i);
             }
             std::vector<uint32_t> in(sizeof(probes) / 4);
             std::memcpy(in.data(), probes, sizeof(probes));
             Push push = s.BasePush();
             const std::vector<uint32_t> got = s.Run(p, in, 30, 1, 1, push);
 
-            const LayoutProbe& p = probes[1];
+            const LayoutProbe& probe = probes[1];
             std::vector<uint32_t> want;
-            for (float v : p.a) want.push_back(AsUint(v));
-            for (float v : p.b) want.push_back(AsUint(v));
-            want.push_back(p.c);
-            want.push_back(uint32_t(p.d));
-            want.push_back(uint32_t(p.d >> 32));
-            want.push_back(AsUint(p.e[0]));
-            want.push_back(AsUint(p.e[1]));
-            want.push_back(p.f);
-            want.push_back(p.g);
+            for (float v : probe.a) want.push_back(AsUint(v));
+            for (float v : probe.b) want.push_back(AsUint(v));
+            want.push_back(probe.c);
+            want.push_back(uint32_t(probe.d));
+            want.push_back(uint32_t(probe.d >> 32));
+            want.push_back(AsUint(probe.e[0]));
+            want.push_back(AsUint(probe.e[1]));
+            want.push_back(probe.f);
+            want.push_back(probe.g);
             const float v[4] = { 1, 2, 3, 4 };
             for (int row = 0; row < 4; ++row)
             {
                 float sum = 0;
                 for (int column = 0; column < 4; ++column)
-                    sum += p.m[column * 4 + row] * v[column];
+                    sum += probe.m[column * 4 + row] * v[column];
                 want.push_back(AsUint(sum));
             }
             const auto* bytes = reinterpret_cast<const uint8_t*>(probes);

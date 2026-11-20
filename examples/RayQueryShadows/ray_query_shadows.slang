@@ -101,7 +101,7 @@ float4 psScene(VertexOut input, uniform Push pc) : SV_Target
     if (input.color.a > 0.5)
     {
         const int2 cell = int2(floor(input.world.xz));
-        albedo *= ((cell.x + cell.y) & 1) ? 1.0 : 0.75;
+        albedo *= ((cell.x + cell.y) & 1) != 0 ? 1.0 : 0.75;
     }
 
     const float3 sun = frame.sunDirection.xyz;

@@ -70,7 +70,7 @@ scripts\setup_build.bat --msvc
 scripts\setup_build.bat -DNRI_STATIC_LIBRARY=ON
 ```
 
-Open **`build\NoxRHI.slnx`** in **JetBrains Rider** (or Visual Studio 2026) and build/run any target (`HeadlessNone`, `HeadlessRender`, `ClearScreen`, `RenderGraphTriangle`, `TexturedQuads`, `ImGuiDemo`, `StreamlineNRDDemo`).
+Open **`build\NoxRHI.slnx`** in **JetBrains Rider** (or Visual Studio 2026) and build/run any target (`HeadlessNone`, `HeadlessRender`, `ClearScreen`, `RenderGraphTriangle`, `TexturedQuads`, `ImGuiDemo`, `StreamlineNRDDemo`, `ShaderCompat`, and the cross-API examples `GpuParticles`, `BindlessScene`, `MeshletCulling`, `RayQueryShadows`).
 
 ### 3. Example CLI Flags
 All examples default to the no-GPU backend (`NRI_GRAPHICS_API_NONE`); pass `--vk` (Vulkan) or `--dx12` / `--d3d12` (Direct3D 12) to run on a GPU backend. Windowed examples (`ClearScreen`, `RenderGraphTriangle`, `TexturedQuads`, `ImGuiDemo`) use SDL3 main callbacks (`SDL_MAIN_USE_CALLBACKS`), `HeadlessNone` runs solely on `NRI_GRAPHICS_API_NONE`, and `HeadlessRender` / `StreamlineNRDDemo` run windowless (`NRI_WINDOW_SYSTEM_HEADLESS`):
@@ -145,6 +145,62 @@ CI runs every test on D3D12 (WARP, debug layer on) on each push: all pass. `nriS
 (clear a buffer with a copy from a zeroed staging buffer instead), and `bindVertexBuffer` uses a fixed 36-byte stride (pull vertices from a
 buffer in the shader instead).
 
+## Cross-API Examples (one Slang source, `--vk` or `--dx12`)
+
+Four windowed examples, each drawn from **one** Slang file with no `#ifdef` of its own. Run each twice and compare: the window title names
+the API (and shows the fps and any live numbers).
+
+```bat
+build\Debug\GpuParticles.exe --vk          build\Debug\GpuParticles.exe --dx12
+build\Debug\BindlessScene.exe --vk         build\Debug\BindlessScene.exe --dx12
+build\Debug\MeshletCulling.exe --vk        build\Debug\MeshletCulling.exe --dx12
+build\Debug\RayQueryShadows.exe --vk       build\Debug\RayQueryShadows.exe --dx12
+:: --frames N: render N frames and exit (non-zero if NoxRHI, the D3D12 debug layer / Vulkan validation or the render graph reported an error)
+```
+
+| Example | What it shows (both APIs, same shader) | Keys |
+|---|---|---|
+| `GpuParticles` | a compute shader moves 131072 particles in a GPU buffer (`RWBufferRef`); a vertex shader pulls them from it (`BufferRef`, no vertex buffers) as additive billboards; the render graph orders the compute write before the vertex read | Space: pause |
+| `BindlessScene` | 144 instanced cubes, each with its own texture from a bindless table (a non-uniform index: `SampleNonUniform`); per-frame constants from a CPU-written buffer; HDR target + reverse-Z depth; compute tonemap into a storage texture; fullscreen present | Space: pause |
+| `MeshletCulling` | task + mesh shaders: the task shader culls 576 spheres x 38 meshlets (frustum + normal cone), the mesh shader reads **byte-packed** triangle indices with `LoadByte`; the drawn count is read back into the title | F: freeze culling, C: colours, Space |
+| `RayQueryShadows` | a rasterized scene whose fragment shader casts shadow and ambient-occlusion rays with `RayQuery` against a TLAS rebuilt every frame (one per frame in flight) | S: shadows, A: AO rays, Space |
+
+`examples/Common` holds what they share: `ExampleApp.h` (window, API choice, device, swapchain, descriptor heaps, render graph, frame loop,
+uploads, buffer references), `ExampleMath.h` (column-major matrices, reverse-Z projection) and **`nox_gpu.slang`**, the one header that hides
+what differs between the two APIs' shaders. CI runs all four on D3D12 (WARP, debug layer on) for 30 frames on every push.
+
+### Porting Vulkan-only Slang (such as the Nox engine's shaders) to D3D12
+
+What has to change, found by going through the engine's shaders. Textures and samplers (`Texture2D.Handle(...)`, `SamplerState.Handle(...)`)
+already work on both and need nothing.
+
+1. **Buffer pointers.** D3D12 shaders have no pointers. Every `(T*)push.someReference` (the engine reaches its UBO, lights, instances, meshlets
+   and particles this way) becomes a `BufferRef<T>` (read) or `RWBufferRef<T>` (write) from `nox_gpu.slang`: a 64-bit value that is the device
+   address on Vulkan and a descriptor slot on D3D12 (`ByteAddressBuffer` / `RWByteAddressBuffer` handles). The push data layout does not change
+   (still one `uint64` per buffer), and structs that hold references to other buffers keep working. `ref[i]`, `ref.Load(i)` and `ref.Store(i, v)`
+   replace pointer indexing; pointer arithmetic and casts between types become index math on the right element type.
+2. **Read and write references differ on D3D12.** A buffer that a pass reads is in a shader-resource state, where only an SRV may read it; a
+   pass that writes it uses a UAV. On the host, `Host::Refs(buffer, size, writable)` registers both (`registerBuffer` /
+   `registerStorageBuffer`) on D3D12 and returns the address twice on Vulkan. The engine registers no buffers today; on D3D12 it must.
+3. **No 8-bit types in DXIL.** `uint8_t` locals, arrays, payload members and `uint8_t*` streams (the engine's `ClusterIndices`,
+   `VisibilityBuffer`, `Material_PBR_MeshTask` and its `MeshletPayload::meshletIndices`) do not compile for D3D12. Read bytes out of 32-bit
+   words with `LoadByte` (identical on Vulkan), and keep payload indices as 32-bit values or pack four per `uint`. 16-bit types are fine.
+4. **TLAS by address.** `RaytracingAccelerationStructure(address)` is Vulkan-only; use `LoadTlas(ref)` (D3D12: a descriptor from
+   `nriRegisterAccelerationStructure`).
+5. **Non-uniform texture indices.** An index that differs inside a wave (per-instance or per-pixel materials) needs `NonUniformResourceIndex`.
+   Slang carries it into DXIL, but for Vulkan's descriptor heap it emits no `NonUniform` decoration (checked with Slang 2026.14.1 and 2026.22.1),
+   which this Vulkan path needs. `SampleNonUniform` scalarizes on Vulkan until Slang emits it; this applies to the engine's Vulkan path today too.
+6. **Matrices in buffers.** Use four `float4` columns (`Mat4` in `nox_gpu.slang`, multiplied with explicit columns) rather than relying on a
+   matrix layout setting meaning the same for every kind of buffer on both APIs.
+7. **Small differences to know:** `SV_InstanceID` does not include the draw's first instance on D3D12 (Vulkan's does); wave sizes differ (WARP 4,
+   GPUs 16 / 32 / 64), so a group that relies on one wave per group must use groupshared memory instead; push data is at most 128 bytes on D3D12
+   (32 root constants).
+8. **NoxRHI on D3D12 today:** `fillBuffer` records nothing (copy from a zeroed buffer) and `bindVertexBuffer` has a fixed 36-byte stride (pull
+   vertices from a buffer, as all four examples do).
+
+Struct layout through `BufferRef` is the same on both APIs (C-like / scalar: no `float3` padding, 64-bit members 8-byte aligned);
+ShaderCompat's `csStructLayout` checks it at runtime.
+
 ### Building on Linux (Vulkan only)
 The Vulkan backend, the RenderGraph and the examples build on Linux with GCC or Clang. Put the Linux Slang release
 (`slang-<version>-linux-x86_64.tar.gz`) in `vendors/slang`, VulkanMemoryAllocator-Hpp in `vendors/VulkanMemoryAllocator-Hpp`, and point
@@ -176,7 +232,7 @@ lavapipe has none of them). The windowed examples create a Win32 surface, so on 
 | `NRI_ENABLE_STREAMLINE` | `ON` | Enable NVIDIA Streamline (DLSS-SR / DLSS-RR) extension |
 | `NRI_ENABLE_NRD` | `ON` | Enable NVIDIA NRD (SIGMA / REBLUR / RELAX) denoiser extension |
 | `NRI_ENABLE_PCH` | `ON` | Use private precompiled headers inside `NoxRHI::Core` for faster builds |
-| `NRI_BUILD_EXAMPLES` | `ON` | Build `ShaderCompat`, `HeadlessNone`, `HeadlessRender`, `StreamlineNRDDemo`, `ClearScreen`, `RenderGraphTriangle`, `TexturedQuads`, and `ImGuiDemo` |
+| `NRI_BUILD_EXAMPLES` | `ON` | Build `ShaderCompat`, `HeadlessNone`, `HeadlessRender`, `StreamlineNRDDemo`, `ClearScreen`, `RenderGraphTriangle`, `TexturedQuads`, `ImGuiDemo`, `GpuParticles`, `BindlessScene`, `MeshletCulling` and `RayQueryShadows` |
 
 ---
 
