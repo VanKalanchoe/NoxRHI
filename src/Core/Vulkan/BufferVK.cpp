@@ -44,7 +44,8 @@ namespace NRI
             allocFlags = vma::AllocationCreateFlagBits::eHostAccessSequentialWrite | vma::AllocationCreateFlagBits::eMapped;
             break;
         case BufferUsage::Storage:
-            usageFlags = vk::BufferUsageFlagBits2::eStorageBuffer | vk::BufferUsageFlagBits2::eTransferDst |
+            // TransferSrc: GPU-written results (counters, statistics) are copied to readback buffers.
+            usageFlags = vk::BufferUsageFlagBits2::eStorageBuffer | vk::BufferUsageFlagBits2::eTransferDst | vk::BufferUsageFlagBits2::eTransferSrc |
                 vk::BufferUsageFlagBits2::eShaderDeviceAddress;
             memoryUsage = vma::MemoryUsage::eAutoPreferDevice;
             allocFlags = vma::AllocationCreateFlagBits::eHostAccessSequentialWrite | vma::AllocationCreateFlagBits::eMapped;

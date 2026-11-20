@@ -96,6 +96,8 @@ jobs:
         run: |
           Push-Location ./build/${{ matrix.config }}
           $failed = 0
+          Write-Host "=== BindlessScene --probe ==="
+          ./BindlessScene.exe --dx12 --frames 5 --probe
           foreach ($example in 'GpuParticles', 'BindlessScene', 'MeshletCulling', 'RayQueryShadows') {
             Write-Host "=== $example ==="
             & "./$example.exe" --dx12 --frames 30

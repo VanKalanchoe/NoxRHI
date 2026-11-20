@@ -1,6 +1,6 @@
 // GpuParticles -- one Slang source (gpu_particles.slang) on Vulkan and Direct3D 12.
 //
-//   GpuParticles.exe --vk      GpuParticles.exe --dx12
+//   GpuParticles.exe --vk      GpuParticles.exe --dx12      (--count N: N particles, default 131072 -- e.g. 8000000 to load the GPU)
 //
 // Each frame a compute pass moves 131072 particles in a GPU buffer (RWBufferRef), then a raster pass draws them with a vertex shader
 // that pulls them from the same buffer (BufferRef) -- the render graph puts the barrier between the two. Inspired by the Nox engine's
@@ -42,7 +42,6 @@ namespace
         float size;
     };
 
-    constexpr uint32_t kParticleCount = 128 * 1024;
 }
 
 class GpuParticles final : public nox::Example
@@ -52,7 +51,7 @@ public:
 
     void Init(nox::Host& host) override
     {
-        std::vector<Particle> particles(kParticleCount);
+        std::vector<Particle> particles(m_Count);
         std::mt19937 rng(7);
         std::uniform_real_distribution<float> unit(-1.0f, 1.0f), life(0.0f, 1.0f);
         for (Particle& p : particles)
@@ -63,7 +62,7 @@ public:
             p.positionLife[3] = life(rng);
             p.velocitySeed[3] = std::bit_cast<float>(static_cast<uint32_t>(rng()));
         }
-        const uint64_t bytes = sizeof(Particle) * kParticleCount;
+        const uint64_t bytes = sizeof(Particle) * m_Count;
         m_Particles = host.CreateBuffer(bytes, NRI_BUFFER_USAGE_STORAGE_STATIC, particles.data());
         m_ParticleRefs = host.Refs(m_Particles, bytes, true);
         m_Camera.Create(host);
@@ -94,9 +93,9 @@ public:
             [this, deltaTime](nri::RGPassContext& ctx) {
                 nri::CommandBuffer& cmd = ctx.Cmd();
                 cmd.bindPipeline(NRI_PIPELINE_BIND_POINT_COMPUTE, m_Simulate);
-                const SimulatePush push{ m_ParticleRefs.write, kParticleCount, m_SimTime, deltaTime, 0.0f };
+                const SimulatePush push{ m_ParticleRefs.write, m_Count, m_SimTime, deltaTime, 0.0f };
                 cmd.pushData(&push, sizeof(push));
-                cmd.dispatch((kParticleCount + 255) / 256);
+                cmd.dispatch((m_Count + 255) / 256);
             });
 
         graph.AddPass("Draw", nri::RGPassFlags::Raster,
@@ -111,8 +110,18 @@ public:
                 cmd.bindPipeline(NRI_PIPELINE_BIND_POINT_GRAPHICS, m_Draw);
                 const DrawPush push{ m_ParticleRefs.read, cameraRef, 0.012f };
                 cmd.pushData(&push, sizeof(push));
-                cmd.draw(kParticleCount * 6);
+                cmd.draw(m_Count * 6);
             });
+    }
+
+    int OnArgument(int argc, char** argv, int index) override
+    {
+        if (!std::strcmp(argv[index], "--count") && index + 1 < argc)
+        {
+            m_Count = std::max(1024u, uint32_t(std::strtoul(argv[index + 1], nullptr, 10)));
+            return 2;
+        }
+        return 0;
     }
 
     void OnKey(SDL_Keycode key) override
@@ -134,6 +143,7 @@ private:
     nox::BufferRefs m_ParticleRefs;
     nox::FrameConstants<Camera> m_Camera;
     nri::Pipeline m_Simulate, m_Draw;
+    uint32_t m_Count = 128 * 1024;
     float m_SimTime = 0.0f;
     bool m_Paused = false;
 };

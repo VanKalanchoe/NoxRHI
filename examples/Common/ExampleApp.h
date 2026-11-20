@@ -17,7 +17,9 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <cmath>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -264,6 +266,34 @@ namespace nox
             device.submitAndWait(cmd, 0);
         }
 
+        // --- probes: what a render-graph texture holds ------------------------------------------------------------------------------
+
+        // With --probe: copies the centre 64 x 64 pixels of `texture` (RGBA8 / sRGB: 4 bytes, RGBA16F: 8 bytes per pixel) to the CPU and
+        // prints their average colour and range two frames later -- to see which pass of a frame produces what. Nothing without --probe.
+        void Probe(nri::RenderGraph& graph, nri::RGTexture texture, const char* name, uint32_t bytesPerPixel, const FrameInfo& frame)
+        {
+            if (!m_ProbesOn || frame.extent.width < 64 || frame.extent.height < 64)
+                return;
+            ProbeSlot& probe = m_Probes[name];
+            const uint64_t bytes = 64ull * 64 * bytesPerPixel;
+            if (probe.pending[frame.frameSlot])
+                PrintProbe(name, probe, frame.frameSlot);
+            if (!probe.readback[frame.frameSlot])
+                probe.readback[frame.frameSlot] = device.createBuffer({ .size = bytes, .usage = NRI_BUFFER_USAGE_READBACK });
+            probe.bytesPerPixel = bytesPerPixel;
+            probe.pending[frame.frameSlot] = true;
+            const nri::RGBuffer target = graph.ImportBuffer((std::string("Probe ") + name).c_str(), probe.readback[frame.frameSlot]);
+            const uint32_t x = frame.extent.width / 2 - 32, y = frame.extent.height / 2 - 32;
+            graph.AddPass((std::string("Probe ") + name).c_str(), nri::RGPassFlags::None,
+                [&](nri::RGBuilder& b) {
+                    b.Read(texture, nri::RGTextureAccess::CopySource);
+                    b.Write(target, nri::RGBufferAccess::CopyDestination);
+                },
+                [texture, target, x, y](nri::RGPassContext& ctx) {
+                    nriTextureCopyToBuffer(ctx.Texture(texture), ctx.Cmd().handle(), ctx.Buffer(target), x, y, 64, 64);
+                });
+        }
+
         // --- the app -------------------------------------------------------------------------------------------------------------
 
         bool Start(Example& example, int argc, char** argv)
@@ -279,6 +309,8 @@ namespace nox
                     m_MaxFrames = std::atoi(argv[++i]);
                 else if (!std::strcmp(argv[i], "--vsync"))
                     vsync = true;
+                else if (!std::strcmp(argv[i], "--probe"))
+                    m_ProbesOn = true;
                 else if (const int used = example.OnArgument(argc, argv, i); used > 0)
                     i += used - 1;
                 else
@@ -458,6 +490,7 @@ namespace nox
             if (device)
             {
                 device.waitIdle();
+                m_Probes.clear();
                 m_Example->Shutdown(*this);
                 graph.ReleaseResources();
             }
@@ -503,6 +536,58 @@ namespace nox
         }
 
     private:
+        struct ProbeSlot
+        {
+            nri::Buffer readback[kFramesInFlight];
+            bool pending[kFramesInFlight]{};
+            uint32_t bytesPerPixel = 4;
+            uint32_t printed = 0;
+        };
+
+        static float HalfToFloat(uint16_t h)
+        {
+            const uint32_t sign = (h & 0x8000u) << 16, exponent = (h >> 10) & 0x1Fu, mantissa = h & 0x3FFu;
+            uint32_t bits;
+            if (exponent == 0)
+                return (sign ? -1.0f : 1.0f) * std::ldexp(float(mantissa), -24);
+            bits = exponent == 31 ? (sign | 0x7F800000u | (mantissa << 13)) : (sign | ((exponent + 112) << 23) | (mantissa << 13));
+            float f;
+            std::memcpy(&f, &bits, 4);
+            return f;
+        }
+
+        void PrintProbe(const char* name, ProbeSlot& probe, uint32_t slot)
+        {
+            probe.pending[slot] = false;
+            if (probe.printed++ % 60 != 0) // (the first one, then once every 60)
+                return;
+            const uint64_t bytes = 64ull * 64 * probe.bytesPerPixel;
+            const auto* data = static_cast<const uint8_t*>(probe.readback[slot].map(0, bytes));
+            float sum[4]{}, lo[4] = { 1e30f, 1e30f, 1e30f, 1e30f }, hi[4] = { -1e30f, -1e30f, -1e30f, -1e30f };
+            for (uint32_t i = 0; i < 64 * 64; ++i)
+                for (int c = 0; c < 4; ++c)
+                {
+                    float v;
+                    if (probe.bytesPerPixel == 8)
+                    {
+                        uint16_t h;
+                        std::memcpy(&h, data + i * 8 + c * 2, 2);
+                        v = HalfToFloat(h);
+                    }
+                    else
+                        v = data[i * 4 + c] / 255.0f;
+                    sum[c] += v;
+                    lo[c] = std::min(lo[c], v);
+                    hi[c] = std::max(hi[c], v);
+                }
+            probe.readback[slot].unmap();
+            std::printf("[%s] %s: probe '%s' (centre 64 x 64, channels in memory order): mean (%.3f %.3f %.3f %.3f) min (%.3f %.3f %.3f) max (%.3f %.3f %.3f)\n",
+                        m_Example->Name(), ApiName(), name, sum[0] / 4096, sum[1] / 4096, sum[2] / 4096, sum[3] / 4096, lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
+        }
+
+        std::map<std::string, ProbeSlot> m_Probes;
+        bool m_ProbesOn = false;
+
         std::string Title(float fps) const
         {
             char text[160];

@@ -211,6 +211,9 @@ public:
                 cmd.dispatch((extent.width + 7) / 8, (extent.height + 7) / 8);
             });
 
+        host.Probe(graph, hdr, "HDR", 8, frame);
+        host.Probe(graph, tonemapped, "Tonemapped", 8, frame);
+
         graph.AddPass("Present", nri::RGPassFlags::Raster,
             [&](nri::RGBuilder& b) {
                 b.Read(tonemapped);
