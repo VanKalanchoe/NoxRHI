@@ -49,7 +49,9 @@ namespace NRI
     TextureD3D12::TextureD3D12(DeviceD3D12& device, const TextureDesc& desc)
         : m_deviceD3D12(device), m_desc(desc), m_ownsResource(true)
     {
-        m_dxgiFormat = TranslateImageFormat(desc.format);
+        // A depth attachment is D32_FLOAT whatever the description's format says -- what the pipelines' DSV format is (PipelineD3D12)
+        // and Vulkan picks too (DeviceVK::getDepthFormat). The resource is R32_TYPELESS so it can also be sampled (an R32_FLOAT view).
+        m_dxgiFormat = desc.usage == TextureUsage::DepthStencilAttachment ? DXGI_FORMAT_D32_FLOAT : TranslateImageFormat(desc.format);
         createResource();
         m_deviceD3D12.addTextureBytes(static_cast<int64_t>(estimateTextureBytes(m_desc)));
     }
@@ -80,7 +82,7 @@ namespace NRI
         resDesc.Height = m_desc.height;
         resDesc.DepthOrArraySize = static_cast<UINT16>(m_desc.isCubeMap ? 6 * m_desc.arrayLayers : m_desc.arrayLayers);
         resDesc.MipLevels = static_cast<UINT16>(m_desc.mipLevels);
-        resDesc.Format = m_dxgiFormat;
+        resDesc.Format = m_desc.usage == TextureUsage::DepthStencilAttachment ? DXGI_FORMAT_R32_TYPELESS : m_dxgiFormat;
         resDesc.SampleDesc.Count = m_desc.sampleCount;
         resDesc.SampleDesc.Quality = 0;
         resDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
@@ -224,6 +226,20 @@ namespace NRI
 
         auto* list = cmdD3D12->getNativeCommandList();
 
+        // The copy destination state, recorded (as recordUpload does): a texture in COMMON is promoted to COPY_DEST by the copy
+        // itself, and the next barrier must start from the state it is really in.
+        if (m_currentState != D3D12_RESOURCE_STATE_COPY_DEST)
+        {
+            D3D12_RESOURCE_BARRIER barrier{};
+            barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            barrier.Transition.pResource = m_resource.Get();
+            barrier.Transition.StateBefore = m_currentState;
+            barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+            barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            list->ResourceBarrier(1, &barrier);
+            m_currentState = D3D12_RESOURCE_STATE_COPY_DEST;
+        }
+
         uint32_t blockBytes = 4, blockSize = 1;
         imageFormatBlock(m_desc.format, blockBytes, blockSize);
 
@@ -286,7 +302,8 @@ namespace NRI
         dst.pResource = bufferD3D12->getNativeBuffer();
         dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
         dst.PlacedFootprint.Offset = 0;
-        dst.PlacedFootprint.Footprint.Format = m_dxgiFormat;
+        // (depth: the footprint of the typeless resource's 32-bit texels)
+        dst.PlacedFootprint.Footprint.Format = m_dxgiFormat == DXGI_FORMAT_D32_FLOAT ? DXGI_FORMAT_R32_TYPELESS : m_dxgiFormat;
         dst.PlacedFootprint.Footprint.Width = width;
         dst.PlacedFootprint.Footprint.Height = height;
         dst.PlacedFootprint.Footprint.Depth = 1;

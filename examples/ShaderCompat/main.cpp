@@ -857,6 +857,7 @@ namespace
 
 int main(int argc, char** argv)
 {
+    std::setvbuf(stdout, nullptr, _IONBF, 0); // (every line out at once: a CI log keeps it even if the process dies)
     std::vector<NriGraphicsAPI> apis;
     std::string only;
     for (int i = 1; i < argc; ++i)

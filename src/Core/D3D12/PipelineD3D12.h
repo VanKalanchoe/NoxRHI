@@ -27,7 +27,8 @@ namespace NRI
                                                      PolygonMode polygonMode,
                                                      bool colorBlendEnable = false,
                                                      const ColorBlendEquation& colorBlendEquation = {},
-                                                     uint32_t colorWriteMask = ColorComponent::All);
+                                                     uint32_t colorWriteMask = ColorComponent::All,
+                                                     uint32_t sampleCount = 1);
         ID3D12StateObject* getNativeStateObject() const { return m_stateObject.Get(); }
         PipelineType getType() const { return m_type; }
 
@@ -52,7 +53,8 @@ namespace NRI
                                                          PolygonMode polygonMode,
                                                          bool colorBlendEnable,
                                                          const ColorBlendEquation& colorBlendEquation,
-                                                         uint32_t colorWriteMask);
+                                                         uint32_t colorWriteMask,
+                                                                    uint32_t sampleCount);
 
     private:
         DeviceD3D12& m_deviceD3D12;

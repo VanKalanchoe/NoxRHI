@@ -168,7 +168,11 @@ namespace NRI
                 depthTex->setCurrentState(D3D12_RESOURCE_STATE_DEPTH_WRITE);
             }
             dsvHandle = m_dsvHeap->GetCPUDescriptorHandleForHeapStart();
-            m_deviceD3D12.getNativeDevice()->CreateDepthStencilView(depthTex->getNativeResource(), nullptr, dsvHandle);
+            // (an explicit view: the resource is typeless -- TextureD3D12 -- and may be multisampled)
+            D3D12_DEPTH_STENCIL_VIEW_DESC dsvViewDesc{};
+            dsvViewDesc.Format = DXGI_FORMAT_D32_FLOAT;
+            dsvViewDesc.ViewDimension = depthTex->getDesc().sampleCount > 1 ? D3D12_DSV_DIMENSION_TEXTURE2DMS : D3D12_DSV_DIMENSION_TEXTURE2D;
+            m_deviceD3D12.getNativeDevice()->CreateDepthStencilView(depthTex->getNativeResource(), &dsvViewDesc, dsvHandle);
             hasDepth = true;
 
             if (desc.depthAttachment.loadOP == LoadOP::clear)
@@ -211,7 +215,8 @@ namespace NRI
             m_polygonMode,
             m_colorBlendEnable,
             m_colorBlendEquation,
-            m_colorWriteMask);
+            m_colorWriteMask,
+            m_rasterizationSamples);
         if (desired && desired != m_boundPso)
         {
             m_cmdList->SetPipelineState(desired);
@@ -464,6 +469,26 @@ namespace NRI
     {
         auto* srcD3D12 = static_cast<TextureD3D12*>(&srcTexture);
         auto* dstD3D12 = static_cast<TextureD3D12*>(&dstTexture);
+        // ResolveSubresource needs RESOLVE_SOURCE / RESOLVE_DEST, which no ResourceState maps to: transitioned here, the tracked states
+        // updated, so the next barrier starts from them.
+        D3D12_RESOURCE_BARRIER barriers[2]{};
+        UINT barrierCount = 0;
+        const auto transition = [&](TextureD3D12& texture, D3D12_RESOURCE_STATES after)
+        {
+            if (texture.getCurrentState() == after)
+                return;
+            D3D12_RESOURCE_BARRIER& b = barriers[barrierCount++];
+            b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            b.Transition.pResource = texture.getNativeResource();
+            b.Transition.StateBefore = texture.getCurrentState();
+            b.Transition.StateAfter = after;
+            b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            texture.setCurrentState(after);
+        };
+        transition(*srcD3D12, D3D12_RESOURCE_STATE_RESOLVE_SOURCE);
+        transition(*dstD3D12, D3D12_RESOURCE_STATE_RESOLVE_DEST);
+        if (barrierCount > 0)
+            m_cmdList->ResourceBarrier(barrierCount, barriers);
         m_cmdList->ResolveSubresource(
             dstD3D12->getNativeResource(), 0,
             srcD3D12->getNativeResource(), 0,

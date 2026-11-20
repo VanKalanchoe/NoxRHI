@@ -164,9 +164,14 @@ namespace NRI
         else
         {
             D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
-            srvDesc.Format = texD3D12.getDxgiFormat();
+            // (a depth texture is read as R32_FLOAT; a multisampled one as Texture2DMS)
+            srvDesc.Format = texD3D12.getDxgiFormat() == DXGI_FORMAT_D32_FLOAT ? DXGI_FORMAT_R32_FLOAT : texD3D12.getDxgiFormat();
             srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            if (texD3D12.getDesc().isCubeMap)
+            if (texD3D12.getDesc().sampleCount > 1)
+            {
+                srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMS;
+            }
+            else if (texD3D12.getDesc().isCubeMap)
             {
                 srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
                 srvDesc.TextureCube.MostDetailedMip = 0;

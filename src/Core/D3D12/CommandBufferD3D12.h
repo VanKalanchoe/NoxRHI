@@ -43,7 +43,7 @@ namespace NRI
         void setDepthBias(float constantFactor, float clamp, float slopeFactor) override {}
         void setDepthClampEnable(bool enable) override {}
         void setLineWidth(float lineWidth) override {}
-        void setRasterizationSamples(uint32_t sampleCount) override {}
+        void setRasterizationSamples(uint32_t sampleCount) override { m_rasterizationSamples = sampleCount > 0 ? sampleCount : 1; }
         void setSampleMask(uint32_t sampleCount, uint32_t sampleMask) override {}
         void setAlphaToCoverageEnable(bool enable) override {}
         void setAlphaToOneEnableEXT(bool enable) override {}
@@ -121,6 +121,7 @@ namespace NRI
         PipelineD3D12* m_currentPipeline = nullptr;
         ID3D12PipelineState* m_boundPso = nullptr;
         PipelineBindPoint m_currentBindPoint = PipelineBindPoint::Graphics;
+        uint32_t m_rasterizationSamples = 1; // (a pipeline variant per sample count: D3D12 bakes it into the PSO)
         bool m_hasDepthAttachment = false;
         bool m_depthTestEnable = false;
         bool m_depthWriteEnable = false;

@@ -81,7 +81,7 @@ namespace NRI
                                         CompareOp depthCompareOp, CullMode cullMode,
                                         FrontFace frontFace, PolygonMode polygonMode,
                                         bool colorBlendEnable, const ColorBlendEquation& colorBlendEquation,
-                                        uint32_t colorWriteMask)
+                                        uint32_t colorWriteMask, uint32_t sampleCount)
         {
             uint64_t key = 0;
             key |= (hasDepth ? 1ull : 0ull) << 0;
@@ -102,6 +102,7 @@ namespace NRI
                 key |= (static_cast<uint64_t>(colorBlendEquation.alphaBlendOp) & 0x3u) << 32;
             }
             key |= (static_cast<uint64_t>(colorWriteMask) & 0xFu) << 34;
+            key |= (static_cast<uint64_t>(sampleCount) & 0x7Fu) << 38; // (1..64: the render target's samples)
             return key;
         }
 
@@ -220,7 +221,8 @@ namespace NRI
                                                                     PolygonMode polygonMode,
                                                                     bool colorBlendEnable,
                                                                     const ColorBlendEquation& colorBlendEquation,
-                                                                    uint32_t colorWriteMask)
+                                                                    uint32_t colorWriteMask,
+                                                                    uint32_t sampleCount)
     {
         const BOOL effDepthEnable = (hasDepth && depthTestEnable) ? TRUE : FALSE;
         const D3D12_DEPTH_WRITE_MASK effDepthWrite = (hasDepth && depthWriteEnable)
@@ -244,6 +246,7 @@ namespace NRI
                 struct alignas(void*) { D3D12_PIPELINE_STATE_SUBOBJECT_TYPE type{ D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL }; D3D12_DEPTH_STENCIL_DESC desc{}; } DepthStencil;
                 struct alignas(void*) { D3D12_PIPELINE_STATE_SUBOBJECT_TYPE type{ D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS }; D3D12_RT_FORMAT_ARRAY rts{}; } RTVFormats;
                 struct alignas(void*) { D3D12_PIPELINE_STATE_SUBOBJECT_TYPE type{ D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT }; DXGI_FORMAT format{}; } DSVFormat;
+                struct alignas(void*) { D3D12_PIPELINE_STATE_SUBOBJECT_TYPE type{ D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_DESC }; DXGI_SAMPLE_DESC desc{ 1, 0 }; } SampleDesc;
             } stream;
 
             stream.RootSig.pRootSignature = m_deviceD3D12.getGlobalRootSignature();
@@ -267,6 +270,7 @@ namespace NRI
             for (size_t i = 0; i < m_rtvFormats.size() && i < 8; ++i)
                 stream.RTVFormats.rts.RTFormats[i] = m_rtvFormats[i];
             stream.DSVFormat.format = effDsvFormat;
+            stream.SampleDesc.desc.Count = std::max(1u, sampleCount);
 
             D3D12_PIPELINE_STATE_STREAM_DESC streamDesc{ sizeof(stream), &stream };
             ComPtr<ID3D12Device2> dev2;
@@ -300,7 +304,7 @@ namespace NRI
             for (size_t i = 0; i < m_rtvFormats.size() && i < 8; ++i)
                 psoDesc.RTVFormats[i] = m_rtvFormats[i];
             psoDesc.DSVFormat = effDsvFormat;
-            psoDesc.SampleDesc.Count = 1;
+            psoDesc.SampleDesc.Count = std::max(1u, sampleCount); // (must match the render targets' sample count)
 
             ThrowIfFailed(m_deviceD3D12.getNativeDevice()->CreateGraphicsPipelineState(
                 &psoDesc, IID_PPV_ARGS(&pso)), "CreateGraphicsPipelineState");
@@ -317,11 +321,12 @@ namespace NRI
                                                                 PolygonMode polygonMode,
                                                                 bool colorBlendEnable,
                                                                 const ColorBlendEquation& colorBlendEquation,
-                                                                uint32_t colorWriteMask)
+                                                                uint32_t colorWriteMask,
+                                                                uint32_t sampleCount)
     {
         const uint64_t key = makeGraphicsVariantKey(hasDepth, depthTestEnable, depthWriteEnable,
                                                     depthCompareOp, cullMode, frontFace, polygonMode,
-                                                    colorBlendEnable, colorBlendEquation, colorWriteMask);
+                                                    colorBlendEnable, colorBlendEquation, colorWriteMask, sampleCount);
         std::scoped_lock lock(m_variantMutex);
         auto it = m_graphicsVariants.find(key);
         if (it != m_graphicsVariants.end())
@@ -329,7 +334,7 @@ namespace NRI
 
         ComPtr<ID3D12PipelineState> built = buildGraphicsVariant(
             hasDepth, depthTestEnable, depthWriteEnable, depthCompareOp, cullMode, frontFace, polygonMode,
-            colorBlendEnable, colorBlendEquation, colorWriteMask);
+            colorBlendEnable, colorBlendEquation, colorWriteMask, sampleCount);
         ID3D12PipelineState* raw = built.Get();
         m_graphicsVariants.emplace(key, std::move(built));
         if (!m_pipeline)
