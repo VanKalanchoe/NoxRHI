@@ -22,6 +22,7 @@ namespace NRI
         case ImageFormat::R16G16_SFLOAT: return DXGI_FORMAT_R16G16_FLOAT;
         case ImageFormat::R16G16B16A16_SFLOAT: return DXGI_FORMAT_R16G16B16A16_FLOAT;
         case ImageFormat::R32G32B32A32_SFLOAT: return DXGI_FORMAT_R32G32B32A32_FLOAT;
+        case ImageFormat::R8_UNORM: return DXGI_FORMAT_R8_UNORM;
         case ImageFormat::R32G32_SFLOAT: return DXGI_FORMAT_R32G32_FLOAT;
         case ImageFormat::R32SINT: return DXGI_FORMAT_R32_SINT;
         case ImageFormat::R32G32_UINT: return DXGI_FORMAT_R32G32_UINT;
@@ -229,7 +230,7 @@ namespace NRI
         for (const auto& reg : regions)
         {
             uint32_t blocksX = (reg.width + blockSize - 1) / blockSize;
-            uint32_t rowPitch = (blocksX * blockBytes + 255) & ~255u;
+            uint32_t rowPitch = reg.rowPitch != 0 ? reg.rowPitch : (blocksX * blockBytes + 255) & ~255u;
 
             D3D12_TEXTURE_COPY_LOCATION src{};
             src.pResource = bufferD3D12->getNativeBuffer();

@@ -1198,7 +1198,7 @@ void NRI_CALL nriTextureRecordRegionUploads(NriTexture texture, NriCommandBuffer
         return;
     std::vector<NRI::TextureRegionUpload> cppRegions(regionCount);
     for (uint32_t i = 0; i < regionCount; ++i)
-        cppRegions[i] = { regions[i].stagingOffset, regions[i].x, regions[i].y, regions[i].width, regions[i].height };
+        cppRegions[i] = { regions[i].stagingOffset, regions[i].x, regions[i].y, regions[i].width, regions[i].height, regions[i].rowPitch };
     texture->impl->recordRegionUploads(*cmdBuffer->impl, *stagingBuffer->impl, cppRegions);
 }
 

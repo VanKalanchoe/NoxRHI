@@ -78,7 +78,8 @@ typedef enum NriImageFormat
     NRI_FORMAT_BC6H_UF16 = 27,
     NRI_FORMAT_BC6H_SF16 = 28,
     NRI_FORMAT_BC7_UNORM = 29,
-    NRI_FORMAT_BC7_UNORM_SRGB = 30
+    NRI_FORMAT_BC7_UNORM_SRGB = 30,
+    NRI_FORMAT_R8_UNORM = 31 // one 8-bit channel (UI glyph coverage); appended: the values above are stored in cooked files
 } NriImageFormat;
 
 typedef enum NriTextureLayout
@@ -124,6 +125,9 @@ typedef struct NriTextureRegionUpload
     uint32_t y;
     uint32_t width;
     uint32_t height;
+    // Bytes from one row's start to the next in staging; 0: the backend's default (Vulkan: tightly packed; D3D12: rows padded to 256
+    // bytes). Set it (a multiple of 256) for an upload both backends read the same way.
+    uint32_t rowPitch;
 } NriTextureRegionUpload;
 
 NRI_API bool NRI_CALL nriImageFormatBlock(NriImageFormat format, uint32_t* outBlockBytes, uint32_t* outBlockSize);
