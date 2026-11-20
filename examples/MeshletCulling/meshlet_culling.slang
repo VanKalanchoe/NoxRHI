@@ -41,7 +41,7 @@ struct View
     uint meshletCount;    // meshlets per instance
     uint instanceCount;
     uint colorMode;       // 0: one colour per meshlet, 1: per instance
-    uint pad;
+    uint flags;           // bit 0: no culling (every meshlet visible), bit 1: no counter (no atomic in the task shader)
 };
 
 struct Push
@@ -99,7 +99,7 @@ void tsCull(uint3 groupId : SV_GroupID, uint threadIndex : SV_GroupIndex, unifor
     {
         const Meshlet meshlet = pc.meshlets[item % view.meshletCount];
         const Instance instance = pc.instances[item / view.meshletCount];
-        if (IsVisible(view, meshlet, instance))
+        if ((view.flags & 1) != 0 || IsVisible(view, meshlet, instance))
         {
             // (a groupshared counter, not wave intrinsics: the group may span several waves, e.g. on 16-wide hardware)
             uint slot;
@@ -108,7 +108,7 @@ void tsCull(uint3 groupId : SV_GroupID, uint threadIndex : SV_GroupIndex, unifor
         }
     }
     GroupMemoryBarrierWithGroupSync();
-    if (threadIndex == 0)
+    if (threadIndex == 0 && (view.flags & 2) == 0)
         AtomicAdd(pc.stats, 0, gVisibleCount);
     DispatchMesh(gVisibleCount, 1, 1, gPayload);
 }
@@ -134,6 +134,37 @@ void msMeshlet(uint3 groupId : SV_GroupID, uint threadIndex : SV_GroupIndex, in 
 {
     const View view = pc.view[0];
     const uint item = payload.items[groupId.x];
+    const Meshlet meshlet = pc.meshlets[item % view.meshletCount];
+    const Instance instance = pc.instances[item / view.meshletCount];
+    SetMeshOutputCounts(meshlet.vertexCount, meshlet.triangleCount);
+
+    const float3 color = view.colorMode == 0 ? HashColor(item % view.meshletCount) : instance.color.rgb;
+    if (threadIndex < meshlet.vertexCount)
+    {
+        const Vertex v = pc.vertices[pc.meshletVertices[meshlet.vertexOffset + threadIndex]];
+        const float3 world = instance.positionScale.xyz + v.position.xyz * instance.positionScale.w;
+        MeshVertex o;
+        o.position = view.viewProj.Transform(float4(world, 1.0));
+        o.normal = v.normal.xyz;
+        o.color = color;
+        outVertices[threadIndex] = o;
+    }
+    for (uint t = threadIndex; t < meshlet.triangleCount; t += kMaxVertices)
+    {
+        const uint first = meshlet.triangleOffset + t * 3;
+        outTriangles[t] = uint3(LoadByte(pc.meshletTriangles, first), LoadByte(pc.meshletTriangles, first + 1), LoadByte(pc.meshletTriangles, first + 2));
+    }
+}
+
+// The same without a task shader (--mesh-only): one mesh shader group per meshlet of every instance, no payload, no culling.
+[shader("mesh")]
+[outputtopology("triangle")]
+[numthreads(kMaxVertices, 1, 1)]
+void msMeshletDirect(uint3 groupId : SV_GroupID, uint threadIndex : SV_GroupIndex, uniform Push pc,
+               OutputVertices<MeshVertex, kMaxVertices> outVertices, OutputIndices<uint3, kMaxTriangles> outTriangles)
+{
+    const View view = pc.view[0];
+    const uint item = groupId.x; // (no task shader: one group per meshlet of every instance, nothing culled)
     const Meshlet meshlet = pc.meshlets[item % view.meshletCount];
     const Instance instance = pc.instances[item / view.meshletCount];
     SetMeshOutputCounts(meshlet.vertexCount, meshlet.triangleCount);

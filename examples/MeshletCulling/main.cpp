@@ -7,6 +7,8 @@
 // (read back from the GPU). The meshlet triangle stream is packed bytes, as in the Nox engine -- read with LoadByte, since DXIL has no
 // 8-bit types.
 //   F: freeze the culling camera (fly away and look at what was culled)     C: meshlet / instance colours     Space: pause
+//   Start-up options (to narrow a problem down): --no-cull (every meshlet drawn), --no-stats (no counter atomic in the task shader),
+//   --mesh-only (no task shader: one mesh shader group per meshlet)
 
 #include "../Common/ExampleApp.h"
 
@@ -38,7 +40,7 @@ namespace
         nox::Mat4 viewProj;
         nox::Float4 cullPlanes[5];
         nox::Float4 cullPosition;
-        uint32_t meshletCount, instanceCount, colorMode, pad;
+        uint32_t meshletCount, instanceCount, colorMode, flags;
     };
 
     struct Push
@@ -198,7 +200,10 @@ public:
             readback = host.device.createBuffer({ .size = 4, .usage = NRI_BUFFER_USAGE_READBACK });
 
         m_View.Create(host);
-        m_Pipeline = host.Mesh("meshlet_culling.slang", "tsCull", "msMeshlet", "psMeshlet");
+        m_Pipeline = m_MeshOnly ? host.Mesh("meshlet_culling.slang", nullptr, "msMeshletDirect", "psMeshlet")
+                                : host.Mesh("meshlet_culling.slang", "tsCull", "msMeshlet", "psMeshlet");
+        std::printf("[MeshletCulling] %s%s%s\n", m_MeshOnly ? "mesh shader only (no task shader)" : "task + mesh shaders",
+                    m_NoCull ? ", no culling" : "", m_NoStats ? ", no counter" : "");
         std::printf("[MeshletCulling] %u meshlets per sphere (%zu triangles), %u spheres\n", m_MeshletCount, sphere.indices.size() / 3, m_InstanceCount);
     }
 
@@ -235,6 +240,7 @@ public:
         view.meshletCount = m_MeshletCount;
         view.instanceCount = m_InstanceCount;
         view.colorMode = m_ColorMode;
+        view.flags = (m_NoCull ? 1u : 0u) | (m_NoStats ? 2u : 0u);
         Push push = m_Push;
         push.view = m_View.Write(frame.frameSlot, view);
 
@@ -257,7 +263,10 @@ public:
                 nox::Host::SetRasterState(cmd, { .depthTest = true, .depthWrite = true, .cull = NRI_CULL_MODE_BACK });
                 cmd.bindPipeline(NRI_PIPELINE_BIND_POINT_GRAPHICS, m_Pipeline);
                 cmd.pushData(&push, sizeof(push));
-                nri::drawMeshTasks(cmd, (m_MeshletCount * m_InstanceCount + kTaskGroupSize - 1) / kTaskGroupSize);
+                if (m_MeshOnly)
+                    nri::drawMeshTasks(cmd, m_MeshletCount * m_InstanceCount);
+                else
+                    nri::drawMeshTasks(cmd, (m_MeshletCount * m_InstanceCount + kTaskGroupSize - 1) / kTaskGroupSize);
             });
 
         // (the readback buffer is this pass's output: declared, so the render graph keeps the pass -- a pass that only reads is culled)
@@ -268,6 +277,19 @@ public:
                 b.Write(readback, nri::RGBufferAccess::CopyDestination);
             },
             [this, slot = frame.frameSlot](nri::RGPassContext& ctx) { ctx.Cmd().copyBuffer(m_Stats, m_Readback[slot], nri::BufferCopyRegion{ 0, 0, 4 }); });
+    }
+
+    int OnArgument(int, char** argv, int index) override
+    {
+        if (!std::strcmp(argv[index], "--no-cull"))
+            m_NoCull = true;
+        else if (!std::strcmp(argv[index], "--no-stats"))
+            m_NoStats = true;
+        else if (!std::strcmp(argv[index], "--mesh-only"))
+            m_MeshOnly = true;
+        else
+            return 0;
+        return 1;
     }
 
     void OnKey(SDL_Keycode key) override
@@ -299,6 +321,7 @@ private:
     nox::Float3 m_CullPosition;
     float m_AnimTime = 0.0f;
     bool m_Frozen = false, m_Paused = false;
+    bool m_NoCull = false, m_NoStats = false, m_MeshOnly = false;
 };
 
 NOX_EXAMPLE_MAIN(MeshletCulling)
