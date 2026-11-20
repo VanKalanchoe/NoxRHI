@@ -99,7 +99,7 @@ headless (no window, no swapchain) and exits non-zero on any failure:
 ```bat
 build\Debug\ShaderCompat.exe --all                 :: Vulkan, then D3D12, then "Vulkan vs D3D12"
 build\Debug\ShaderCompat.exe --dx12 --only csWave  :: one API, one test
-build\Debug\ShaderCompat.exe --vk --verbose        :: also print NoxRHI's info / warnings
+build\Debug\ShaderCompat.exe --vk --verbose        :: also print each step and NoxRHI's info / warnings
 set NOXRHI_D3D12_WARP=1 & build\Debug\ShaderCompat.exe --dx12   :: D3D12 on Microsoft's software adapter (WARP), as CI runs it
 ```
 
@@ -118,6 +118,13 @@ set NOXRHI_D3D12_WARP=1 & build\Debug\ShaderCompat.exe --dx12   :: D3D12 on Micr
 | `csTextureSample` | a bindless `Texture2D` with a nearest and a linear sampler (exact texels, then averages) |
 | `csStorageTexture` | `RWTexture2D` writes, copied back to the CPU |
 | `csRayQuery` | inline ray tracing (`RayQuery`) against a one-triangle TLAS |
+| `gfxOrientation` | a raster triangle in the top-left corner lands at row 0: NDC +Y is up, the image origin is the top-left (NoxRHI flips the viewport the same way on both) |
+| `gfxCulling` | back-face culling: the counter-clockwise triangle is drawn, the clockwise one is culled |
+| `gfxDepth` | D32 depth: `LESS` test and depth writes with three overlapping quads drawn out of order |
+| `gfxBlend` | alpha blending (`SRC_ALPHA`, `ONE_MINUS_SRC_ALPHA`) over a cleared target |
+| `gfxInterpolation` | smooth colour interpolation against barycentrics, and a `nointerpolation` value taken from the first vertex |
+| `gfxMsaa` | 4x MSAA with the standard sample positions, resolved: every edge pixel's coverage is checked |
+| `gfxMeshShader` | a task + mesh shader pipeline draws the orientation triangle (SKIP without mesh shaders) |
 
 **One source, both APIs.** NoxRHI's Slang compiler defines `NOX_VULKAN` for SPIR-V and `NOX_DX12` for DXIL. Textures and samplers use
 bindless handles on both (`Texture2D.Handle`, `RWTexture2D.Handle`, `SamplerState.Handle`). Buffers are reached by device address on
@@ -125,8 +132,13 @@ Vulkan (`(uint*)push.address`) and by descriptor on D3D12 (`ByteAddressBuffer.Ha
 `RWByteAddressBuffer.Handle(slot)` from `registerStorageBuffer`), and a TLAS by address on Vulkan and by descriptor on D3D12
 (`registerAccelerationStructure`) -- the same convention NoxUI's shader and the Nox engine use.
 
+The graphics tests render 64 x 64 headless (raster: `vsGfx` / `psGfx`; mesh: `tsGfx` / `msGfx` / `psGfx`) and read the image back.
+If the program dies, it says what it was doing (a crash with its exception code, `std::terminate`, `abort`, or a library calling `exit`).
+
 **Found by it and fixed:** D3D12 samplers ignored their description (every sampler was linear with wrap addressing); D3D12 had no
-writable buffer descriptor (`registerStorageBuffer` adds a raw UAV). **Known D3D12 gaps still open:** `fillBuffer` records nothing
+writable buffer descriptor (`registerStorageBuffer` adds a raw UAV); D3D12 pipelines were always single-sampled
+(`setRasterizationSamples` was empty) and `resolveImage` used the wrong states; D3D12 depth textures had no usable format;
+`recordRegionUploads` on D3D12 did not move the texture to `COPY_DEST`. **Known D3D12 gaps still open:** `fillBuffer` records nothing
 (clear a buffer with a copy from a zeroed staging buffer instead), and `bindVertexBuffer` uses a fixed 36-byte stride (pull vertices from a
 buffer in the shader instead).
 
