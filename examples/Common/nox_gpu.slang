@@ -15,10 +15,25 @@
 // structs of 32-bit scalars and vectors. Keep 64-bit members 8-byte aligned and use float4 rather than float3 in arrays of structs;
 // ShaderCompat's csStructLayout checks a struct read through BufferRef on both APIs.
 
+// PUSH DATA: keep BufferRef / RWBufferRef (and every other struct) out of push structs. On D3D12, push data is a constant buffer
+// (root constants) with HLSL packing: a struct member starts a new 16-byte row, and so does the member after it -- while Vulkan (scalar
+// layout) packs them tightly, so the two APIs would read different bytes. Store the reference as a plain uint64_t and expose the typed
+// reference with a property, which costs no space:
+//
+//     struct DrawPush
+//     {
+//         uint64_t particlesRef;
+//         property BufferRef<Particle> particles { get { return BufferRef<Particle>(particlesRef); } }
+//     };
+//
+// Scalars and vectors in push data follow the same rule as constant buffers: a vector must not cross a 16-byte boundary on D3D12.
+
 // A read-only buffer of T (D3D12: an SRV from registerBuffer).
 struct BufferRef<T>
 {
     uint64_t handle;
+
+    __init(uint64_t h) { handle = h; }
 
     T Load(uint index)
     {
@@ -36,6 +51,8 @@ struct BufferRef<T>
 struct RWBufferRef<T>
 {
     uint64_t handle;
+
+    __init(uint64_t h) { handle = h; }
 
     T Load(uint index)
     {

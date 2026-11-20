@@ -35,10 +35,15 @@ struct Vertex
 
 struct ScenePush
 {
-    BufferRef<Scene> scene;
-    BufferRef<Instance> instances;
-    BufferRef<Vertex> vertices;
-    BufferRef<uint> textures; // texture slots (image heap offset included)
+    uint64_t sceneRef;
+    uint64_t instancesRef;
+    uint64_t verticesRef;
+    uint64_t texturesRef; // texture slots (image heap offset included)
+
+    property BufferRef<Scene> scene { get { return BufferRef<Scene>(sceneRef); } }
+    property BufferRef<Instance> instances { get { return BufferRef<Instance>(instancesRef); } }
+    property BufferRef<Vertex> vertices { get { return BufferRef<Vertex>(verticesRef); } }
+    property BufferRef<uint> textures { get { return BufferRef<uint>(texturesRef); } }
 };
 
 struct VertexOut

@@ -21,11 +21,13 @@ struct Camera
 
 struct SimulatePush
 {
-    RWBufferRef<Particle> particles;
+    uint64_t particlesRef;
     uint count;
     float time;
     float deltaTime;
     float pad;
+
+    property RWBufferRef<Particle> particles { get { return RWBufferRef<Particle>(particlesRef); } }
 };
 
 uint Hash(uint x)
@@ -89,9 +91,12 @@ void csSimulate(uint3 id : SV_DispatchThreadID, uniform SimulatePush pc)
 
 struct DrawPush
 {
-    BufferRef<Particle> particles;
-    BufferRef<Camera> camera;
+    uint64_t particlesRef;
+    uint64_t cameraRef;
     float size;
+
+    property BufferRef<Particle> particles { get { return BufferRef<Particle>(particlesRef); } }
+    property BufferRef<Camera> camera { get { return BufferRef<Camera>(cameraRef); } }
 };
 
 struct VertexOut

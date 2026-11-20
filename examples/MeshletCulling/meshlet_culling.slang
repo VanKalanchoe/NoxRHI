@@ -46,13 +46,21 @@ struct View
 
 struct Push
 {
-    BufferRef<View> view;
-    BufferRef<Meshlet> meshlets;
-    BufferRef<uint> meshletVertices;
-    BufferRef<uint> meshletTriangles; // packed bytes
-    BufferRef<Vertex> vertices;
-    BufferRef<Instance> instances;
-    RWBufferRef<uint> stats;          // [0]: meshlets drawn this frame
+    uint64_t viewRef;
+    uint64_t meshletsRef;
+    uint64_t meshletVerticesRef;
+    uint64_t meshletTrianglesRef; // packed bytes
+    uint64_t verticesRef;
+    uint64_t instancesRef;
+    uint64_t statsRef;          // [0]: meshlets drawn this frame
+
+    property BufferRef<View> view { get { return BufferRef<View>(viewRef); } }
+    property BufferRef<Meshlet> meshlets { get { return BufferRef<Meshlet>(meshletsRef); } }
+    property BufferRef<uint> meshletVertices { get { return BufferRef<uint>(meshletVerticesRef); } }
+    property BufferRef<uint> meshletTriangles { get { return BufferRef<uint>(meshletTrianglesRef); } }
+    property BufferRef<Vertex> vertices { get { return BufferRef<Vertex>(verticesRef); } }
+    property BufferRef<Instance> instances { get { return BufferRef<Instance>(instancesRef); } }
+    property RWBufferRef<uint> stats { get { return RWBufferRef<uint>(statsRef); } }
 };
 
 struct Payload

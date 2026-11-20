@@ -96,11 +96,6 @@ jobs:
         run: |
           Push-Location ./build/${{ matrix.config }}
           $failed = 0
-          # (diagnosis of RayQueryShadows on WARP: shadow rays only, with D3D12 GPU-based validation -- the Debug build's debug layer)
-          Write-Host "=== RayQueryShadows --ao 0 (GPU-based validation) ==="
-          $env:NOXRHI_D3D12_GBV = "1"
-          ./RayQueryShadows.exe --dx12 --frames 3 --ao 0
-          $env:NOXRHI_D3D12_GBV = "0"
           foreach ($example in 'GpuParticles', 'BindlessScene', 'MeshletCulling', 'RayQueryShadows') {
             Write-Host "=== $example ==="
             & "./$example.exe" --dx12 --frames 30

@@ -31,10 +31,14 @@ struct Vertex
 
 struct Push
 {
-    BufferRef<Frame> frame;
-    BufferRef<Object> objects;
-    BufferRef<Vertex> vertices;
+    uint64_t frameRef;
+    uint64_t objectsRef;
+    uint64_t verticesRef;
     uint64_t tlas;
+
+    property BufferRef<Frame> frame { get { return BufferRef<Frame>(frameRef); } }
+    property BufferRef<Object> objects { get { return BufferRef<Object>(objectsRef); } }
+    property BufferRef<Vertex> vertices { get { return BufferRef<Vertex>(verticesRef); } }
 };
 
 struct VertexOut

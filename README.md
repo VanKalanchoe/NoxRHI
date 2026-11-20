@@ -174,6 +174,13 @@ what differs between the two APIs' shaders. CI runs all four on D3D12 (WARP, deb
 What has to change, found by going through the engine's shaders. Textures and samplers (`Texture2D.Handle(...)`, `SamplerState.Handle(...)`)
 already work on both and need nothing.
 
+0. **Push data layout (the one that bites silently).** On D3D12, push data is a constant buffer (root constants) with HLSL's packing
+   rules: a **struct member starts a new 16-byte row** (and so does the member after it), and a vector may not cross a 16-byte boundary.
+   Vulkan (scalar layout) packs tightly. So `struct Push { BufferRef<A> a; BufferRef<B> b; }` sits at 0 / 8 on Vulkan but 0 / 16 on
+   D3D12: the shader reads the wrong bytes, with no error. Keep structs out of push data: store references as plain `uint64_t` and
+   expose the typed reference with a Slang `property` (no space):
+   `uint64_t aRef; property BufferRef<A> a { get { return BufferRef<A>(aRef); } }`. All four examples do this; their push layouts were
+   checked in the DXIL against the C++ structs. (Structs *inside buffers*, read through `BufferRef`, use the C-like layout on both.)
 1. **Buffer pointers.** D3D12 shaders have no pointers. Every `(T*)push.someReference` (the engine reaches its UBO, lights, instances, meshlets
    and particles this way) becomes a `BufferRef<T>` (read) or `RWBufferRef<T>` (write) from `nox_gpu.slang`: a 64-bit value that is the device
    address on Vulkan and a descriptor slot on D3D12 (`ByteAddressBuffer` / `RWByteAddressBuffer` handles). The push data layout does not change
