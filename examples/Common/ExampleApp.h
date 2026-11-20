@@ -72,7 +72,9 @@ namespace nox
         uint64_t write = 0;
     };
 
-    // Fixed-function state set before a draw (everything is dynamic state in NoxRHI; D3D12 picks a matching pipeline variant).
+    // Fixed-function state set before a draw (everything is dynamic state in NoxRHI; D3D12 picks a matching pipeline variant). Set it in
+    // every raster pass: the render graph resets the baseline once per command buffer, and passes in one command buffer inherit each
+    // other's state (BindlessScene's present triangle was culled by the scene pass's back-face culling).
     struct RasterState
     {
         bool depthTest = false;

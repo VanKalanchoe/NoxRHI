@@ -151,7 +151,7 @@ struct FullscreenOut
 [shader("vertex")]
 FullscreenOut vsFullscreen(uint vertexId : SV_VertexID)
 {
-    // One triangle covering the screen; uv (0,0) at the top-left on both APIs (NDC +Y is up).
+    // One triangle covering the screen (clockwise: draw it with culling off); uv (0,0) at the top-left on both APIs (NDC +Y is up).
     const float2 uv = float2((vertexId << 1) & 2, vertexId & 2);
     FullscreenOut o;
     o.position = float4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.0, 1.0);

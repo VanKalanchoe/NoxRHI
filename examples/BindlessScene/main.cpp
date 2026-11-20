@@ -222,6 +222,8 @@ public:
             },
             [this, &host, tonemapped](nri::RGPassContext& ctx) {
                 nri::CommandBuffer& cmd = ctx.Cmd();
+                // (state carries over from the Scene pass in the same command buffer -- its back-face culling would cull this triangle)
+                nox::Host::SetRasterState(cmd, {});
                 cmd.bindPipeline(NRI_PIPELINE_BIND_POINT_GRAPHICS, m_Present);
                 const PresentPush push{ host.ImageSlot(ctx.Slot(tonemapped)) };
                 cmd.pushData(&push, sizeof(push));
