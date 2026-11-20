@@ -66,6 +66,15 @@ namespace NRI
             {
                 debugController->EnableDebugLayer();
                 dxgiFlags |= DXGI_CREATE_FACTORY_DEBUG;
+                // NOXRHI_D3D12_GBV=1: GPU-based validation -- the debug layer also checks descriptors, resource states and accesses
+                // while shaders run (slow; for finding what the CPU-side validation cannot see).
+                char gbvValue[8]{};
+                ComPtr<ID3D12Debug1> debug1;
+                if (GetEnvironmentVariableA("NOXRHI_D3D12_GBV", gbvValue, sizeof(gbvValue)) > 0 && gbvValue[0] == '1' && SUCCEEDED(debugController.As(&debug1)))
+                {
+                    debug1->SetEnableGPUBasedValidation(TRUE);
+                    NRI_LOG_INFO("D3D12: GPU-based validation on");
+                }
             }
         }
 
