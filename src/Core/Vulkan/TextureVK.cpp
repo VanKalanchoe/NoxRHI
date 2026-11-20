@@ -1,4 +1,5 @@
 #include "TextureVK.h"
+#include <stdexcept>
 
 #include <algorithm>
 
@@ -72,7 +73,7 @@ namespace NRI
         m_deviceVK.addTextureBytes(static_cast<int64_t>(estimateTextureBytes(desc)));
 
         // Assumes there is only color depth and shader aka png textures
-        vk::Format format;
+        vk::Format format = vk::Format::eUndefined;
         vk::ImageAspectFlags aspectFlags;
         vk::ImageUsageFlags usageFlags;
         if (desc.usage == TextureUsage::ShaderResource)
@@ -112,7 +113,13 @@ namespace NRI
             usageFlags = vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eTransferSrc |
                          vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled;
         }
-        
+        else
+        {
+            // (TextureUsage::Default is the descriptor heap's sentinel, not a usage a texture can be created with)
+            throw std::runtime_error("TextureVK: a texture needs a usage (ShaderResource, ColorAttachment, ColorResolveAttachment, "
+                                     "DepthStencilAttachment or Storage), not TextureUsage::Default");
+        }
+
         m_format = format;
         
         vk::ImageCreateFlags createFlags{};
