@@ -123,7 +123,6 @@ public:
         for (uint32_t slot = 0; slot < nox::kFramesInFlight; ++slot)
         {
             m_Tlas[slot] = CreateAccelerationStructure(host, NRI_ACCELERATION_STRUCTURE_TOP_LEVEL, tlasSizes.accelerationStructureSize, m_TlasStorage[slot]);
-            m_TlasRef[slot] = host.TlasRef(m_Tlas[slot]);
             m_TlasScratch[slot] = host.device.createBuffer({ .size = tlasSizes.buildScratchSize, .usage = NRI_BUFFER_USAGE_ACCELERATION_STRUCTURE_SCRATCH });
             m_InstanceBuffers[slot] = host.device.createBuffer({ .size = sizeof(NriAccelerationStructureInstance) * kMaxObjects,
                                                                  .usage = NRI_BUFFER_USAGE_ACCELERATION_STRUCTURE_INSTANCE });
@@ -144,17 +143,31 @@ public:
             cmd.resourceBarriers({}, after);
         });
 
+        // Each slot's TLAS is built once before a descriptor refers to it (D3D12: the SRV is created after the first build); the frames
+        // rebuild it in place, at the same address.
+        for (uint32_t slot = 0; slot < nox::kFramesInFlight; ++slot)
+        {
+            Objects objectData{};
+            const uint32_t count = WriteScene(0.0f, objectData, m_InstanceBuffers[slot]);
+            host.Submit([&](nri::CommandBuffer& cmd) {
+                NriAccelerationStructureBuildDesc build{};
+                build.type = NRI_ACCELERATION_STRUCTURE_TOP_LEVEL;
+                build.flags = NRI_AS_BUILD_PREFER_FAST_BUILD;
+                build.instances = { m_InstanceBuffers[slot].getDeviceAddress(), count };
+                nriCmdBuildAccelerationStructure(cmd.handle(), &build, m_TlasScratch[slot].getDeviceAddress(), m_Tlas[slot].handle());
+                nriCmdAccelerationStructureBarrier(cmd.handle(), NRI_AS_BARRIER_BUILD_TO_SHADER_READ);
+            });
+            m_TlasRef[slot] = host.TlasRef(m_Tlas[slot]);
+        }
+
         m_Frame.Create(host);
         m_Objects.Create(host);
         m_Pipeline = host.Graphics("ray_query_shadows.slang", "vsScene", "psScene");
     }
 
-    void Render(nox::Host& host, nri::RenderGraph& graph, const nox::FrameInfo& frame) override
+    // The scene at `time`: the objects the rasterizer draws (into objectData) and the TLAS instances (written to instanceBuffer).
+    uint32_t WriteScene(float time, Objects& objectData, nri::Buffer& instanceBuffer)
     {
-        if (!m_Paused)
-            m_AnimTime += frame.deltaTime;
-
-        // --- the scene: the same objects drawn by the rasterizer and placed in the TLAS ---
         std::vector<Object> objects;
         const auto add = [&](nox::Float3 position, nox::Float3 scale, float yaw, float pitch, nox::Float4 color) {
             const nox::Mat4 rotation = nox::RotateY(yaw) * nox::RotateX(pitch);
@@ -165,12 +178,10 @@ public:
             add({ (i & 1 ? 5.0f : -5.0f), 2.0f, (i & 2 ? 5.0f : -5.0f) }, { 0.45f, 2.0f, 0.45f }, 0.3f * i, 0, { 0.85f, 0.75f, 0.6f, 0 });
         for (int i = 0; i < 16; ++i)
         {
-            const float t = m_AnimTime * (0.25f + 0.04f * i) + i * 0.39f, radius = 1.8f + 0.28f * i;
+            const float t = time * (0.25f + 0.04f * i) + i * 0.39f, radius = 1.8f + 0.28f * i;
             add({ std::cos(t) * radius, 0.9f + 0.7f * std::sin(t * 1.7f + i), std::sin(t) * radius }, { 0.35f, 0.35f, 0.35f }, t * 1.3f, t * 0.7f,
                 { 0.5f + 0.5f * std::cos(i * 0.8f), 0.5f + 0.5f * std::cos(i * 0.8f + 2.1f), 0.5f + 0.5f * std::cos(i * 0.8f + 4.2f), 0 });
         }
-
-        Objects objectData{};
         std::vector<NriAccelerationStructureInstance> instances(objects.size());
         for (size_t i = 0; i < objects.size(); ++i)
         {
@@ -182,9 +193,18 @@ public:
             instances[i].mask = 0xFF;
             instances[i].accelerationStructureReference = m_Blas.getDeviceAddress();
         }
-        nri::Buffer& instanceBuffer = m_InstanceBuffers[frame.frameSlot];
         std::memcpy(instanceBuffer.map(0, instances.size() * sizeof(instances[0])), instances.data(), instances.size() * sizeof(instances[0]));
         instanceBuffer.unmap();
+        return uint32_t(objects.size());
+    }
+
+    void Render(nox::Host& host, nri::RenderGraph& graph, const nox::FrameInfo& frame) override
+    {
+        if (!m_Paused)
+            m_AnimTime += frame.deltaTime;
+
+        Objects objectData{};
+        const uint32_t sceneObjects = WriteScene(m_AnimTime, objectData, m_InstanceBuffers[frame.frameSlot]);
 
         const float orbit = m_AnimTime * 0.07f;
         const nox::Float3 eye{ std::sin(orbit) * 13.0f, 6.5f, std::cos(orbit) * 13.0f };
@@ -193,13 +213,13 @@ public:
         frameData.cameraPosition = { eye.x, eye.y, eye.z, 1 };
         const nox::Float3 sun = nox::Normalize({ std::cos(m_AnimTime * 0.2f) * 0.8f, 1.0f, std::sin(m_AnimTime * 0.2f) * 0.8f });
         frameData.sunDirection = { sun.x, sun.y, sun.z, 0 };
-        frameData.objectCount = uint32_t(objects.size());
+        frameData.objectCount = sceneObjects;
         frameData.aoRays = m_AoRays;
         frameData.frameIndex = uint32_t(frame.frameNumber);
         frameData.shadowsOn = m_Shadows ? 1 : 0;
 
         const Push push{ m_Frame.Write(frame.frameSlot, frameData), m_Objects.Write(frame.frameSlot, objectData), m_VerticesRef, m_TlasRef[frame.frameSlot] };
-        const uint32_t objectCount = uint32_t(objects.size()), slot = frame.frameSlot;
+        const uint32_t objectCount = sceneObjects, slot = frame.frameSlot;
 
         char status[96];
         std::snprintf(status, sizeof(status), "shadows %s, AO rays %u (S / A)", m_Shadows ? "on" : "off", m_AoRays);
