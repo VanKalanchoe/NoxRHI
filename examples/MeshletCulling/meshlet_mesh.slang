@@ -18,7 +18,7 @@ float3 HashColor(uint x)
 
 [shader("mesh")]
 [outputtopology("triangle")]
-[numthreads(kMaxVertices, 1, 1)]
+[numthreads(kMeshThreads, 1, 1)]
 void msMeshlet(uint3 groupId : SV_GroupID, uint threadIndex : SV_GroupIndex, in payload Payload payload, uniform Push pc,
                OutputVertices<MeshVertex, kMaxVertices> outVertices, OutputIndices<uint3, kMaxTriangles> outTriangles)
 {
@@ -29,17 +29,17 @@ void msMeshlet(uint3 groupId : SV_GroupID, uint threadIndex : SV_GroupIndex, in 
     SetMeshOutputCounts(meshlet.vertexCount, meshlet.triangleCount);
 
     const float3 color = view.colorMode == 0 ? HashColor(item % view.meshletCount) : instance.color.rgb;
-    if (threadIndex < meshlet.vertexCount)
+    for (uint i = threadIndex; i < meshlet.vertexCount; i += kMeshThreads)
     {
-        const Vertex v = pc.vertices[pc.meshletVertices[meshlet.vertexOffset + threadIndex]];
+        const Vertex v = pc.vertices[pc.meshletVertices[meshlet.vertexOffset + i]];
         const float3 world = instance.positionScale.xyz + v.position.xyz * instance.positionScale.w;
         MeshVertex o;
         o.position = view.viewProj.Transform(float4(world, 1.0));
         o.normal = v.normal.xyz;
         o.color = color;
-        outVertices[threadIndex] = o;
+        outVertices[i] = o;
     }
-    for (uint t = threadIndex; t < meshlet.triangleCount; t += kMaxVertices)
+    for (uint t = threadIndex; t < meshlet.triangleCount; t += kMeshThreads)
     {
         const uint first = meshlet.triangleOffset + t * 3;
         outTriangles[t] = uint3(LoadByte(pc.meshletTriangles, first), LoadByte(pc.meshletTriangles, first + 1), LoadByte(pc.meshletTriangles, first + 2));
@@ -49,7 +49,7 @@ void msMeshlet(uint3 groupId : SV_GroupID, uint threadIndex : SV_GroupIndex, in 
 // The same without a task shader (--mesh-only): one mesh shader group per meshlet of every instance, no payload, no culling.
 [shader("mesh")]
 [outputtopology("triangle")]
-[numthreads(kMaxVertices, 1, 1)]
+[numthreads(kMeshThreads, 1, 1)]
 void msMeshletDirect(uint3 groupId : SV_GroupID, uint threadIndex : SV_GroupIndex, uniform Push pc,
                OutputVertices<MeshVertex, kMaxVertices> outVertices, OutputIndices<uint3, kMaxTriangles> outTriangles)
 {
@@ -60,17 +60,17 @@ void msMeshletDirect(uint3 groupId : SV_GroupID, uint threadIndex : SV_GroupInde
     SetMeshOutputCounts(meshlet.vertexCount, meshlet.triangleCount);
 
     const float3 color = view.colorMode == 0 ? HashColor(item % view.meshletCount) : instance.color.rgb;
-    if (threadIndex < meshlet.vertexCount)
+    for (uint i = threadIndex; i < meshlet.vertexCount; i += kMeshThreads)
     {
-        const Vertex v = pc.vertices[pc.meshletVertices[meshlet.vertexOffset + threadIndex]];
+        const Vertex v = pc.vertices[pc.meshletVertices[meshlet.vertexOffset + i]];
         const float3 world = instance.positionScale.xyz + v.position.xyz * instance.positionScale.w;
         MeshVertex o;
         o.position = view.viewProj.Transform(float4(world, 1.0));
         o.normal = v.normal.xyz;
         o.color = color;
-        outVertices[threadIndex] = o;
+        outVertices[i] = o;
     }
-    for (uint t = threadIndex; t < meshlet.triangleCount; t += kMaxVertices)
+    for (uint t = threadIndex; t < meshlet.triangleCount; t += kMeshThreads)
     {
         const uint first = meshlet.triangleOffset + t * 3;
         outTriangles[t] = uint3(LoadByte(pc.meshletTriangles, first), LoadByte(pc.meshletTriangles, first + 1), LoadByte(pc.meshletTriangles, first + 2));

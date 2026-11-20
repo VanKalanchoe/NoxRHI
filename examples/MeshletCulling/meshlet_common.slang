@@ -4,8 +4,11 @@
 #include "nox_gpu.slang"
 
 static const uint kTaskGroupSize = 32;
+// The Nox engine's meshlet configuration (shaderIO.h: MAX_VERTICES / MAX_PRIMITIVES 64, MESH_SHADER_DISPATCH_X 32), proven on Vulkan:
+// 64 vertices and 64 triangles per meshlet, 32 mesh shader threads looping over both.
 static const uint kMaxVertices = 64;
-static const uint kMaxTriangles = 124;
+static const uint kMaxTriangles = 64;
+static const uint kMeshThreads = 32;
 
 struct Meshlet
 {

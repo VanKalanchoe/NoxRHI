@@ -2,7 +2,7 @@
 //
 //   MeshletCulling.exe --vk      MeshletCulling.exe --dx12
 //
-// 576 spheres split into meshlets (<= 64 vertices, <= 124 triangles, with a bounding sphere and a normal cone). A task shader culls each
+// 576 spheres split into meshlets (<= 64 vertices, <= 64 triangles, the Nox engine's limits, with a bounding sphere and a normal cone). A task shader culls each
 // meshlet against the frustum and its cone and launches mesh shaders for the visible ones; the window title shows how many were drawn
 // (read back from the GPU). The meshlet triangle stream is packed bytes, as in the Nox engine -- read with LoadByte, since DXIL has no
 // 8-bit types.
@@ -48,7 +48,7 @@ namespace
         uint64_t view, meshlets, meshletVertices, meshletTriangles, vertices, instances, stats;
     };
 
-    constexpr uint32_t kMaxVertices = 64, kMaxTriangles = 124, kTaskGroupSize = 32;
+    constexpr uint32_t kMaxVertices = 64, kMaxTriangles = 64, kTaskGroupSize = 32; // (the Nox engine's meshlet limits)
     constexpr uint32_t kGrid = 24;
 
     struct Mesh
