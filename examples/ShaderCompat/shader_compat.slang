@@ -422,7 +422,9 @@ void tsGfx()
 [shader("mesh")]
 [outputtopology("triangle")]
 [numthreads(3, 1, 1)]
-void msGfx(uint tid : SV_GroupIndex, in payload MeshPayload meshPayload, out indices uint3 triangles[1], out vertices GfxOut verts[3], uniform Push pc)
+// (Slang's own output types, not HLSL's "out indices" / "out vertices" modifiers: some Slang versions write those back out with a second
+// "out", which dxc 1.10 rejects)
+void msGfx(uint tid : SV_GroupIndex, in payload MeshPayload meshPayload, OutputIndices<uint3, 1> triangles, OutputVertices<GfxOut, 3> verts, uniform Push pc)
 {
     SetMeshOutputCounts(3, 1);
     const float2 p[3] = { float2(-1, 1), float2(0, 1), float2(-1, 0) };

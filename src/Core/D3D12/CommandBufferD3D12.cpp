@@ -36,6 +36,8 @@ namespace NRI
                 return D3D12_RESOURCE_STATE_COMMON;
             if (state.access & AccessBits::ShaderWrite)
                 return D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+            if (state.access & AccessBits::AccelerationStructureWrite) // (a build's scratch buffer: D3D12 writes it as a UAV)
+                return D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
             if (state.access & AccessBits::ColorAttachmentWrite)
                 return D3D12_RESOURCE_STATE_RENDER_TARGET;
             if (state.access & AccessBits::ColorAttachmentRead)
@@ -46,6 +48,8 @@ namespace NRI
                 return D3D12_RESOURCE_STATE_DEPTH_READ;
             if (state.access & AccessBits::ShaderRead)
                 return D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+            if (state.access & AccessBits::AccelerationStructureRead) // (a build's vertex / index / instance inputs)
+                return D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
             if (state.access & AccessBits::TransferWrite)
                 return D3D12_RESOURCE_STATE_COPY_DEST;
             if (state.access & AccessBits::TransferRead)
@@ -698,7 +702,11 @@ namespace NRI
                 continue;
             auto* bufD3D12 = static_cast<BufferD3D12*>(bb.buffer);
             const D3D12_RESOURCE_STATES afterState = TranslateResourceStateToD3D12(bb.after);
-            if (!bufD3D12->isUploadHeap() && bufD3D12->getCurrentState() != afterState && afterState != D3D12_RESOURCE_STATE_COMMON)
+            constexpr uint32_t writes = AccessBits::ShaderWrite | AccessBits::AccelerationStructureWrite;
+            // An acceleration structure's own buffer stays in RAYTRACING_ACCELERATION_STRUCTURE for its whole life (D3D12 forbids
+            // transitioning it): only UAV barriers order the builds and reads.
+            const bool fixedState = bufD3D12->getCurrentState() == D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE;
+            if (!fixedState && !bufD3D12->isUploadHeap() && bufD3D12->getCurrentState() != afterState && afterState != D3D12_RESOURCE_STATE_COMMON)
             {
                 D3D12_RESOURCE_BARRIER b{};
                 b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -709,7 +717,8 @@ namespace NRI
                 barriers.push_back(b);
                 bufD3D12->setCurrentState(afterState);
             }
-            else if ((bb.before.access & AccessBits::ShaderWrite) || (bb.after.access & AccessBits::ShaderWrite))
+            else if ((bb.before.access & writes) || (bb.after.access & writes) ||
+                     (fixedState && ((bb.before.access | bb.after.access) & AccessBits::AccelerationStructureRead)))
             {
                 D3D12_RESOURCE_BARRIER b{};
                 b.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;

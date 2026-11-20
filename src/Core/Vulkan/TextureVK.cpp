@@ -87,8 +87,9 @@ namespace NRI
             format = desc.format == ImageFormat::Surface ? m_deviceVK.getSurfaceFormat().format : MapToVulkanFormat(desc.format);
             aspectFlags = vk::ImageAspectFlagBits::eColor;
             usageFlags = vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst;
-            // Only add eStorage if not the surface sRGB swapchain format (prevents VK_ERROR_FORMAT_NOT_SUPPORTED on m_sceneResource)
-            if (desc.format != ImageFormat::Surface)
+            // Only add eStorage if not the surface sRGB swapchain format (prevents VK_ERROR_FORMAT_NOT_SUPPORTED on m_sceneResource),
+            // and not on a multisampled target (storage images must be single-sampled unless shaderStorageImageMultisample is on)
+            if (desc.format != ImageFormat::Surface && desc.sampleCount <= 1)
             {
               usageFlags |= vk::ImageUsageFlagBits::eStorage;
             }

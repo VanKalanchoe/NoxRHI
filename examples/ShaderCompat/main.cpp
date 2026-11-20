@@ -412,7 +412,9 @@ namespace
                 cmd.copyBuffer(m_Upload, m_Indices, nri::BufferCopyRegion{ 256, 0, sizeof(indices) });
                 const nri::ResourceState copied{ NRI_ACCESS_TRANSFER_WRITE, NRI_STAGE_TRANSFER };
                 const nri::ResourceState buildInput{ NRI_ACCESS_SHADER_READ | NRI_ACCESS_ACCELERATION_STRUCTURE_READ, NRI_STAGE_ACCELERATION_STRUCTURE_BUILD };
-                const nri::ResourceState scratch{ NRI_ACCESS_SHADER_WRITE | NRI_ACCESS_ACCELERATION_STRUCTURE_WRITE, NRI_STAGE_ACCELERATION_STRUCTURE_BUILD };
+                // (a build reads and writes its scratch through acceleration-structure access, not shader access: Vulkan's validation
+                // rejects SHADER_WRITE at the build stage)
+                const nri::ResourceState scratch{ NRI_ACCESS_ACCELERATION_STRUCTURE_READ | NRI_ACCESS_ACCELERATION_STRUCTURE_WRITE, NRI_STAGE_ACCELERATION_STRUCTURE_BUILD };
                 const nri::BufferBarrierDesc barriers[3] = { { m_Vertices.handle(), copied, buildInput }, { m_Indices.handle(), copied, buildInput },
                                                              { m_Scratch.handle(), {}, scratch } };
                 cmd.resourceBarriers({}, barriers);

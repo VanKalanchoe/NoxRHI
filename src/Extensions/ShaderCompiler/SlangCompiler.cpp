@@ -262,7 +262,11 @@ namespace NRI
         if (diagnostics)
         {
             diagnosticText = static_cast<const char*>(diagnostics->getBufferPointer());
-            NRI_LOG_ERROR("Slang compile diagnostics ({}): {}", path, diagnosticText);
+            // (warnings alone come with a loaded module: logged as warnings, so they never count as errors)
+            if (slangModule)
+                NRI_LOG_WARN("Slang compile diagnostics ({}): {}", path, diagnosticText);
+            else
+                NRI_LOG_ERROR("Slang compile diagnostics ({}): {}", path, diagnosticText);
         }
 
         if (!slangModule)
@@ -304,7 +308,11 @@ namespace NRI
             result = session->createCompositeComponentType(components, 2, composed.writeRef(), composeDiags.writeRef());
             if (composeDiags)
             {
-                NRI_LOG_ERROR("Slang compose diagnostics ({}:{}): {}", path, entryName,
+                if (SLANG_FAILED(result) || !composed)
+                    NRI_LOG_ERROR("Slang compose diagnostics ({}:{}): {}", path, entryName,
+                                  static_cast<const char*>(composeDiags->getBufferPointer()));
+                else
+                    NRI_LOG_WARN("Slang compose diagnostics ({}:{}): {}", path, entryName,
                               static_cast<const char*>(composeDiags->getBufferPointer()));
             }
             if (SLANG_FAILED(result) || !composed)
@@ -315,7 +323,11 @@ namespace NRI
             result = composed->link(linked.writeRef(), linkDiags.writeRef());
             if (linkDiags)
             {
-                NRI_LOG_ERROR("Slang link diagnostics ({}:{}): {}", path, entryName,
+                if (SLANG_FAILED(result) || !linked)
+                    NRI_LOG_ERROR("Slang link diagnostics ({}:{}): {}", path, entryName,
+                                  static_cast<const char*>(linkDiags->getBufferPointer()));
+                else
+                    NRI_LOG_WARN("Slang link diagnostics ({}:{}): {}", path, entryName,
                               static_cast<const char*>(linkDiags->getBufferPointer()));
             }
             if (SLANG_FAILED(result) || !linked)
@@ -330,8 +342,10 @@ namespace NRI
 
         if (targetDiagnostics)
         {
-            NRI_LOG_ERROR("Slang target-code diagnostics ({}): {}", path,
-                          static_cast<const char*>(targetDiagnostics->getBufferPointer()));
+            if (SLANG_FAILED(result) || !targetCode)
+                NRI_LOG_ERROR("Slang target-code diagnostics ({}): {}", path, static_cast<const char*>(targetDiagnostics->getBufferPointer()));
+            else
+                NRI_LOG_WARN("Slang target-code diagnostics ({}): {}", path, static_cast<const char*>(targetDiagnostics->getBufferPointer()));
         }
 
         if (SLANG_FAILED(result) || !targetCode)
