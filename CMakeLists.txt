@@ -159,6 +159,14 @@ if(NRI_ENABLE_SLANG)
                 target_link_libraries(NoxRHI PRIVATE delayimp)
             endif()
         endif()
+    else()
+        # Linux / macOS: the prebuilt Slang release's shared library (libslang-compiler since 2026.x, libslang before).
+        find_library(NOXRHI_SLANG_LIBRARY NAMES slang-compiler slang PATHS "${CMAKE_CURRENT_SOURCE_DIR}/vendors/slang/lib" NO_DEFAULT_PATH)
+        if(NOT NOXRHI_SLANG_LIBRARY)
+            message(FATAL_ERROR "NRI_ENABLE_SLANG: no libslang-compiler / libslang in vendors/slang/lib")
+        endif()
+        target_link_libraries(NoxRHI PRIVATE "${NOXRHI_SLANG_LIBRARY}")
+        set_target_properties(NoxRHI PROPERTIES BUILD_RPATH "${CMAKE_CURRENT_SOURCE_DIR}/vendors/slang/lib")
     endif()
 endif()
 
@@ -325,6 +333,16 @@ if(NRI_BUILD_EXAMPLES)
         target_link_libraries(HeadlessNone PRIVATE NoxRHI::RenderGraph)
         noxrhi_copy_core_dll(HeadlessNone)
     endif()
+
+    # ShaderCompat: one Slang source on Vulkan and D3D12, every result checked (headless, no SDL).
+    add_executable(ShaderCompat examples/ShaderCompat/main.cpp)
+    target_link_libraries(ShaderCompat PRIVATE NoxRHI::HPP)
+    noxrhi_copy_core_dll(ShaderCompat)
+    add_custom_command(TARGET ShaderCompat POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/examples/ShaderCompat/shader_compat.slang"
+            $<TARGET_FILE_DIR:ShaderCompat>/shader_compat.slang
+    )
 
     add_executable(StreamlineNRDDemo examples/StreamlineNRDDemo/main.cpp)
     target_link_libraries(StreamlineNRDDemo PRIVATE NoxRHI::HPP)

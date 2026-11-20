@@ -156,7 +156,7 @@ namespace NRI
             std::vector<vk::HostAddressRangeEXT> hostAddressRangesSamplers(samplerCreateInfos.size());
             for (size_t i = 0; i < samplerCreateInfos.size(); i++)
             {
-                hostAddressRangesSamplers[i] = {
+                hostAddressRangesSamplers[i] = vk::HostAddressRangeEXT{
                     .address = static_cast<uint8_t*>(m_mappedPtr) + m_samplerDescSize * i,
                     .size = m_samplerDescSize
                 };

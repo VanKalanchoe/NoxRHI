@@ -390,6 +390,7 @@ namespace nri
         }
         void unregisterTexture(uint32_t slot) { nriUnregisterTexture(m_handle, slot); }
         uint32_t registerBuffer(const Buffer& buf, uint64_t size) { return nriRegisterBuffer(m_handle, buf.handle(), size); }
+        uint32_t registerStorageBuffer(const Buffer& buf, uint64_t size) { return nriRegisterStorageBuffer(m_handle, buf.handle(), size); }
         uint32_t getImageHeapIndexOffset() const { return nriGetDescriptorHeapImageIndexOffset(m_handle); }
         uint64_t getSize() const { return nriGetDescriptorHeapSize(m_handle); }
         uint64_t getReservedRangeOffset() const { return nriGetDescriptorHeapReservedRangeOffset(m_handle); }

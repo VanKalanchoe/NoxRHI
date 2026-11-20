@@ -75,6 +75,7 @@ Open **`build\NoxRHI.slnx`** in **JetBrains Rider** (or Visual Studio 2026) and 
 ### 3. Example CLI Flags
 All examples default to the no-GPU backend (`NRI_GRAPHICS_API_NONE`); pass `--vk` (Vulkan) or `--dx12` / `--d3d12` (Direct3D 12) to run on a GPU backend. Windowed examples (`ClearScreen`, `RenderGraphTriangle`, `TexturedQuads`, `ImGuiDemo`) use SDL3 main callbacks (`SDL_MAIN_USE_CALLBACKS`), `HeadlessNone` runs solely on `NRI_GRAPHICS_API_NONE`, and `HeadlessRender` / `StreamlineNRDDemo` run windowless (`NRI_WINDOW_SYSTEM_HEADLESS`):
 ```bat
+build\Debug\ShaderCompat.exe --all
 build\Debug\HeadlessNone.exe
 build\Debug\HeadlessRender.exe --vk
 build\Debug\StreamlineNRDDemo.exe --vk --frames 5
@@ -86,6 +87,63 @@ build\Debug\ImGuiDemo.exe --vk --frames 10 --resize-test
 build\Debug\StreamlineNRDDemo.exe --dx12 --frames 5
 build\Debug\ImGuiDemo.exe --dx12 --frames 10 --resize-test
 ```
+
+---
+
+## Cross-API Shader Compatibility (`ShaderCompat`)
+
+`ShaderCompat` runs one Slang source (`examples/ShaderCompat/shader_compat.slang`) on Vulkan and on Direct3D 12, checks every result
+against what the CPU computes, and with `--all` compares the two APIs with each other (integer results must match bit for bit). It is
+headless (no window, no swapchain) and exits non-zero on any failure:
+
+```bat
+build\Debug\ShaderCompat.exe --all                 :: Vulkan, then D3D12, then "Vulkan vs D3D12"
+build\Debug\ShaderCompat.exe --dx12 --only csWave  :: one API, one test
+build\Debug\ShaderCompat.exe --vk --verbose        :: also print NoxRHI's info / warnings
+set NOXRHI_D3D12_WARP=1 & build\Debug\ShaderCompat.exe --dx12   :: D3D12 on Microsoft's software adapter (WARP), as CI runs it
+```
+
+| Test | Checks |
+|---|---|
+| `csPushLayout` | push data (D3D12 root constants) has the same layout on both APIs |
+| `csBufferCopy` | read one buffer, write another |
+| `csGroupShared` | `groupshared` memory and `GroupMemoryBarrierWithGroupSync` (a tree sum) |
+| `csAtomics` | `InterlockedAdd` / `InterlockedMax` on a buffer |
+| `csWave` | `WaveGetLaneCount`, `WavePrefixSum`, `WaveActiveSum` (the wave size may differ between APIs: reported, allowed) |
+| `csIntOps` | `countbits`, `firstbithigh` / `firstbitlow` (also of 0), `reversebits`, signed division / modulo, arithmetic shifts, wrapping |
+| `csFloatMath` | `sin`, `cos`, `exp2`, `log2`, `sqrt`, `rsqrt`, `pow`, `frac`, `mad` within tolerances; NaN and infinity |
+| `csHalf` | 16-bit float math (SKIP when the device has no 16-bit shader ops) |
+| `csInt64` | 64-bit integer multiply / add / shift |
+| `csMatrix` | `float4x4` conventions: `mul(M, v)`, `mul(v, M)`, `m[row][col]` |
+| `csTextureSample` | a bindless `Texture2D` with a nearest and a linear sampler (exact texels, then averages) |
+| `csStorageTexture` | `RWTexture2D` writes, copied back to the CPU |
+| `csRayQuery` | inline ray tracing (`RayQuery`) against a one-triangle TLAS |
+
+**One source, both APIs.** NoxRHI's Slang compiler defines `NOX_VULKAN` for SPIR-V and `NOX_DX12` for DXIL. Textures and samplers use
+bindless handles on both (`Texture2D.Handle`, `RWTexture2D.Handle`, `SamplerState.Handle`). Buffers are reached by device address on
+Vulkan (`(uint*)push.address`) and by descriptor on D3D12 (`ByteAddressBuffer.Handle(slot)` from `registerBuffer`,
+`RWByteAddressBuffer.Handle(slot)` from `registerStorageBuffer`), and a TLAS by address on Vulkan and by descriptor on D3D12
+(`registerAccelerationStructure`) -- the same convention NoxUI's shader and the Nox engine use.
+
+**Found by it and fixed:** D3D12 samplers ignored their description (every sampler was linear with wrap addressing); D3D12 had no
+writable buffer descriptor (`registerStorageBuffer` adds a raw UAV). **Known D3D12 gaps still open:** `fillBuffer` records nothing
+(clear a buffer with a copy from a zeroed staging buffer instead), and `bindVertexBuffer` uses a fixed 36-byte stride (pull vertices from a
+buffer in the shader instead).
+
+### Building on Linux (Vulkan only)
+The Vulkan backend, the RenderGraph and the examples build on Linux with GCC or Clang. Put the Linux Slang release
+(`slang-<version>-linux-x86_64.tar.gz`) in `vendors/slang`, VulkanMemoryAllocator-Hpp in `vendors/VulkanMemoryAllocator-Hpp`, and point
+CMake at Vulkan headers matching the tested SDK (1.4.350):
+
+```sh
+cmake -S . -B build_linux -G Ninja -DNRI_ENABLE_STREAMLINE=OFF -DNRI_ENABLE_NRD=OFF \
+      -DVulkan_INCLUDE_DIR=<Vulkan-Headers>/include -DSDL3_DIR=<SDL3>/lib/cmake/SDL3
+cmake --build build_linux
+```
+
+Running needs a driver with `VK_EXT_descriptor_heap`, `VK_KHR_unified_image_layouts` and `VK_KHR_shader_untyped_pointers` (Mesa 25.2's
+lavapipe has none of them). The windowed examples create a Win32 surface, so on Linux only the headless examples (`ShaderCompat`,
+`HeadlessRender`, `HeadlessNone`) run.
 
 ---
 
@@ -103,7 +161,7 @@ build\Debug\ImGuiDemo.exe --dx12 --frames 10 --resize-test
 | `NRI_ENABLE_STREAMLINE` | `ON` | Enable NVIDIA Streamline (DLSS-SR / DLSS-RR) extension |
 | `NRI_ENABLE_NRD` | `ON` | Enable NVIDIA NRD (SIGMA / REBLUR / RELAX) denoiser extension |
 | `NRI_ENABLE_PCH` | `ON` | Use private precompiled headers inside `NoxRHI::Core` for faster builds |
-| `NRI_BUILD_EXAMPLES` | `ON` | Build `HeadlessNone`, `HeadlessRender`, `StreamlineNRDDemo`, `ClearScreen`, `RenderGraphTriangle`, `TexturedQuads`, and `ImGuiDemo` |
+| `NRI_BUILD_EXAMPLES` | `ON` | Build `ShaderCompat`, `HeadlessNone`, `HeadlessRender`, `StreamlineNRDDemo`, `ClearScreen`, `RenderGraphTriangle`, `TexturedQuads`, and `ImGuiDemo` |
 
 ---
 

@@ -71,7 +71,19 @@ namespace NRI
 
         ComPtr<IDXGIAdapter1> adapter1;
         SIZE_T maxVram = 0;
-        for (UINT i = 0; m_factory->EnumAdapters1(i, &adapter1) != DXGI_ERROR_NOT_FOUND; ++i)
+        // NOXRHI_D3D12_WARP=1: Microsoft's software adapter (WARP) instead of the largest hardware GPU -- for machines without one, such
+        // as CI runners, where it runs the same shaders (ShaderCompat --dx12).
+        char warpValue[8]{};
+        if (GetEnvironmentVariableA("NOXRHI_D3D12_WARP", warpValue, sizeof(warpValue)) > 0 && warpValue[0] == '1')
+        {
+            ComPtr<IDXGIAdapter1> warp;
+            if (SUCCEEDED(m_factory->EnumWarpAdapter(IID_PPV_ARGS(&warp))) &&
+                SUCCEEDED(D3D12CreateDevice(warp.Get(), D3D_FEATURE_LEVEL_12_1, _uuidof(ID3D12Device5), nullptr)))
+                warp.As(&m_adapter);
+            else
+                throw std::runtime_error("D3D12: NOXRHI_D3D12_WARP=1 but the WARP adapter does not support D3D_FEATURE_LEVEL_12_1");
+        }
+        for (UINT i = 0; !m_adapter && m_factory->EnumAdapters1(i, &adapter1) != DXGI_ERROR_NOT_FOUND; ++i)
         {
             DXGI_ADAPTER_DESC1 adapterDesc{};
             adapter1->GetDesc1(&adapterDesc);

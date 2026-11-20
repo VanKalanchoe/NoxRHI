@@ -69,3 +69,18 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ./build/${{ matrix.config }}/HeadlessRender.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # ShaderCompat on real D3D12: Microsoft's software adapter (WARP), with the DXC release that compiles Slang's DXIL beside it.
+      - name: Run ShaderCompat on D3D12 (WARP)
+        shell: pwsh
+        env:
+          NOXRHI_D3D12_WARP: "1"
+        run: |
+          curl.exe -fSL https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.8.2505.1/dxc_2025_07_14.zip -o "$env:TEMP\dxc.zip"
+          Expand-Archive "$env:TEMP\dxc.zip" "$env:TEMP\dxc" -Force
+          Copy-Item "$env:TEMP\dxc\bin\x64\dxcompiler.dll", "$env:TEMP\dxc\bin\x64\dxil.dll" ./build/${{ matrix.config }}/
+          Push-Location ./build/${{ matrix.config }}
+          ./ShaderCompat.exe --dx12
+          $code = $LASTEXITCODE
+          Pop-Location
+          if ($code -ne 0) { exit $code }

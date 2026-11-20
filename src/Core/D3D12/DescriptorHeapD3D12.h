@@ -18,6 +18,7 @@ namespace NRI
         uint32_t registerStorageTextureMip(Texture& texture, uint32_t mipLevel) override;
         void unregisterTexture(uint32_t slot) override;
         uint32_t registerBuffer(Buffer& buffer, uint64_t size) override;
+        uint32_t registerStorageBuffer(Buffer& buffer, uint64_t size) override;
         uint32_t registerAccelerationStructure(AccelerationStructure& as, uint32_t slot = ~0u) override;
 
         uint32_t getImageHeapIndexOffset() const override { return 0; }

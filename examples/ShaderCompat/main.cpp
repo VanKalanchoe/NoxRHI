@@ -1,0 +1,952 @@
+// ShaderCompat: one Slang source (shader_compat.slang) run on Vulkan and on D3D12, each test checked against what the CPU computes, and
+// -- with --all -- the two APIs checked against each other. Headless: no window, no swapchain.
+//
+//   ShaderCompat --vk            Vulkan only
+//   ShaderCompat --dx12          D3D12 only
+//   ShaderCompat --all           every API this build has, then a cross-API comparison
+//   ShaderCompat ... --only csWave --verbose
+//
+// Exit code 0 when nothing failed (a test the device cannot run is SKIP, not a failure).
+
+#include <algorithm>
+#include <bit>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <functional>
+#include <map>
+#include <memory>
+#include <optional>
+#include <random>
+#include <string>
+#include <vector>
+
+#include <NRIHPP/NRI.hpp>
+#include <NRIHPP/NRIExtensions.hpp>
+#include <NRI/Extensions/NRIRayTracing.h>
+
+namespace
+{
+    int g_ValidationErrors = 0;
+    bool g_Verbose = false;
+
+    void NRI_CALL OnNriLog(NriLogLevel level, const char* message, void*)
+    {
+        if (level == NRI_LOG_ERROR)
+        {
+            ++g_ValidationErrors;
+            std::fprintf(stderr, "[ShaderCompat][ERROR] %s\n", message);
+        }
+        else if (g_Verbose)
+            std::fprintf(stderr, "[ShaderCompat][%s] %s\n", level == NRI_LOG_WARN ? "WARN" : "INFO", message);
+    }
+
+    // Must match `Push` in shader_compat.slang byte for byte (Vulkan push data, D3D12 root constants: at most 128 bytes).
+    struct Push
+    {
+        uint64_t outAddress = 0;
+        uint64_t inAddress = 0;
+        uint32_t outSlot = 0;
+        uint32_t inSlot = 0;
+        uint32_t texSlot = 0;
+        uint32_t storageTexSlot = 0;
+        uint32_t pointSampler = 0;
+        uint32_t linearSampler = 1;
+        uint32_t count = 0;
+        uint32_t tlasSlot = 0;
+        float params[4]{};
+        uint32_t uparams[4]{};
+        uint64_t tlasAddress = 0;
+    };
+    static_assert(offsetof(Push, outSlot) == 16 && offsetof(Push, count) == 40 && offsetof(Push, params) == 48 && offsetof(Push, uparams) == 64 &&
+                  offsetof(Push, tlasAddress) == 80 && sizeof(Push) == 88, "Push must match shader_compat.slang");
+
+    constexpr uint64_t kBufferBytes = 64 * 1024;
+    constexpr uint32_t kStorageSize = 64;  // 64 x 64 RGBA8: 256-byte rows, the copy pitch both APIs use
+    constexpr uint32_t kTexSize = 4;
+
+    enum class Status { Pass, Fail, Skip };
+    const char* StatusText(Status s) { return s == Status::Pass ? "PASS" : s == Status::Fail ? "FAIL" : "SKIP"; }
+
+    struct Result
+    {
+        Status status = Status::Skip;
+        std::string detail;
+        std::vector<uint32_t> raw; // what the GPU wrote (for the cross-API comparison)
+    };
+
+    // --- CPU references --------------------------------------------------------------------------------------------------------------
+
+    float AsFloat(uint32_t u) { return std::bit_cast<float>(u); }
+    uint32_t AsUint(float f) { return std::bit_cast<uint32_t>(f); }
+
+    uint16_t FloatToHalf(float value)
+    {
+        // Round to nearest even, with subnormals, infinities and NaN.
+        const uint32_t f = AsUint(value);
+        const uint32_t sign = (f >> 16) & 0x8000u;
+        int32_t exponent = static_cast<int32_t>((f >> 23) & 0xFF) - 127 + 15;
+        uint32_t mantissa = f & 0x7FFFFFu;
+        if (((f >> 23) & 0xFF) == 0xFF)
+            return static_cast<uint16_t>(sign | 0x7C00u | (mantissa ? 0x200u : 0u));
+        if (exponent >= 31)
+            return static_cast<uint16_t>(sign | 0x7C00u);
+        if (exponent <= 0)
+        {
+            if (exponent < -10)
+                return static_cast<uint16_t>(sign);
+            mantissa |= 0x800000u;
+            const uint32_t shift = static_cast<uint32_t>(14 - exponent);
+            uint32_t half = mantissa >> shift;
+            const uint32_t rest = mantissa & ((1u << shift) - 1u), halfway = 1u << (shift - 1);
+            if (rest > halfway || (rest == halfway && (half & 1u)))
+                ++half;
+            return static_cast<uint16_t>(sign | half);
+        }
+        uint32_t half = (static_cast<uint32_t>(exponent) << 10) | (mantissa >> 13);
+        const uint32_t rest = mantissa & 0x1FFFu;
+        if (rest > 0x1000u || (rest == 0x1000u && (half & 1u)))
+            ++half;
+        return static_cast<uint16_t>(sign | half);
+    }
+
+    float HalfToFloat(uint16_t h)
+    {
+        const uint32_t sign = (h & 0x8000u) << 16;
+        const uint32_t exponent = (h >> 10) & 0x1Fu, mantissa = h & 0x3FFu;
+        if (exponent == 0)
+            return std::ldexp(static_cast<float>(mantissa), -24) * (sign ? -1.0f : 1.0f);
+        if (exponent == 31)
+            return AsFloat(sign | 0x7F800000u | (mantissa << 13));
+        return AsFloat(sign | ((exponent + 112) << 23) | (mantissa << 13));
+    }
+
+    float RoundHalf(float f) { return HalfToFloat(FloatToHalf(f)); }
+
+    uint32_t FirstBitHigh(uint32_t u) { return u == 0 ? 0xFFFFFFFFu : 31u - static_cast<uint32_t>(std::countl_zero(u)); }
+    uint32_t FirstBitLow(uint32_t u) { return u == 0 ? 0xFFFFFFFFu : static_cast<uint32_t>(std::countr_zero(u)); }
+    uint32_t ReverseBits(uint32_t u)
+    {
+        uint32_t r = 0;
+        for (int i = 0; i < 32; ++i)
+            r |= ((u >> i) & 1u) << (31 - i);
+        return r;
+    }
+
+    bool Near(float got, float want, float absTol, float relTol)
+    {
+        if (std::isnan(want))
+            return std::isnan(got);
+        return std::fabs(got - want) <= absTol + relTol * std::fabs(want);
+    }
+
+    std::string Hex(uint32_t v)
+    {
+        char t[16];
+        std::snprintf(t, sizeof(t), "0x%08X", v);
+        return t;
+    }
+
+    // --- One API's device and the resources every test shares --------------------------------------------------------------------
+
+    class Suite
+    {
+    public:
+        Suite(NriGraphicsAPI api, std::string shaderPath) : m_Api(api), m_ShaderPath(std::move(shaderPath))
+        {
+            nri::DeviceDesc desc{};
+            desc.api = api;
+            desc.window.type = NRI_WINDOW_SYSTEM_HEADLESS;
+            desc.shaderCacheDir = api == NRI_GRAPHICS_API_D3D12 ? "shader_cache_compat_dx12" : "shader_cache_compat_vk";
+            desc.logCallback = OnNriLog;
+            m_Device = nri::createDevice(desc);
+
+            m_Resources = m_Device.createDescriptorHeap({ .type = NRI_DESCRIPTOR_HEAP_RESOURCE, .maxBufferDescriptors = 64, .maxImageDescriptors = 64 });
+            nri::SamplerDesc point{};
+            point.magFilter = point.minFilter = NRI_FILTER_NEAREST;
+            point.mipmapMode = NRI_SAMPLER_MIPMAP_NEAREST;
+            point.addressModeU = point.addressModeV = point.addressModeW = NRI_SAMPLER_ADDRESS_CLAMP_TO_EDGE;
+            point.maxLod = 1000.0f;
+            nri::SamplerDesc linear = point;
+            linear.magFilter = linear.minFilter = NRI_FILTER_LINEAR;
+            linear.mipmapMode = NRI_SAMPLER_MIPMAP_LINEAR;
+            m_Samplers = m_Device.createDescriptorHeap({ .type = NRI_DESCRIPTOR_HEAP_SAMPLER, .maxSamplerDescriptors = 8, .samplers = { point, linear } });
+
+            if (api != NRI_GRAPHICS_API_NONE)
+            {
+                m_Compiler = nri::createSlangCompiler();
+                m_Compiler.setTargetAPI(api);
+            }
+
+            // Storage-static: a storage buffer that is also a copy source on Vulkan (the readback copies `out`).
+            m_In = m_Device.createBuffer({ .size = kBufferBytes, .usage = NRI_BUFFER_USAGE_STORAGE_STATIC });
+            m_Out = m_Device.createBuffer({ .size = kBufferBytes, .usage = NRI_BUFFER_USAGE_STORAGE_STATIC });
+            m_Upload = m_Device.createBuffer({ .size = kBufferBytes, .usage = NRI_BUFFER_USAGE_STAGING });
+            m_Zeros = m_Device.createBuffer({ .size = kBufferBytes, .usage = NRI_BUFFER_USAGE_STAGING });
+            m_Readback = m_Device.createBuffer({ .size = kBufferBytes, .usage = NRI_BUFFER_USAGE_READBACK });
+            std::memset(m_Zeros.map(0, kBufferBytes), 0, kBufferBytes);
+            m_Zeros.unmap();
+
+            m_Allocator = m_Device.createCommandAllocator(NRI_COMMAND_BUFFER_RESET_PER_COMMAND_BUFFER, NRI_QUEUE_GRAPHICS);
+            m_Cmd = m_Allocator.allocateCommandBuffer(1);
+
+            // Vulkan reaches buffers by address, D3D12 by descriptor: both are set, each API's shader uses its own.
+            m_BasePush.inAddress = m_In.getDeviceAddress();
+            m_BasePush.outAddress = m_Out.getDeviceAddress();
+            m_BasePush.inSlot = m_Resources.registerBuffer(m_In, kBufferBytes);
+            m_BasePush.outSlot = m_Resources.registerStorageBuffer(m_Out, kBufferBytes);
+            m_BasePush.pointSampler = 0;
+            m_BasePush.linearSampler = 1;
+
+            CreateTextures();
+        }
+
+        ~Suite()
+        {
+            if (m_Device)
+                m_Device.waitIdle();
+        }
+
+        NriGraphicsAPI Api() const { return m_Api; }
+        const Push& BasePush() const { return m_BasePush; }
+
+        // The pipeline of one entry point; empty with `error` set when it cannot be made (not compiled, or the device lacks a feature).
+        nri::Pipeline* GetPipeline(const std::string& entry, std::string& error)
+        {
+            if (auto found = m_Pipelines.find(entry); found != m_Pipelines.end())
+                return &found->second;
+            try
+            {
+                nri::Pipeline pipeline = m_Device.createPipeline({
+                    .type = NRI_PIPELINE_COMPUTE,
+                    .shaders = { { NRI_SHADER_STAGE_COMPUTE, entry, m_ShaderPath } },
+                    .buildNow = true
+                }, m_Compiler.handle());
+                m_Device.finishPipelineBuilds();
+                return &m_Pipelines.emplace(entry, std::move(pipeline)).first->second;
+            }
+            catch (const std::exception& e)
+            {
+                error = e.what();
+                return nullptr;
+            }
+        }
+
+        // Uploads `input` to `in`, zeroes the first `outWords` of `out`, runs the entry point and returns what it wrote. When
+        // `storageImage` is given, the storage texture is written by the shader and copied back into it (64 x 64 RGBA8).
+        std::vector<uint32_t> Run(nri::Pipeline& pipeline, const std::vector<uint32_t>& input, uint32_t outWords, uint32_t groupsX, uint32_t groupsY,
+                                  const Push& push, std::vector<uint32_t>* storageImage = nullptr)
+        {
+            const uint64_t inBytes = std::max<uint64_t>(4, input.size() * 4), outBytes = std::max<uint64_t>(4, outWords * 4ull);
+            if (!input.empty())
+            {
+                std::memcpy(m_Upload.map(0, inBytes), input.data(), input.size() * 4);
+                m_Upload.unmap();
+            }
+
+            nri::CommandBuffer& cmd = m_Cmd;
+            cmd.begin(0, true);
+            cmd.bindDescriptorHeaps(&m_Resources, &m_Samplers);
+            if (!input.empty())
+                cmd.copyBuffer(m_Upload, m_In, nri::BufferCopyRegion{ 0, 0, inBytes });
+            cmd.copyBuffer(m_Zeros, m_Out, nri::BufferCopyRegion{ 0, 0, outBytes });
+
+            const nri::ResourceState transferWrite{ NRI_ACCESS_TRANSFER_WRITE, NRI_STAGE_TRANSFER };
+            const nri::ResourceState computeRead{ NRI_ACCESS_SHADER_READ, NRI_STAGE_COMPUTE };
+            const nri::ResourceState computeWrite{ NRI_ACCESS_SHADER_READ | NRI_ACCESS_SHADER_WRITE, NRI_STAGE_COMPUTE };
+            const nri::ResourceState transferRead{ NRI_ACCESS_TRANSFER_READ, NRI_STAGE_TRANSFER };
+            std::vector<nri::TextureBarrierDesc> textureBarriers;
+            if (storageImage)
+                textureBarriers.push_back({ m_StorageTexture.handle(), transferRead, computeWrite });
+            const nri::BufferBarrierDesc before[2] = { { m_In.handle(), transferWrite, computeRead }, { m_Out.handle(), transferWrite, computeWrite } };
+            cmd.resourceBarriers(textureBarriers, before);
+
+            cmd.bindPipeline(NRI_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+            cmd.pushData(&push, sizeof(push));
+            cmd.dispatch(groupsX, groupsY, 1);
+
+            textureBarriers.clear();
+            if (storageImage)
+                textureBarriers.push_back({ m_StorageTexture.handle(), computeWrite, transferRead });
+            const nri::BufferBarrierDesc after[1] = { { m_Out.handle(), computeWrite, transferRead } };
+            cmd.resourceBarriers(textureBarriers, after);
+            cmd.copyBuffer(m_Out, m_Readback, nri::BufferCopyRegion{ 0, 0, outBytes });
+            if (storageImage)
+                m_StorageTexture.copyToBuffer(cmd.handle(), m_StorageReadback.handle(), 0, 0, kStorageSize, kStorageSize);
+            cmd.end(0);
+            m_Device.submitAndWait(cmd, 0);
+
+            std::vector<uint32_t> out(outWords);
+            std::memcpy(out.data(), m_Readback.map(0, outBytes), outWords * 4ull);
+            m_Readback.unmap();
+            if (storageImage)
+            {
+                storageImage->resize(kStorageSize * kStorageSize);
+                std::memcpy(storageImage->data(), m_StorageReadback.map(0, storageImage->size() * 4), storageImage->size() * 4);
+                m_StorageReadback.unmap();
+            }
+            return out;
+        }
+
+        // Builds a BLAS of one triangle and a TLAS of one instance; false (with `error`) when the device cannot.
+        bool BuildRayTracingScene(Push& push, std::string& error)
+        {
+            try
+            {
+                const float vertices[9] = { 0, 0, 5, 1, 0, 5, 0, 1, 5 };
+                const uint32_t indices[3] = { 0, 1, 2 };
+                m_Vertices = m_Device.createBuffer({ .size = sizeof(vertices), .usage = NRI_BUFFER_USAGE_STORAGE_STATIC });
+                m_Indices = m_Device.createBuffer({ .size = 256, .usage = NRI_BUFFER_USAGE_STORAGE_STATIC });
+                auto* staging = static_cast<uint8_t*>(m_Upload.map(0, 512));
+                std::memcpy(staging, vertices, sizeof(vertices));
+                std::memcpy(staging + 256, indices, sizeof(indices));
+                m_Upload.unmap();
+
+                NriAccelerationStructureTrianglesDesc triangle{};
+                triangle.vertexBufferAddress = m_Vertices.getDeviceAddress();
+                triangle.vertexStride = 12;
+                triangle.maxVertex = 3;
+                triangle.indexBufferAddress = m_Indices.getDeviceAddress();
+                triangle.primitiveCount = 1;
+                triangle.isOpaque = true;
+                NriAccelerationStructureBuildDesc blasBuild{};
+                blasBuild.type = NRI_ACCELERATION_STRUCTURE_BOTTOM_LEVEL;
+                blasBuild.flags = NRI_AS_BUILD_PREFER_FAST_TRACE;
+                blasBuild.triangles = &triangle;
+                blasBuild.triangleCount = 1;
+                const NriAccelerationStructureBuildSizes blasSizes = nriGetAccelerationStructureBuildSizes(m_Device.handle(), &blasBuild);
+                if (blasSizes.accelerationStructureSize == 0)
+                    throw std::runtime_error("no acceleration structure sizes (ray tracing unsupported)");
+                m_BlasStorage = m_Device.createBuffer({ .size = blasSizes.accelerationStructureSize, .usage = NRI_BUFFER_USAGE_ACCELERATION_STRUCTURE });
+                NriAccelerationStructureDesc blasDesc{ NRI_ACCELERATION_STRUCTURE_BOTTOM_LEVEL, m_BlasStorage.handle(), 0, blasSizes.accelerationStructureSize };
+                NriAccelerationStructure blas = nullptr;
+                if (nriCreateAccelerationStructure(m_Device.handle(), &blasDesc, &blas) != NRI_SUCCESS || !blas)
+                    throw std::runtime_error("nriCreateAccelerationStructure (BLAS) failed");
+                m_Blas = nri::AccelerationStructure(blas);
+
+                m_Instances = m_Device.createBuffer({ .size = sizeof(NriAccelerationStructureInstance), .usage = NRI_BUFFER_USAGE_ACCELERATION_STRUCTURE_INSTANCE });
+                NriAccelerationStructureInstance instance{};
+                instance.transform.matrix[0][0] = instance.transform.matrix[1][1] = instance.transform.matrix[2][2] = 1.0f;
+                instance.mask = 0xFF;
+                instance.accelerationStructureReference = m_Blas.getDeviceAddress();
+                std::memcpy(m_Instances.map(0, sizeof(instance)), &instance, sizeof(instance));
+                m_Instances.unmap();
+
+                NriAccelerationStructureBuildDesc tlasBuild{};
+                tlasBuild.type = NRI_ACCELERATION_STRUCTURE_TOP_LEVEL;
+                tlasBuild.flags = NRI_AS_BUILD_PREFER_FAST_TRACE;
+                tlasBuild.instances = { m_Instances.getDeviceAddress(), 1 };
+                const NriAccelerationStructureBuildSizes tlasSizes = nriGetAccelerationStructureBuildSizes(m_Device.handle(), &tlasBuild);
+                m_TlasStorage = m_Device.createBuffer({ .size = tlasSizes.accelerationStructureSize, .usage = NRI_BUFFER_USAGE_ACCELERATION_STRUCTURE });
+                NriAccelerationStructureDesc tlasDesc{ NRI_ACCELERATION_STRUCTURE_TOP_LEVEL, m_TlasStorage.handle(), 0, tlasSizes.accelerationStructureSize };
+                NriAccelerationStructure tlas = nullptr;
+                if (nriCreateAccelerationStructure(m_Device.handle(), &tlasDesc, &tlas) != NRI_SUCCESS || !tlas)
+                    throw std::runtime_error("nriCreateAccelerationStructure (TLAS) failed");
+                m_Tlas = nri::AccelerationStructure(tlas);
+
+                const uint64_t scratchBytes = (std::max(blasSizes.buildScratchSize, tlasSizes.buildScratchSize) + 255) & ~255ull;
+                m_Scratch = m_Device.createBuffer({ .size = scratchBytes, .usage = NRI_BUFFER_USAGE_ACCELERATION_STRUCTURE_SCRATCH });
+
+                nri::CommandBuffer& cmd = m_Cmd;
+                cmd.begin(0, true);
+                cmd.copyBuffer(m_Upload, m_Vertices, nri::BufferCopyRegion{ 0, 0, sizeof(vertices) });
+                cmd.copyBuffer(m_Upload, m_Indices, nri::BufferCopyRegion{ 256, 0, sizeof(indices) });
+                const nri::ResourceState copied{ NRI_ACCESS_TRANSFER_WRITE, NRI_STAGE_TRANSFER };
+                const nri::ResourceState buildInput{ NRI_ACCESS_SHADER_READ | NRI_ACCESS_ACCELERATION_STRUCTURE_READ, NRI_STAGE_ACCELERATION_STRUCTURE_BUILD };
+                const nri::ResourceState scratch{ NRI_ACCESS_SHADER_WRITE | NRI_ACCESS_ACCELERATION_STRUCTURE_WRITE, NRI_STAGE_ACCELERATION_STRUCTURE_BUILD };
+                const nri::BufferBarrierDesc barriers[3] = { { m_Vertices.handle(), copied, buildInput }, { m_Indices.handle(), copied, buildInput },
+                                                             { m_Scratch.handle(), {}, scratch } };
+                cmd.resourceBarriers({}, barriers);
+                nriCmdBuildAccelerationStructure(cmd.handle(), &blasBuild, m_Scratch.getDeviceAddress(), m_Blas.handle());
+                nriCmdAccelerationStructureBarrier(cmd.handle(), NRI_AS_BARRIER_BUILD_TO_BUILD);
+                nriCmdBuildAccelerationStructure(cmd.handle(), &tlasBuild, m_Scratch.getDeviceAddress(), m_Tlas.handle());
+                nriCmdAccelerationStructureBarrier(cmd.handle(), NRI_AS_BARRIER_BUILD_TO_SHADER_READ);
+                cmd.end(0);
+                m_Device.submitAndWait(cmd, 0);
+
+                push.tlasAddress = m_Tlas.getDeviceAddress();
+                push.tlasSlot = nriRegisterAccelerationStructure(m_Resources.handle(), m_Tlas.handle(), ~0u);
+                return true;
+            }
+            catch (const std::exception& e)
+            {
+                error = e.what();
+                return false;
+            }
+        }
+
+    private:
+        void CreateTextures()
+        {
+            // The sampled 4 x 4 texture: staging rows 256 bytes apart (both APIs read that pitch when it is given).
+            m_SampledTexture = m_Device.createTexture({ .width = kTexSize, .height = kTexSize, .usage = NRI_TEXTURE_USAGE_SHADER_RESOURCE, .format = NRI_FORMAT_RGBA8 });
+            auto* staging = static_cast<uint8_t*>(m_Upload.map(0, 256 * kTexSize));
+            std::memset(staging, 0, 256 * kTexSize);
+            for (uint32_t y = 0; y < kTexSize; ++y)
+                for (uint32_t x = 0; x < kTexSize; ++x)
+                {
+                    uint8_t* texel = staging + y * 256 + x * 4;
+                    texel[0] = static_cast<uint8_t>(x * 64 + 10);
+                    texel[1] = static_cast<uint8_t>(y * 64 + 20);
+                    texel[2] = static_cast<uint8_t>((x + y) * 30);
+                    texel[3] = 255;
+                }
+            m_Upload.unmap();
+
+            m_StorageTexture = m_Device.createTexture({ .width = kStorageSize, .height = kStorageSize, .usage = NRI_TEXTURE_USAGE_STORAGE, .format = NRI_FORMAT_RGBA8 });
+            m_StorageReadback = m_Device.createBuffer({ .size = kStorageSize * kStorageSize * 4, .usage = NRI_BUFFER_USAGE_READBACK });
+
+            nri::CommandBuffer& cmd = m_Cmd;
+            cmd.begin(0, true);
+            const nri::TextureRegionUpload region{ 0, 0, 0, kTexSize, kTexSize, 256 };
+            m_SampledTexture.recordRegionUploads(cmd.handle(), m_Upload.handle(), { &region, 1 });
+            const nri::ResourceState uploaded{ NRI_ACCESS_TRANSFER_WRITE, NRI_STAGE_TRANSFER };
+            const nri::TextureBarrierDesc barriers[2] = {
+                { m_SampledTexture.handle(), uploaded, { NRI_ACCESS_SHADER_READ, NRI_STAGE_COMPUTE } },
+                { m_StorageTexture.handle(), {}, { NRI_ACCESS_TRANSFER_READ, NRI_STAGE_TRANSFER } } };
+            cmd.resourceBarriers(barriers, {});
+            cmd.end(0);
+            m_Device.submitAndWait(cmd, 0);
+
+            m_Resources.registerTexture(m_SampledTexture);
+            m_BasePush.texSlot = m_Resources.getImageHeapIndexOffset() + m_SampledTexture.getDescriptorSlot();
+            m_BasePush.storageTexSlot = m_Resources.registerStorageTextureMip(m_StorageTexture, 0);
+        }
+
+        NriGraphicsAPI m_Api;
+        std::string m_ShaderPath;
+        nri::Device m_Device;
+        nri::DescriptorHeap m_Resources, m_Samplers;
+        nri::ShaderCompiler m_Compiler;
+        nri::Buffer m_In, m_Out, m_Upload, m_Zeros, m_Readback, m_StorageReadback;
+        nri::Texture m_SampledTexture, m_StorageTexture;
+        nri::CommandAllocator m_Allocator;
+        nri::CommandBuffer m_Cmd;
+        Push m_BasePush;
+        std::map<std::string, nri::Pipeline> m_Pipelines;
+        nri::Buffer m_Vertices, m_Indices, m_Instances, m_Scratch, m_BlasStorage, m_TlasStorage;
+        nri::AccelerationStructure m_Blas, m_Tlas;
+    };
+
+    // --- The tests -----------------------------------------------------------------------------------------------------------------------
+
+    struct Test
+    {
+        std::string entry;
+        std::string what;
+        bool featureGated = false; // a pipeline that does not build means the device lacks the feature: SKIP
+        bool exactAcrossApis = true;
+        std::function<Result(Suite&, nri::Pipeline&)> run;
+    };
+
+    std::vector<uint32_t> RandomWords(uint32_t count, uint32_t seed)
+    {
+        std::mt19937 rng(seed);
+        std::vector<uint32_t> words(count);
+        for (uint32_t& w : words)
+            w = rng();
+        return words;
+    }
+
+    Result Compare(const std::vector<uint32_t>& got, const std::vector<uint32_t>& want, const char* what)
+    {
+        Result r;
+        r.raw = got;
+        for (size_t i = 0; i < want.size(); ++i)
+            if (got[i] != want[i])
+            {
+                r.status = Status::Fail;
+                r.detail = std::string(what) + "[" + std::to_string(i) + "] = " + Hex(got[i]) + ", expected " + Hex(want[i]);
+                return r;
+            }
+        r.status = Status::Pass;
+        return r;
+    }
+
+    std::vector<Test> MakeTests()
+    {
+        std::vector<Test> tests;
+
+        tests.push_back({ "csPushLayout", "push data (D3D12 root constants) laid out the same", false, true, [](Suite& s, nri::Pipeline& p)
+        {
+            Push push = s.BasePush();
+            push.texSlot = 11; push.storageTexSlot = 22; push.pointSampler = 33; push.linearSampler = 44; push.count = 55; push.tlasSlot = 66;
+            push.params[0] = 1.5f; push.params[1] = -2.25f; push.params[2] = 1e-7f; push.params[3] = 65504.0f;
+            push.uparams[0] = 0xDEADBEEFu; push.uparams[1] = 7; push.uparams[2] = 0xFFFFFFFFu; push.uparams[3] = 0x80000000u;
+            push.tlasAddress = 0x1122334455667788ull;
+            const std::vector<uint32_t> got = s.Run(p, {}, 16, 1, 1, push);
+            const std::vector<uint32_t> want = { 11, 22, 33, 44, 55, 66, AsUint(1.5f), AsUint(-2.25f), AsUint(1e-7f), AsUint(65504.0f),
+                                                 0xDEADBEEFu, 7, 0xFFFFFFFFu, 0x80000000u, 0x55667788u, 0x11223344u };
+            return Compare(got, want, "field");
+        } });
+
+        tests.push_back({ "csBufferCopy", "read a buffer, write a buffer", false, true, [](Suite& s, nri::Pipeline& p)
+        {
+            const uint32_t n = 1000;
+            const std::vector<uint32_t> in = RandomWords(n, 1);
+            Push push = s.BasePush();
+            push.count = n;
+            const std::vector<uint32_t> got = s.Run(p, in, n, (n + 63) / 64, 1, push);
+            std::vector<uint32_t> want(n);
+            for (uint32_t i = 0; i < n; ++i)
+                want[i] = in[i] * 3u + 1u;
+            return Compare(got, want, "out");
+        } });
+
+        tests.push_back({ "csGroupShared", "groupshared memory + barriers (tree sum)", false, true, [](Suite& s, nri::Pipeline& p)
+        {
+            const uint32_t n = 64 * 20 - 13;
+            std::vector<uint32_t> in = RandomWords(n, 2);
+            for (uint32_t& w : in)
+                w &= 0xFFFFu;
+            Push push = s.BasePush();
+            push.count = n;
+            const uint32_t groups = (n + 63) / 64;
+            const std::vector<uint32_t> got = s.Run(p, in, groups, groups, 1, push);
+            std::vector<uint32_t> want(groups, 0);
+            for (uint32_t i = 0; i < n; ++i)
+                want[i / 64] += in[i];
+            return Compare(got, want, "group sum");
+        } });
+
+        tests.push_back({ "csAtomics", "InterlockedAdd / InterlockedMax on a buffer", false, true, [](Suite& s, nri::Pipeline& p)
+        {
+            const uint32_t n = 4096;
+            std::vector<uint32_t> in = RandomWords(n, 3);
+            for (uint32_t& w : in)
+                w &= 0xFFFFu;
+            Push push = s.BasePush();
+            push.count = n;
+            const std::vector<uint32_t> got = s.Run(p, in, 3, n / 64, 1, push);
+            uint32_t sum = 0, max = 0;
+            for (uint32_t v : in)
+            {
+                sum += v;
+                max = std::max(max, v);
+            }
+            return Compare(got, { sum, max, n }, "atomic");
+        } });
+
+        tests.push_back({ "csWave", "wave intrinsics (lane count, prefix sum, active sum)", false, false, [](Suite& s, nri::Pipeline& p)
+        {
+            const uint32_t threads = 128;
+            Push push = s.BasePush();
+            const std::vector<uint32_t> got = s.Run(p, {}, 1 + threads * 3, threads / 64, 1, push);
+            Result r;
+            r.raw = got;
+            const uint32_t lanes = got[0];
+            if (lanes < 4 || lanes > 128 || (lanes & (lanes - 1)) != 0)
+            {
+                r.status = Status::Fail;
+                r.detail = "wave size " + std::to_string(lanes) + " is not a power of two in 4..128";
+                return r;
+            }
+            const uint32_t perWave = std::min(lanes, 64u); // (a group of 64 fills at most 64 lanes)
+            for (uint32_t i = 0; i < threads; ++i)
+            {
+                const uint32_t lane = got[1 + i * 3], prefix = got[2 + i * 3], active = got[3 + i * 3];
+                if (lane >= lanes || prefix != lane % perWave || active != perWave)
+                {
+                    r.status = Status::Fail;
+                    r.detail = "thread " + std::to_string(i) + ": lane " + std::to_string(lane) + ", prefix " + std::to_string(prefix) + ", active " +
+                               std::to_string(active) + " (wave size " + std::to_string(lanes) + ")";
+                    return r;
+                }
+            }
+            r.status = Status::Pass;
+            r.detail = "wave size " + std::to_string(lanes);
+            return r;
+        } });
+
+        tests.push_back({ "csIntOps", "bit counts, signed division / modulo / shifts, wrapping", false, true, [](Suite& s, nri::Pipeline& p)
+        {
+            std::vector<uint32_t> in = { 0u, 1u, 0xFFFFFFFFu, 0x80000000u, 0x7FFFFFFFu, 12345u, 0xFFFFFFF9u /* -7 */, 0x00F0F000u };
+            const std::vector<uint32_t> more = RandomWords(56, 4);
+            in.insert(in.end(), more.begin(), more.end());
+            const uint32_t n = static_cast<uint32_t>(in.size());
+            Push push = s.BasePush();
+            push.count = n;
+            push.uparams[0] = static_cast<uint32_t>(-7);
+            const std::vector<uint32_t> got = s.Run(p, in, n * 10, 1, 1, push);
+            std::vector<uint32_t> want;
+            for (uint32_t u : in)
+            {
+                const int32_t v = static_cast<int32_t>(u);
+                want.push_back(static_cast<uint32_t>(std::popcount(u)));
+                want.push_back(FirstBitHigh(u));
+                want.push_back(FirstBitLow(u));
+                want.push_back(ReverseBits(u));
+                want.push_back(static_cast<uint32_t>(v / -7));
+                want.push_back(static_cast<uint32_t>(v % -7));
+                want.push_back(static_cast<uint32_t>(v >> 3));
+                want.push_back(u >> 3);
+                want.push_back(u * 2654435761u);
+                want.push_back(v < 0 ? 0u - u : u);
+            }
+            return Compare(got, want, "op");
+        } });
+
+        tests.push_back({ "csFloatMath", "sin, cos, exp2, log2, sqrt, rsqrt, pow, frac, mad, NaN / inf", false, false, [](Suite& s, nri::Pipeline& p)
+        {
+            const uint32_t n = 64;
+            std::vector<uint32_t> in(n);
+            for (uint32_t i = 0; i < n; ++i)
+                in[i] = AsUint(-3.1f + 6.2f * static_cast<float>(i) / static_cast<float>(n - 1));
+            Push push = s.BasePush();
+            push.count = n;
+            const std::vector<uint32_t> got = s.Run(p, in, n * 10, 1, 1, push);
+            Result r;
+            r.raw = got;
+            struct Check { const char* name; float abs, rel; };
+            const Check checks[9] = { { "sin", 2e-3f, 0 }, { "cos", 2e-3f, 0 }, { "exp2", 0, 1e-4f }, { "log2", 1e-4f, 1e-4f }, { "sqrt", 0, 2e-5f },
+                                      { "rsqrt", 0, 2e-5f }, { "pow", 1e-5f, 2e-3f }, { "frac", 2e-5f, 0 }, { "mad", 1e-6f, 1e-6f } };
+            float worst[9] = {};
+            for (uint32_t i = 0; i < n; ++i)
+            {
+                const float x = AsFloat(in[i]);
+                const float scaled = x * 3.7f;
+                const float want[9] = { std::sin(x), std::cos(x), std::exp2(x), std::log2(std::fabs(x) + 1.0f), std::sqrt(std::fabs(x)),
+                                        1.0f / std::sqrt(std::fabs(x) + 0.5f), std::pow(std::fabs(x) + 0.25f, 1.5f), scaled - std::floor(scaled),
+                                        x * 1.25f - 0.5f };
+                for (int k = 0; k < 9; ++k)
+                {
+                    const float g = AsFloat(got[i * 10 + k]);
+                    worst[k] = std::max(worst[k], std::fabs(g - want[k]));
+                    // (frac near a whole number may land on either side: 0.99999 and 0.0 are both right)
+                    const bool fracWrap = k == 7 && std::fabs(std::fabs(g - want[k]) - 1.0f) < 1e-4f;
+                    if (!Near(g, want[k], checks[k].abs, checks[k].rel) && !fracWrap)
+                    {
+                        r.status = Status::Fail;
+                        r.detail = std::string(checks[k].name) + "(" + std::to_string(x) + ") = " + std::to_string(g) + ", expected " + std::to_string(want[k]);
+                        return r;
+                    }
+                }
+                if (got[i * 10 + 9] != 3u)
+                {
+                    r.status = Status::Fail;
+                    r.detail = "isnan(sqrt(negative)) / isinf(1/0) flags = " + std::to_string(got[i * 10 + 9]) + ", expected 3";
+                    return r;
+                }
+            }
+            r.status = Status::Pass;
+            char text[160];
+            std::snprintf(text, sizeof(text), "largest errors: sin %.1e cos %.1e exp2 %.1e pow %.1e", worst[0], worst[1], worst[2], worst[6]);
+            r.detail = text;
+            return r;
+        } });
+
+        tests.push_back({ "csHalf", "16-bit float math", true, false, [](Suite& s, nri::Pipeline& p)
+        {
+            const uint32_t n = 64;
+            std::vector<uint32_t> in(n);
+            for (uint32_t i = 0; i < n; ++i)
+                in[i] = AsUint(-20.0f + 40.0f * static_cast<float>(i) / static_cast<float>(n - 1));
+            Push push = s.BasePush();
+            push.count = n;
+            const std::vector<uint32_t> got = s.Run(p, in, n, 1, 1, push);
+            Result r;
+            r.raw = got;
+            for (uint32_t i = 0; i < n; ++i)
+            {
+                const float a = RoundHalf(AsFloat(in[i]));
+                const float separate = RoundHalf(RoundHalf(a * 1.5f) - 0.25f), fused = RoundHalf(a * 1.5f - 0.25f);
+                const float g = AsFloat(got[i]);
+                // (a GPU may fuse the multiply-add -- one rounding -- or not: either is right)
+                if (g != separate && g != fused && !Near(g, fused, 0, 1.0f / 1024.0f))
+                {
+                    r.status = Status::Fail;
+                    r.detail = "half(" + std::to_string(a) + ") * 1.5 - 0.25 = " + std::to_string(g) + ", expected " + std::to_string(fused);
+                    return r;
+                }
+            }
+            r.status = Status::Pass;
+            return r;
+        } });
+
+        tests.push_back({ "csInt64", "64-bit integer multiply / add / shift", true, true, [](Suite& s, nri::Pipeline& p)
+        {
+            const uint32_t n = 64;
+            const std::vector<uint32_t> in = RandomWords(n, 5);
+            Push push = s.BasePush();
+            push.count = n;
+            const std::vector<uint32_t> got = s.Run(p, in, n * 2, 1, 1, push);
+            std::vector<uint32_t> want;
+            for (uint32_t i = 0; i < n; ++i)
+            {
+                const uint64_t a = (static_cast<uint64_t>(in[i]) << 32) | static_cast<uint64_t>(i * 2654435761u);
+                const uint64_t r = a * 6364136223846793005ull + 1442695040888963407ull;
+                want.push_back(static_cast<uint32_t>(r));
+                want.push_back(static_cast<uint32_t>(r >> 32));
+            }
+            return Compare(got, want, "u64 word");
+        } });
+
+        tests.push_back({ "csMatrix", "float4x4 conventions: mul(M, v), mul(v, M), m[row][col]", false, false, [](Suite& s, nri::Pipeline& p)
+        {
+            float columns[4][4]; // columns[c][r]: the buffer holds column 0, then column 1, ...
+            std::vector<uint32_t> in;
+            for (int c = 0; c < 4; ++c)
+                for (int r = 0; r < 4; ++r)
+                {
+                    columns[c][r] = static_cast<float>(c * 4 + r + 1) * (r % 2 ? -0.5f : 1.0f);
+                    in.push_back(AsUint(columns[c][r]));
+                }
+            const float v[4] = { 1.0f, -2.0f, 0.5f, 3.0f };
+            for (float f : v)
+                in.push_back(AsUint(f));
+            Push push = s.BasePush();
+            const std::vector<uint32_t> got = s.Run(p, in, 12, 1, 1, push);
+            Result r;
+            r.raw = got;
+            for (int i = 0; i < 4; ++i)
+            {
+                float mv = 0, vm = 0;
+                for (int k = 0; k < 4; ++k)
+                {
+                    mv += columns[k][i] * v[k]; // (M v)_i = sum_k M[i][k] v_k
+                    vm += v[k] * columns[i][k]; // (v M)_i = sum_k v_k M[k][i]
+                }
+                const float row1 = columns[i][1];
+                const float g[3] = { AsFloat(got[i]), AsFloat(got[4 + i]), AsFloat(got[8 + i]) };
+                const float want[3] = { mv, vm, row1 };
+                const char* names[3] = { "mul(M, v)", "mul(v, M)", "M[1]" };
+                for (int k = 0; k < 3; ++k)
+                    if (!Near(g[k], want[k], 1e-5f, 1e-6f))
+                    {
+                        r.status = Status::Fail;
+                        r.detail = std::string(names[k]) + "[" + std::to_string(i) + "] = " + std::to_string(g[k]) + ", expected " + std::to_string(want[k]);
+                        return r;
+                    }
+            }
+            r.status = Status::Pass;
+            return r;
+        } });
+
+        tests.push_back({ "csTextureSample", "bindless texture + nearest / linear samplers", false, false, [](Suite& s, nri::Pipeline& p)
+        {
+            Push push = s.BasePush();
+            const std::vector<uint32_t> got = s.Run(p, {}, 16 * 8, 1, 1, push);
+            Result r;
+            r.raw = got;
+            const auto texel = [](uint32_t x, uint32_t y, int c)
+            {
+                const float v[4] = { static_cast<float>(x * 64 + 10), static_cast<float>(y * 64 + 20), static_cast<float>((x + y) * 30), 255.0f };
+                return v[c] / 255.0f;
+            };
+            for (uint32_t i = 0; i < 16; ++i)
+            {
+                const uint32_t x = i % 4, y = i / 4, lx = std::min(x, 2u), ly = std::min(y, 2u);
+                for (int c = 0; c < 4; ++c)
+                {
+                    const float nearest = AsFloat(got[i * 8 + c]), linear = AsFloat(got[i * 8 + 4 + c]);
+                    const float wantLinear = (texel(lx, ly, c) + texel(lx + 1, ly, c) + texel(lx, ly + 1, c) + texel(lx + 1, ly + 1, c)) * 0.25f;
+                    if (!Near(nearest, texel(x, y, c), 1e-6f, 0))
+                    {
+                        r.status = Status::Fail;
+                        r.detail = "nearest sample at texel (" + std::to_string(x) + "," + std::to_string(y) + ") channel " + std::to_string(c) + " = " +
+                                   std::to_string(nearest) + ", expected " + std::to_string(texel(x, y, c)) + " (is the sampler really nearest?)";
+                        return r;
+                    }
+                    if (!Near(linear, wantLinear, 0.006f, 0))
+                    {
+                        r.status = Status::Fail;
+                        r.detail = "linear sample between texels (" + std::to_string(lx) + "," + std::to_string(ly) + ") channel " + std::to_string(c) +
+                                   " = " + std::to_string(linear) + ", expected " + std::to_string(wantLinear);
+                        return r;
+                    }
+                }
+            }
+            r.status = Status::Pass;
+            return r;
+        } });
+
+        tests.push_back({ "csStorageTexture", "RWTexture2D writes, copied back", false, true, [](Suite& s, nri::Pipeline& p)
+        {
+            Push push = s.BasePush();
+            push.uparams[0] = push.uparams[1] = kStorageSize;
+            std::vector<uint32_t> image;
+            s.Run(p, {}, 1, kStorageSize / 8, kStorageSize / 8, push, &image);
+            std::vector<uint32_t> want(kStorageSize * kStorageSize);
+            for (uint32_t y = 0; y < kStorageSize; ++y)
+                for (uint32_t x = 0; x < kStorageSize; ++x)
+                    want[y * kStorageSize + x] = (x * 4) | ((y * 4) << 8) | (((x ^ y) & 0xFF) << 16) | (255u << 24);
+            return Compare(image, want, "texel");
+        } });
+
+        tests.push_back({ "csRayQuery", "inline ray tracing (RayQuery) against a TLAS", true, true, [](Suite& s, nri::Pipeline& p)
+        {
+            Push push = s.BasePush();
+            std::string error;
+            if (!s.BuildRayTracingScene(push, error))
+            {
+                Result r;
+                r.status = Status::Skip;
+                r.detail = "acceleration structures: " + error;
+                return r;
+            }
+            const std::vector<uint32_t> got = s.Run(p, {}, 64, 1, 1, push);
+            std::vector<uint32_t> want(64);
+            for (uint32_t y = 0; y < 8; ++y)
+                for (uint32_t x = 0; x < 8; ++x)
+                {
+                    const float ox = -0.23f + (static_cast<float>(x) + 0.5f) * (1.5f / 8.0f), oy = -0.23f + (static_cast<float>(y) + 0.5f) * (1.5f / 8.0f);
+                    want[y * 8 + x] = AsUint(ox >= 0.0f && oy >= 0.0f && ox + oy <= 1.0f ? 5.0f : -1.0f);
+                }
+            return Compare(got, want, "ray");
+        } });
+
+        return tests;
+    }
+
+    std::map<std::string, Result> RunSuite(NriGraphicsAPI api, const std::string& shaderPath, const std::vector<Test>& tests, const std::string& only)
+    {
+        std::map<std::string, Result> results;
+        const char* apiName = api == NRI_GRAPHICS_API_D3D12 ? "D3D12" : api == NRI_GRAPHICS_API_NONE ? "None (no GPU)" : "Vulkan";
+        std::printf("\n=== %s ===\n", apiName);
+        std::unique_ptr<Suite> suite;
+        try
+        {
+            suite = std::make_unique<Suite>(api, shaderPath);
+        }
+        catch (const std::exception& e)
+        {
+            std::printf("  device: %s\n", e.what());
+            // (asked for and not there: a failure, not a skip -- a GPU or driver without what NoxRHI needs on this API)
+            results["(device)"] = { Status::Fail, std::string("no ") + apiName + " device: " + e.what(), {} };
+            return results;
+        }
+        for (const Test& test : tests)
+        {
+            if (!only.empty() && test.entry != only)
+                continue;
+            Result result;
+            std::string error;
+            const int errorsBefore = g_ValidationErrors;
+            if (nri::Pipeline* pipeline = suite->GetPipeline(test.entry, error))
+            {
+                try
+                {
+                    result = test.run(*suite, *pipeline);
+                }
+                catch (const std::exception& e)
+                {
+                    result.status = Status::Fail;
+                    result.detail = std::string("exception: ") + e.what();
+                }
+            }
+            else
+            {
+                result.status = test.featureGated ? Status::Skip : Status::Fail;
+                result.detail = "pipeline: " + error.substr(0, 300);
+            }
+            if (result.status == Status::Pass && g_ValidationErrors > errorsBefore)
+            {
+                result.status = Status::Fail;
+                result.detail = "the results matched, but the API reported errors (see above)";
+            }
+            std::printf("  %-4s %-17s %s%s%s\n", StatusText(result.status), test.entry.c_str(), test.what.c_str(), result.detail.empty() ? "" : " -- ",
+                        result.detail.c_str());
+            results[test.entry] = std::move(result);
+        }
+        return results;
+    }
+}
+
+int main(int argc, char** argv)
+{
+    std::vector<NriGraphicsAPI> apis;
+    std::string only;
+    for (int i = 1; i < argc; ++i)
+    {
+        if (!std::strcmp(argv[i], "--vk") || !std::strcmp(argv[i], "--vulkan"))
+            apis.push_back(NRI_GRAPHICS_API_VULKAN);
+        else if (!std::strcmp(argv[i], "--dx12") || !std::strcmp(argv[i], "--d3d12"))
+            apis.push_back(NRI_GRAPHICS_API_D3D12);
+        else if (!std::strcmp(argv[i], "--all"))
+        {
+            apis = { NRI_GRAPHICS_API_VULKAN };
+#ifdef _WIN32
+            apis.push_back(NRI_GRAPHICS_API_D3D12);
+#endif
+        }
+        else if (!std::strcmp(argv[i], "--none"))
+            apis.push_back(NRI_GRAPHICS_API_NONE); // (the program's own flow without a GPU: nothing runs, every check fails by design)
+        else if (!std::strcmp(argv[i], "--only") && i + 1 < argc)
+            only = argv[++i];
+        else if (!std::strcmp(argv[i], "--verbose"))
+            g_Verbose = true;
+        else
+        {
+            std::printf("usage: ShaderCompat [--vk] [--dx12] [--all] [--none] [--only <entry>] [--verbose]\n");
+            return 2;
+        }
+    }
+    if (apis.empty())
+    {
+#ifdef _WIN32
+        apis = { NRI_GRAPHICS_API_VULKAN, NRI_GRAPHICS_API_D3D12 };
+#else
+        apis = { NRI_GRAPHICS_API_VULKAN };
+#endif
+    }
+
+    std::filesystem::path shaderPath = "shader_compat.slang";
+    if (!std::filesystem::exists(shaderPath) && argc > 0)
+        shaderPath = std::filesystem::path(argv[0]).parent_path() / "shader_compat.slang";
+
+    const std::vector<Test> tests = MakeTests();
+    std::vector<std::map<std::string, Result>> perApi;
+    for (NriGraphicsAPI api : apis)
+        perApi.push_back(RunSuite(api, shaderPath.string(), tests, only));
+
+    int failures = 0;
+    for (const auto& results : perApi)
+        for (const auto& [entry, result] : results)
+            failures += result.status == Status::Fail ? 1 : 0;
+
+    // The same test on both APIs must give the same answer (exactly for integer results; float results within what each was allowed).
+    if (perApi.size() == 2)
+    {
+        std::printf("\n=== Vulkan vs D3D12 ===\n");
+        for (const Test& test : tests)
+        {
+            const auto a = perApi[0].find(test.entry), b = perApi[1].find(test.entry);
+            if (a == perApi[0].end() || b == perApi[1].end())
+                continue;
+            const char* verdict = "n/a ";
+            std::string detail;
+            if (a->second.status == Status::Pass && b->second.status == Status::Pass)
+            {
+                if (!test.exactAcrossApis)
+                {
+                    verdict = "SAME";
+                    detail = "both within tolerance";
+                    if (test.entry == "csWave" && a->second.detail != b->second.detail)
+                        detail += " (" + a->second.detail + " vs " + b->second.detail + ": allowed)";
+                }
+                else if (a->second.raw == b->second.raw)
+                    verdict = "SAME";
+                else
+                {
+                    verdict = "DIFF";
+                    ++failures;
+                    for (size_t i = 0; i < std::min(a->second.raw.size(), b->second.raw.size()); ++i)
+                        if (a->second.raw[i] != b->second.raw[i])
+                        {
+                            detail = "word " + std::to_string(i) + ": " + Hex(a->second.raw[i]) + " vs " + Hex(b->second.raw[i]);
+                            break;
+                        }
+                }
+            }
+            else
+                detail = std::string("Vulkan ") + StatusText(a->second.status) + ", D3D12 " + StatusText(b->second.status);
+            std::printf("  %s %-17s %s\n", verdict, test.entry.c_str(), detail.c_str());
+        }
+    }
+
+    std::printf("\n%s: %d failure(s)%s\n", failures == 0 ? "OK" : "FAILED", failures, g_ValidationErrors ? " (API errors were reported)" : "");
+    return failures == 0 ? 0 : 1;
+}

@@ -428,7 +428,7 @@ float4 fragMain(VSOut input, uniform PushConstants pc) : SV_Target
                 });
             }
 
-            const uint64_t newCap = std::max({ neededVtxBytes, geom.vtxCapacityBytes * 2ull, kMinBufferBytes });
+            const uint64_t newCap = std::max<uint64_t>({ neededVtxBytes, geom.vtxCapacityBytes * 2ull, kMinBufferBytes });
             BufferDesc stgDesc{};
             stgDesc.size = newCap;
             stgDesc.usage = BufferUsage::Staging;
@@ -455,7 +455,7 @@ float4 fragMain(VSOut input, uniform PushConstants pc) : SV_Target
                 });
             }
 
-            const uint64_t newCap = std::max({ neededIdxBytes, geom.idxCapacityBytes * 2ull, kMinBufferBytes });
+            const uint64_t newCap = std::max<uint64_t>({ neededIdxBytes, geom.idxCapacityBytes * 2ull, kMinBufferBytes });
             BufferDesc stgDesc{};
             stgDesc.size = newCap;
             stgDesc.usage = BufferUsage::Staging;

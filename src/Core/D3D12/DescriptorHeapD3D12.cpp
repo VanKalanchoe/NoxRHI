@@ -6,6 +6,68 @@
 
 namespace NRI
 {
+    namespace
+    {
+        // The sampler as described -- filters, mip mode, addressing, comparison, border, LOD bias and anisotropy -- the same meaning
+        // Vulkan's sampler gets (DescriptorHeapVK), so a sampler behaves the same on both APIs.
+        D3D12_FILTER_TYPE ToD3D12FilterType(Filter filter)
+        {
+            return filter == Filter::Linear ? D3D12_FILTER_TYPE_LINEAR : D3D12_FILTER_TYPE_POINT;
+        }
+
+        D3D12_TEXTURE_ADDRESS_MODE ToD3D12Address(SamplerAddressMode mode)
+        {
+            switch (mode)
+            {
+            case SamplerAddressMode::Repeat: return D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+            case SamplerAddressMode::MirroredRepeat: return D3D12_TEXTURE_ADDRESS_MODE_MIRROR;
+            case SamplerAddressMode::ClampToEdge: return D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+            case SamplerAddressMode::ClampToBorder: return D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+            case SamplerAddressMode::MirrorClampToEdge: return D3D12_TEXTURE_ADDRESS_MODE_MIRROR_ONCE;
+            }
+            return D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+        }
+
+        D3D12_COMPARISON_FUNC ToD3D12Compare(CompareOp op)
+        {
+            switch (op)
+            {
+            case CompareOp::Never: return D3D12_COMPARISON_FUNC_NEVER;
+            case CompareOp::Less: return D3D12_COMPARISON_FUNC_LESS;
+            case CompareOp::Equal: return D3D12_COMPARISON_FUNC_EQUAL;
+            case CompareOp::LessOrEqual: return D3D12_COMPARISON_FUNC_LESS_EQUAL;
+            case CompareOp::Greater: return D3D12_COMPARISON_FUNC_GREATER;
+            case CompareOp::NotEqual: return D3D12_COMPARISON_FUNC_NOT_EQUAL;
+            case CompareOp::GreaterOrEqual: return D3D12_COMPARISON_FUNC_GREATER_EQUAL;
+            case CompareOp::Always: return D3D12_COMPARISON_FUNC_ALWAYS;
+            }
+            return D3D12_COMPARISON_FUNC_NEVER;
+        }
+
+        D3D12_SAMPLER_DESC ToD3D12Sampler(const SamplerDesc& s)
+        {
+            D3D12_SAMPLER_DESC d{};
+            const D3D12_FILTER_REDUCTION_TYPE reduction = s.compareEnable ? D3D12_FILTER_REDUCTION_TYPE_COMPARISON : D3D12_FILTER_REDUCTION_TYPE_STANDARD;
+            if (s.anisotropyEnable)
+                d.Filter = D3D12_ENCODE_ANISOTROPIC_FILTER(reduction);
+            else
+                d.Filter = D3D12_ENCODE_BASIC_FILTER(ToD3D12FilterType(s.minFilter), ToD3D12FilterType(s.magFilter),
+                                                     s.mipmapMode == SamplerMipmapMode::Linear ? D3D12_FILTER_TYPE_LINEAR : D3D12_FILTER_TYPE_POINT, reduction);
+            d.AddressU = ToD3D12Address(s.addressModeU);
+            d.AddressV = ToD3D12Address(s.addressModeV);
+            d.AddressW = ToD3D12Address(s.addressModeW);
+            d.MipLODBias = s.mipLodBias;
+            d.MaxAnisotropy = s.anisotropyEnable ? std::clamp(static_cast<UINT>(s.maxAnisotropy), 1u, 16u) : 1u;
+            d.ComparisonFunc = s.compareEnable ? ToD3D12Compare(s.compareOp) : D3D12_COMPARISON_FUNC_NONE;
+            const bool white = s.borderColor == BorderColor::FloatOpaqueWhite || s.borderColor == BorderColor::IntOpaqueWhite;
+            const bool opaque = white || s.borderColor == BorderColor::FloatOpaqueBlack || s.borderColor == BorderColor::IntOpaqueBlack;
+            d.BorderColor[0] = d.BorderColor[1] = d.BorderColor[2] = white ? 1.0f : 0.0f;
+            d.BorderColor[3] = opaque ? 1.0f : 0.0f;
+            d.MinLOD = s.minLod;
+            d.MaxLOD = s.maxLod;
+            return d;
+        }
+    }
     DescriptorHeapD3D12::DescriptorHeapD3D12(DeviceD3D12& device, const DescriptorHeapDesc& desc)
         : m_deviceD3D12(device), m_type(desc.type)
     {
@@ -38,16 +100,7 @@ namespace NRI
         {
             for (size_t i = 0; i < desc.samplers.size(); ++i)
             {
-                const auto& s = desc.samplers[i];
-                D3D12_SAMPLER_DESC sampDesc{};
-                sampDesc.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-                sampDesc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-                sampDesc.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-                sampDesc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-                sampDesc.MinLOD = s.minLod;
-                sampDesc.MaxLOD = s.maxLod;
-                sampDesc.MaxAnisotropy = std::max(1u, static_cast<UINT>(s.maxAnisotropy));
-                sampDesc.ComparisonFunc = D3D12_COMPARISON_FUNC_NONE;
+                const D3D12_SAMPLER_DESC sampDesc = ToD3D12Sampler(desc.samplers[i]);
 
                 D3D12_CPU_DESCRIPTOR_HANDLE handle = getCpuHandle(static_cast<uint32_t>(i));
                 m_deviceD3D12.getNativeDevice()->CreateSampler(&sampDesc, handle);
@@ -175,6 +228,24 @@ namespace NRI
         srvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
 
         m_deviceD3D12.getNativeDevice()->CreateShaderResourceView(bufD3D12.getNativeBuffer(), &srvDesc, cpuHandle);
+        return slot;
+    }
+
+    uint32_t DescriptorHeapD3D12::registerStorageBuffer(Buffer& buffer, uint64_t size)
+    {
+        // A raw UAV (RWByteAddressBuffer): the buffer must have been created with a storage usage (ALLOW_UNORDERED_ACCESS).
+        auto& bufD3D12 = static_cast<BufferD3D12&>(buffer);
+        uint32_t slot = allocateSlot();
+
+        D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = getCpuHandle(slot);
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc{};
+        uavDesc.Format = DXGI_FORMAT_R32_TYPELESS;
+        uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        uavDesc.Buffer.FirstElement = 0;
+        uavDesc.Buffer.NumElements = static_cast<UINT>(size / 4);
+        uavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+
+        m_deviceD3D12.getNativeDevice()->CreateUnorderedAccessView(bufD3D12.getNativeBuffer(), nullptr, &uavDesc, cpuHandle);
         return slot;
     }
 

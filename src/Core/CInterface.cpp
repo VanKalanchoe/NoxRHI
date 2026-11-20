@@ -1301,6 +1301,13 @@ uint32_t NRI_CALL nriRegisterBuffer(NriDescriptorHeap heap, NriBuffer buffer, ui
         : ~0u;
 }
 
+uint32_t NRI_CALL nriRegisterStorageBuffer(NriDescriptorHeap heap, NriBuffer buffer, uint64_t size)
+{
+    return (heap && heap->impl && buffer && buffer->impl)
+        ? heap->impl->registerStorageBuffer(*buffer->impl, size)
+        : ~0u;
+}
+
 uint32_t NRI_CALL nriGetDescriptorHeapImageIndexOffset(NriDescriptorHeap heap)
 {
     return heap && heap->impl ? heap->impl->getImageHeapIndexOffset() : 0;

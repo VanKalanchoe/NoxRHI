@@ -230,6 +230,9 @@ NRI_API void NRI_CALL nriRegisterTexture(NriDescriptorHeap heap, NriTexture text
 NRI_API uint32_t NRI_CALL nriRegisterStorageTextureMip(NriDescriptorHeap heap, NriTexture texture, uint32_t mipLevel);
 NRI_API void NRI_CALL nriUnregisterTexture(NriDescriptorHeap heap, uint32_t slot);
 NRI_API uint32_t NRI_CALL nriRegisterBuffer(NriDescriptorHeap heap, NriBuffer buffer, uint64_t size);
+// A buffer shaders write through a bindless handle (RWByteAddressBuffer.Handle): a raw UAV on D3D12 (registerBuffer makes a read-only
+// raw SRV there); on Vulkan the same read-write storage descriptor as registerBuffer. Create the buffer with a storage usage.
+NRI_API uint32_t NRI_CALL nriRegisterStorageBuffer(NriDescriptorHeap heap, NriBuffer buffer, uint64_t size);
 NRI_API uint32_t NRI_CALL nriGetDescriptorHeapImageIndexOffset(NriDescriptorHeap heap);
 NRI_API uint64_t NRI_CALL nriGetDescriptorHeapSize(NriDescriptorHeap heap);
 NRI_API uint64_t NRI_CALL nriGetDescriptorHeapReservedRangeOffset(NriDescriptorHeap heap);
