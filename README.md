@@ -138,7 +138,10 @@ If the program dies, it says what it was doing (a crash with its exception code,
 **Found by it and fixed:** D3D12 samplers ignored their description (every sampler was linear with wrap addressing); D3D12 had no
 writable buffer descriptor (`registerStorageBuffer` adds a raw UAV); D3D12 pipelines were always single-sampled
 (`setRasterizationSamples` was empty) and `resolveImage` used the wrong states; D3D12 depth textures had no usable format;
-`recordRegionUploads` on D3D12 did not move the texture to `COPY_DEST`. **Known D3D12 gaps still open:** `fillBuffer` records nothing
+`recordRegionUploads` on D3D12 did not move the texture to `COPY_DEST`; the D3D12 acceleration-structure size query got no geometry
+and builds ignored their flags (no updates, no compaction); D3D12 render targets were used before the Discard / Clear / Copy that placed
+memory needs; only `slang.dll` was copied beside the programs, which since Slang 2026.x forwards everything to `slang-compiler.dll`.
+CI runs every test on D3D12 (WARP, debug layer on) on each push: all pass. `nriSupportsMeshShaders` says whether `gfxMeshShader` can run. **Known D3D12 gaps still open:** `fillBuffer` records nothing
 (clear a buffer with a copy from a zeroed staging buffer instead), and `bindVertexBuffer` uses a fixed 36-byte stride (pull vertices from a
 buffer in the shader instead).
 
