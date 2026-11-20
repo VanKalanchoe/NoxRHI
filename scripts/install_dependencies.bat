@@ -46,12 +46,19 @@ if not exist "%D3D12MA_DIR%\src\D3D12MemAlloc.cpp" (
 )
 
 :: ----------------------------------------------------------------------------
-:: 3. Slang (v2026.14.1 Windows x86_64 prebuilt binaries + headers)
+:: 3. Slang (v2026.22.1 Windows x86_64 prebuilt binaries + headers)
 :: ----------------------------------------------------------------------------
-set "SLANG_VERSION=2026.14.1"
+set "SLANG_VERSION=2026.22.1"
 set "SLANG_URL=https://github.com/shader-slang/slang/releases/download/v%SLANG_VERSION%/slang-%SLANG_VERSION%-windows-x86_64.zip"
 set "SLANG_DIR=%VENDORS_DIR%\slang"
 set "SLANG_ZIP=%TEMP%\noxrhi-slang-%SLANG_VERSION%.zip"
+:: (vendors\slang\NOXRHI_SLANG_VERSION records the installed version: a different pinned version replaces the folder)
+set "SLANG_INSTALLED="
+if exist "%SLANG_DIR%\NOXRHI_SLANG_VERSION" set /p SLANG_INSTALLED=<"%SLANG_DIR%\NOXRHI_SLANG_VERSION"
+if not "%SLANG_INSTALLED%"=="%SLANG_VERSION%" if exist "%SLANG_DIR%" (
+    echo [3/7] Slang "%SLANG_INSTALLED%" installed, %SLANG_VERSION% pinned: replacing it.
+    rmdir /s /q "%SLANG_DIR%"
+)
 if not exist "%SLANG_DIR%\lib\slang.lib" (
     echo [3/7] Downloading Slang %SLANG_VERSION%...
     curl -fSL "%SLANG_URL%" -o "%SLANG_ZIP%"
@@ -70,8 +77,9 @@ if not exist "%SLANG_DIR%\lib\slang.lib" (
         goto :fail
     )
     if exist "%SLANG_ZIP%" del /q "%SLANG_ZIP%"
+    >"%SLANG_DIR%\NOXRHI_SLANG_VERSION" echo %SLANG_VERSION%
 ) else (
-    echo [3/7] Slang already present, skipping.
+    echo [3/7] Slang %SLANG_VERSION% already present, skipping.
 )
 
 :: ----------------------------------------------------------------------------

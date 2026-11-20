@@ -1,3 +1,4 @@
+#include <slang-tag-version.h>
 #include "PushLayoutCheck.h"
 #include "SlangCompiler.h"
 
@@ -153,7 +154,13 @@ namespace NRI
             searchPathsCopy = m_searchPaths;
         }
         std::unordered_set<std::string> visited;
-        return hashSourceAndIncludes(path, searchPathsCopy, visited);
+        const uint64_t sourceHash = hashSourceAndIncludes(path, searchPathsCopy, visited);
+        // The compiler is part of the key: binaries cached by another Slang build are compiled again (a Slang update must not
+        // keep serving the old compiler's SPIR-V / DXIL from the cache).
+        // (the version NoxRHI was built against -- a header define, so it needs no slang.dll: a game shipped without Slang finds the
+        // binaries the build compiled)
+        static const uint64_t compilerHash = Hash::compute(std::string("slang " SLANG_TAG_VERSION));
+        return Hash::compute(&compilerHash, sizeof(compilerHash), sourceHash);
     }
 
     std::vector<char> SlangCompiler::compile(const std::string& path, std::string_view entryPoint)

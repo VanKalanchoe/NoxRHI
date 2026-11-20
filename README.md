@@ -40,7 +40,7 @@ Public headers expose **zero** backend SDK headers (`<vulkan/...>`, `<d3d12.h>`)
 |---|---|---|---|---|
 | **VulkanMemoryAllocator-Hpp** (incl. VMA) | `v3.4.0+3` | Vulkan GPU memory allocation | Private (`NoxRHI::Core`, Vulkan) | [YaaZ/VulkanMemoryAllocator-Hpp](https://github.com/YaaZ/VulkanMemoryAllocator-Hpp) |
 | **D3D12MemoryAllocator** | `v3.1.0` | D3D12 GPU memory allocation | Private (`NoxRHI::Core`, D3D12) | [GPUOpen/D3D12MemoryAllocator](https://github.com/GPUOpen-LibrariesAndSDKs/D3D12MemoryAllocator) |
-| **Slang** | `v2026.14.1` | Runtime shader compiler (`NRI_ENABLE_SLANG=ON`) | Private (`NoxRHI::Core`, delay-loaded `slang.dll`) | [shader-slang/slang](https://github.com/shader-slang/slang) |
+| **Slang** | `v2026.22.1` | Runtime shader compiler (`NRI_ENABLE_SLANG=ON`) | Private (`NoxRHI::Core`, delay-loaded `slang.dll`) | [shader-slang/slang](https://github.com/shader-slang/slang) |
 | **vcpkg** + **SDL3** + **stb** | `x64-windows` | Window/event loop & `stb_image` texture loader for examples | `examples/` only (`NRI_BUILD_EXAMPLES=ON`) | [microsoft/vcpkg](https://github.com/Microsoft/vcpkg) |
 | **Dear ImGui** | `docking` branch | Docking + multi-viewport UI demo (`ImGuiDemo` via Layer 2 native wrappers) | `examples/ImGuiDemo/` only | [ocornut/imgui](https://github.com/ocornut/imgui) |
 | **NVIDIA Streamline SDK** | `v2.14.1` | DLSS Super Resolution & Ray Reconstruction (`NRI_ENABLE_STREAMLINE=ON`) | Private (`NoxRHI::Core`, delay-loaded `sl.interposer.dll`) | [NVIDIA-RTX/Streamline](https://github.com/NVIDIA-RTX/Streamline) |
