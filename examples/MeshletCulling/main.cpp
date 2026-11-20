@@ -9,7 +9,8 @@
 //   F: freeze the culling camera (fly away and look at what was culled)     C: meshlet / instance colours     Space: pause
 //   Start-up options (to narrow a problem down): --no-cull (every meshlet drawn), --no-stats (no counter atomic in the task shader),
 //   --mesh-only (no task shader: one mesh shader group per meshlet), --split-files (task and mesh shaders compiled from separate files),
-//   --no-readback (no counter reset / readback copies), --no-depth (no depth buffer), --groups N (dispatch only N groups)
+//   --no-readback (no counter reset / readback copies), --no-depth (no depth buffer), --groups N (dispatch only N groups),
+//   --task-single (a one-thread task shader: no groupshared counter, atomics or barriers)
 
 #include "../Common/ExampleApp.h"
 
@@ -206,7 +207,7 @@ public:
             // (the task shader from its own file, the mesh / fragment shaders from theirs)
             nri::PipelineDesc desc{ .type = NRI_PIPELINE_GRAPHICS, .colorFormats = { NRI_FORMAT_SURFACE }, .buildNow = true };
             if (!m_MeshOnly)
-                desc.shaders.push_back({ NRI_SHADER_STAGE_TASK, "tsCull", host.ShaderPath("meshlet_task.slang") });
+                desc.shaders.push_back({ NRI_SHADER_STAGE_TASK, m_TaskSingle ? "tsCullSingle" : "tsCull", host.ShaderPath("meshlet_task.slang") });
             desc.shaders.push_back({ NRI_SHADER_STAGE_MESH, m_MeshOnly ? "msMeshletDirect" : "msMeshlet", host.ShaderPath("meshlet_mesh.slang") });
             desc.shaders.push_back({ NRI_SHADER_STAGE_FRAGMENT, "psMeshlet", host.ShaderPath("meshlet_mesh.slang") });
             m_Pipeline = host.device.createPipeline(desc, host.compiler.handle());
@@ -214,8 +215,8 @@ public:
         }
         else
             m_Pipeline = m_MeshOnly ? host.Mesh("meshlet_culling.slang", nullptr, "msMeshletDirect", "psMeshlet")
-                                    : host.Mesh("meshlet_culling.slang", "tsCull", "msMeshlet", "psMeshlet");
-        std::printf("[MeshletCulling] %s%s%s%s%s, %s, groups: %s\n", m_MeshOnly ? "mesh shader only (no task shader)" : "task + mesh shaders",
+                                    : host.Mesh("meshlet_culling.slang", m_TaskSingle ? "tsCullSingle" : "tsCull", "msMeshlet", "psMeshlet");
+        std::printf("[MeshletCulling] %s%s%s%s%s, %s, groups: %s\n", m_MeshOnly ? "mesh shader only (no task shader)" : m_TaskSingle ? "task (one thread) + mesh shaders" : "task + mesh shaders",
                     m_NoCull ? ", no culling" : "", m_NoStats ? ", no counter" : "", m_NoReadback ? ", no counter copies" : "", m_NoDepth ? ", no depth" : "",
                     m_SplitFiles ? "task and mesh shaders from separate files" : "all shaders from one file", m_Groups ? std::to_string(m_Groups).c_str() : "all");
         std::printf("[MeshletCulling] %u meshlets per sphere (%zu triangles), %u spheres\n", m_MeshletCount, sphere.indices.size() / 3, m_InstanceCount);
@@ -311,6 +312,8 @@ public:
             m_NoReadback = true;
         else if (!std::strcmp(argv[index], "--no-depth"))
             m_NoDepth = true;
+        else if (!std::strcmp(argv[index], "--task-single"))
+            m_TaskSingle = true;
         else if (!std::strcmp(argv[index], "--groups") && argv[index + 1])
         {
             m_Groups = uint32_t(std::strtoul(argv[index + 1], nullptr, 10));
@@ -350,7 +353,7 @@ private:
     nox::Float3 m_CullPosition;
     float m_AnimTime = 0.0f;
     bool m_Frozen = false, m_Paused = false;
-    bool m_NoCull = false, m_NoStats = false, m_MeshOnly = false, m_SplitFiles = false, m_NoReadback = false, m_NoDepth = false;
+    bool m_NoCull = false, m_NoStats = false, m_MeshOnly = false, m_SplitFiles = false, m_NoReadback = false, m_NoDepth = false, m_TaskSingle = false;
     uint32_t m_Groups = 0; // (0: all)
 };
 

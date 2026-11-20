@@ -34,3 +34,28 @@ void tsCull(uint3 groupId : SV_GroupID, uint threadIndex : SV_GroupIndex, unifor
     DispatchMesh(gVisibleCount, 1, 1, gPayload);
 }
 
+
+// The same work in one thread (--task-single, numthreads(1, 1, 1)): no groupshared counter, no atomics, no barriers -- the thread culls
+// the group's meshlets itself and writes the payload in order. To tell whether the multi-threaded compaction is what a driver mishandles.
+groupshared Payload gPayloadSingle;
+
+[shader("amplification")]
+[numthreads(1, 1, 1)]
+void tsCullSingle(uint3 groupId : SV_GroupID, uniform Push pc)
+{
+    const View view = pc.view[0];
+    uint visible = 0;
+    for (uint i = 0; i < kTaskGroupSize; ++i)
+    {
+        const uint item = groupId.x * kTaskGroupSize + i;
+        if (item >= view.meshletCount * view.instanceCount)
+            break;
+        const Meshlet meshlet = pc.meshlets[item % view.meshletCount];
+        const Instance instance = pc.instances[item / view.meshletCount];
+        if ((view.flags & 1) != 0 || IsVisible(view, meshlet, instance))
+            gPayloadSingle.items[visible++] = item;
+    }
+    if ((view.flags & 2) == 0)
+        AtomicAdd(pc.stats, 0, visible);
+    DispatchMesh(visible, 1, 1, gPayloadSingle);
+}
