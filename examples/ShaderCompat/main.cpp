@@ -347,6 +347,123 @@ namespace
             return out;
         }
 
+        // The scene of RayQueryShadows in miniature: a BLAS of a cube (-1..1) from 32-byte vertices (position + normal), and a TLAS
+        // (PREFER_FAST_BUILD) of three translated and scaled instances -- `instances` holds each one's translation and scale.
+        bool BuildInstancedScene(Push& push, const float (*instances)[6], uint32_t instanceCount, std::string& error)
+        {
+            try
+            {
+                std::vector<float> vertices; // 8 floats per vertex
+                const float faces[6][3][3] = {
+                    { { 1, 0, 0 }, { 0, 0, -1 }, { 0, 1, 0 } }, { { -1, 0, 0 }, { 0, 0, 1 }, { 0, 1, 0 } },
+                    { { 0, 1, 0 }, { 1, 0, 0 }, { 0, 0, -1 } }, { { 0, -1, 0 }, { 1, 0, 0 }, { 0, 0, 1 } },
+                    { { 0, 0, 1 }, { 1, 0, 0 }, { 0, 1, 0 } },  { { 0, 0, -1 }, { -1, 0, 0 }, { 0, 1, 0 } } };
+                const float corners[6][2] = { { -1, -1 }, { 1, -1 }, { 1, 1 }, { -1, -1 }, { 1, 1 }, { -1, 1 } };
+                for (const auto& f : faces)
+                    for (const auto& c : corners)
+                    {
+                        for (int i = 0; i < 3; ++i)
+                            vertices.push_back(f[0][i] + f[1][i] * c[0] + f[2][i] * c[1]);
+                        vertices.push_back(1.0f);
+                        for (int i = 0; i < 3; ++i)
+                            vertices.push_back(f[0][i]);
+                        vertices.push_back(0.0f);
+                    }
+                std::vector<uint32_t> indices(36);
+                for (uint32_t i = 0; i < 36; ++i)
+                    indices[i] = i;
+                const uint64_t vertexBytes = vertices.size() * 4, indexBytes = indices.size() * 4;
+                m_CubeVertices = m_Device.createBuffer({ .size = vertexBytes, .usage = NRI_BUFFER_USAGE_STORAGE_STATIC });
+                m_CubeIndices = m_Device.createBuffer({ .size = indexBytes, .usage = NRI_BUFFER_USAGE_STORAGE_STATIC });
+                auto* staging = static_cast<uint8_t*>(m_Upload.map(0, 4096));
+                std::memcpy(staging, vertices.data(), vertexBytes);
+                std::memcpy(staging + 2048, indices.data(), indexBytes);
+                m_Upload.unmap();
+
+                NriAccelerationStructureTrianglesDesc triangles{};
+                triangles.vertexBufferAddress = m_CubeVertices.getDeviceAddress();
+                triangles.vertexStride = 32;
+                triangles.maxVertex = 35;
+                triangles.indexBufferAddress = m_CubeIndices.getDeviceAddress();
+                triangles.primitiveCount = 12;
+                triangles.isOpaque = true;
+                NriAccelerationStructureBuildDesc blasBuild{};
+                blasBuild.type = NRI_ACCELERATION_STRUCTURE_BOTTOM_LEVEL;
+                blasBuild.flags = NRI_AS_BUILD_PREFER_FAST_TRACE;
+                blasBuild.triangles = &triangles;
+                blasBuild.triangleCount = 1;
+                const NriAccelerationStructureBuildSizes blasSizes = nriGetAccelerationStructureBuildSizes(m_Device.handle(), &blasBuild);
+                if (blasSizes.accelerationStructureSize == 0)
+                    throw std::runtime_error("no acceleration structure sizes (ray tracing unsupported)");
+                const auto create = [&](NriAccelerationStructureType type, uint64_t size, nri::Buffer& storage) {
+                    storage = m_Device.createBuffer({ .size = size, .usage = NRI_BUFFER_USAGE_ACCELERATION_STRUCTURE });
+                    const NriAccelerationStructureDesc desc{ type, storage.handle(), 0, size };
+                    NriAccelerationStructure handle = nullptr;
+                    if (nriCreateAccelerationStructure(m_Device.handle(), &desc, &handle) != NRI_SUCCESS || !handle)
+                        throw std::runtime_error("nriCreateAccelerationStructure failed");
+                    return nri::AccelerationStructure(handle);
+                };
+                m_CubeBlas = create(NRI_ACCELERATION_STRUCTURE_BOTTOM_LEVEL, blasSizes.accelerationStructureSize, m_CubeBlasStorage);
+
+                std::vector<NriAccelerationStructureInstance> records(instanceCount);
+                for (uint32_t i = 0; i < instanceCount; ++i)
+                {
+                    NriAccelerationStructureInstance& r = records[i];
+                    r = {};
+                    for (int axis = 0; axis < 3; ++axis)
+                    {
+                        r.transform.matrix[axis][axis] = instances[i][3 + axis]; // scale
+                        r.transform.matrix[axis][3] = instances[i][axis];        // translation
+                    }
+                    r.instanceCustomIndex = i;
+                    r.mask = 0xFF;
+                    r.accelerationStructureReference = m_CubeBlas.getDeviceAddress();
+                }
+                m_CubeInstances = m_Device.createBuffer({ .size = records.size() * sizeof(records[0]), .usage = NRI_BUFFER_USAGE_ACCELERATION_STRUCTURE_INSTANCE });
+                std::memcpy(m_CubeInstances.map(0, records.size() * sizeof(records[0])), records.data(), records.size() * sizeof(records[0]));
+                m_CubeInstances.unmap();
+
+                NriAccelerationStructureBuildDesc tlasBuild{};
+                tlasBuild.type = NRI_ACCELERATION_STRUCTURE_TOP_LEVEL;
+                tlasBuild.flags = NRI_AS_BUILD_PREFER_FAST_BUILD;
+                tlasBuild.instances = { m_CubeInstances.getDeviceAddress(), instanceCount };
+                const NriAccelerationStructureBuildSizes tlasSizes = nriGetAccelerationStructureBuildSizes(m_Device.handle(), &tlasBuild);
+                m_CubeTlas = create(NRI_ACCELERATION_STRUCTURE_TOP_LEVEL, tlasSizes.accelerationStructureSize, m_CubeTlasStorage);
+                m_CubeBlasScratch = m_Device.createBuffer({ .size = blasSizes.buildScratchSize, .usage = NRI_BUFFER_USAGE_ACCELERATION_STRUCTURE_SCRATCH });
+                m_CubeTlasScratch = m_Device.createBuffer({ .size = tlasSizes.buildScratchSize, .usage = NRI_BUFFER_USAGE_ACCELERATION_STRUCTURE_SCRATCH });
+
+                nri::CommandBuffer& cmd = m_Cmd;
+                cmd.begin(0, true);
+                cmd.copyBuffer(m_Upload, m_CubeVertices, nri::BufferCopyRegion{ 0, 0, vertexBytes });
+                cmd.copyBuffer(m_Upload, m_CubeIndices, nri::BufferCopyRegion{ 2048, 0, indexBytes });
+                const nri::ResourceState copied{ NRI_ACCESS_TRANSFER_WRITE, NRI_STAGE_TRANSFER };
+                const nri::ResourceState buildInput{ NRI_ACCESS_ACCELERATION_STRUCTURE_READ, NRI_STAGE_ACCELERATION_STRUCTURE_BUILD };
+                const nri::ResourceState scratch{ NRI_ACCESS_ACCELERATION_STRUCTURE_READ | NRI_ACCESS_ACCELERATION_STRUCTURE_WRITE, NRI_STAGE_ACCELERATION_STRUCTURE_BUILD };
+                const nri::BufferBarrierDesc barriers[4] = { { m_CubeVertices.handle(), copied, buildInput }, { m_CubeIndices.handle(), copied, buildInput },
+                                                             { m_CubeBlasScratch.handle(), {}, scratch }, { m_CubeTlasScratch.handle(), {}, scratch } };
+                cmd.resourceBarriers({}, barriers);
+                nriCmdBuildAccelerationStructure(cmd.handle(), &blasBuild, m_CubeBlasScratch.getDeviceAddress(), m_CubeBlas.handle());
+                cmd.end(0);
+                m_Device.submitAndWait(cmd, 0);
+
+                // (the TLAS in a later submission, as RayQueryShadows builds it every frame)
+                cmd.begin(0, true);
+                nriCmdBuildAccelerationStructure(cmd.handle(), &tlasBuild, m_CubeTlasScratch.getDeviceAddress(), m_CubeTlas.handle());
+                nriCmdAccelerationStructureBarrier(cmd.handle(), NRI_AS_BARRIER_BUILD_TO_SHADER_READ);
+                cmd.end(0);
+                m_Device.submitAndWait(cmd, 0);
+
+                push.tlasAddress = m_CubeTlas.getDeviceAddress();
+                push.tlasSlot = nriRegisterAccelerationStructure(m_Resources.handle(), m_CubeTlas.handle(), ~0u);
+                return true;
+            }
+            catch (const std::exception& e)
+            {
+                error = e.what();
+                return false;
+            }
+        }
+
         // Builds a BLAS of one triangle and a TLAS of one instance; false (with `error`) when the device cannot.
         bool BuildRayTracingScene(Push& push, std::string& error)
         {
@@ -624,6 +741,8 @@ namespace
         std::map<std::string, nri::Pipeline> m_Pipelines;
         nri::Buffer m_Vertices, m_Indices, m_Instances, m_Scratch, m_BlasStorage, m_TlasStorage;
         nri::AccelerationStructure m_Blas, m_Tlas;
+        nri::Buffer m_CubeVertices, m_CubeIndices, m_CubeInstances, m_CubeBlasStorage, m_CubeTlasStorage, m_CubeBlasScratch, m_CubeTlasScratch;
+        nri::AccelerationStructure m_CubeBlas, m_CubeTlas;
     };
 
     // --- The tests -----------------------------------------------------------------------------------------------------------------------
@@ -1112,6 +1231,54 @@ namespace
                     r.status = Status::Fail;
                     r.detail = "ray[" + std::to_string(i) + "] = " + std::to_string(AsFloat(got[i])) + ", expected " + std::to_string(AsFloat(want[i]));
                     return r;
+                }
+            r.status = Status::Pass;
+            return r;
+        } });
+
+        tests.push_back({ "csRayQueryInstances", "ray queries against scaled + translated instances of a cube (fast-build TLAS)", true, false,
+                          [](Suite& s, nri::Pipeline& p)
+        {
+            // translation xyz, scale xyz -- rays along +Z from a 16 x 16 grid at z = 0, at least 0.0625 from every box edge
+            static const float instances[3][6] = { { 0, 0, 10, 1, 1, 1 }, { 3, 0, 6, 0.5f, 2, 0.5f }, { -3, 1, 8, 1.5f, 0.5f, 1 } };
+            Push push = s.BasePush();
+            std::string error;
+            if (!s.BuildInstancedScene(push, instances, 3, error))
+            {
+                Result r;
+                r.status = Status::Skip;
+                r.detail = "acceleration structures: " + error;
+                return r;
+            }
+            const std::vector<uint32_t> got = s.Run(p, {}, 256 * 3, 2, 2, push);
+            Result r;
+            r.raw = got;
+            for (uint32_t y = 0; y < 16; ++y)
+                for (uint32_t x = 0; x < 16; ++x)
+                {
+                    const float ox = -5.0f + (x + 0.5f) * (10.0f / 16.0f), oy = -3.0f + (y + 0.5f) * (6.0f / 16.0f);
+                    float wantT = -1.0f;
+                    uint32_t wantInstance = ~0u;
+                    for (uint32_t i = 0; i < 3; ++i)
+                    {
+                        const float* b = instances[i];
+                        if (std::fabs(ox - b[0]) < b[3] && std::fabs(oy - b[1]) < b[4] && (wantT < 0 || b[2] - b[5] < wantT))
+                        {
+                            wantT = b[2] - b[5]; // the front face
+                            wantInstance = i;
+                        }
+                    }
+                    const uint32_t ray = y * 16 + x;
+                    const float gotT = AsFloat(got[ray * 3 + 0]);
+                    const bool hitOk = (wantT < 0) == (gotT < 0) && (wantT < 0 || Near(gotT, wantT, 0.0f, 1e-5f));
+                    if (!hitOk || got[ray * 3 + 1] != wantInstance || got[ray * 3 + 2] != (wantT < 0 ? 0u : 1u))
+                    {
+                        r.status = Status::Fail;
+                        r.detail = "ray (" + std::to_string(x) + "," + std::to_string(y) + "): t " + std::to_string(gotT) + " instance " +
+                                   std::to_string(int(got[ray * 3 + 1])) + " first-hit " + std::to_string(got[ray * 3 + 2]) + ", expected t " +
+                                   std::to_string(wantT) + " instance " + std::to_string(int(wantInstance)) + " first-hit " + (wantT < 0 ? "0" : "1");
+                        return r;
+                    }
                 }
             r.status = Status::Pass;
             return r;

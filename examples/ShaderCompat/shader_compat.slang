@@ -367,6 +367,37 @@ void csRayQuery(uint3 id : SV_DispatchThreadID, uniform Push pc)
     StoreOutFloat(pc, id.y * 8 + id.x, t);
 }
 
+// --- 13b. ray queries against instances (RayQueryShadows' scene in miniature): closest hit, its instance, and a first-hit query --------
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void csRayQueryInstances(uint3 id : SV_DispatchThreadID, uniform Push pc)
+{
+#ifdef NOX_VULKAN
+    RaytracingAccelerationStructure tlas = RaytracingAccelerationStructure(pc.tlasAddress);
+#else
+    RaytracingAccelerationStructure tlas = RaytracingAccelerationStructure.Handle(uint2(pc.tlasSlot, 0));
+#endif
+    const uint ray = id.y * 16 + id.x;
+    RayDesc desc;
+    desc.Origin = float3(-5.0 + (float(id.x) + 0.5) * (10.0 / 16.0), -3.0 + (float(id.y) + 0.5) * (6.0 / 16.0), 0.0);
+    desc.Direction = float3(0.0, 0.0, 1.0);
+    desc.TMin = 0.0;
+    desc.TMax = 100.0;
+
+    RayQuery<RAY_FLAG_FORCE_OPAQUE> closest;
+    closest.TraceRayInline(tlas, RAY_FLAG_NONE, 0xFF, desc);
+    closest.Proceed();
+    const bool hit = closest.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
+    StoreOutFloat(pc, ray * 3 + 0, hit ? closest.CommittedRayT() : -1.0);
+    StoreOut(pc, ray * 3 + 1, hit ? closest.CommittedInstanceIndex() : 0xFFFFFFFFu);
+
+    RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> any;
+    any.TraceRayInline(tlas, RAY_FLAG_NONE, 0xFF, desc);
+    any.Proceed();
+    StoreOut(pc, ray * 3 + 2, any.CommittedStatus() == COMMITTED_TRIANGLE_HIT ? 1u : 0u);
+}
+
 // =====================================================================================================================================
 // Graphics: rendered offscreen into a 64 x 64 RGBA8 target (cleared to opaque black) with NoxRHI's +Y-up viewport
 // (setViewportWithCount with a negative height: Vulkan is flipped to D3D's convention, D3D12 needs no flip), then copied back.
