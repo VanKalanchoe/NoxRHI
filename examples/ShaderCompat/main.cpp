@@ -165,6 +165,22 @@ namespace
 
     float RoundHalf(float f) { return HalfToFloat(FloatToHalf(f)); }
 
+    // Round toward zero (for normal and subnormal halves; overflow gives the largest finite half).
+    float RoundHalfTowardZero(float value)
+    {
+        const uint32_t f = AsUint(value);
+        const uint32_t sign = (f >> 16) & 0x8000u;
+        const int32_t exponent = static_cast<int32_t>((f >> 23) & 0xFF) - 127 + 15;
+        const uint32_t mantissa = f & 0x7FFFFFu;
+        if (((f >> 23) & 0xFF) == 0xFF)
+            return value;
+        if (exponent >= 31)
+            return HalfToFloat(static_cast<uint16_t>(sign | 0x7BFFu));
+        if (exponent <= 0)
+            return exponent < -10 ? HalfToFloat(static_cast<uint16_t>(sign)) : HalfToFloat(static_cast<uint16_t>(sign | ((mantissa | 0x800000u) >> (14 - exponent))));
+        return HalfToFloat(static_cast<uint16_t>(sign | (static_cast<uint32_t>(exponent) << 10) | (mantissa >> 13)));
+    }
+
     uint32_t FirstBitHigh(uint32_t u) { return u == 0 ? 0xFFFFFFFFu : 31u - static_cast<uint32_t>(std::countl_zero(u)); }
     uint32_t FirstBitLow(uint32_t u) { return u == 0 ? 0xFFFFFFFFu : static_cast<uint32_t>(std::countr_zero(u)); }
     uint32_t ReverseBits(uint32_t u)
@@ -347,7 +363,7 @@ namespace
                 NriAccelerationStructureTrianglesDesc triangle{};
                 triangle.vertexBufferAddress = m_Vertices.getDeviceAddress();
                 triangle.vertexStride = 12;
-                triangle.maxVertex = 3;
+                triangle.maxVertex = 2; // (the highest index, as in Vulkan)
                 triangle.indexBufferAddress = m_Indices.getDeviceAddress();
                 triangle.primitiveCount = 1;
                 triangle.isOpaque = true;
@@ -868,14 +884,29 @@ namespace
             r.raw = got;
             for (uint32_t i = 0; i < n; ++i)
             {
-                const float a = RoundHalf(AsFloat(in[i]));
-                const float separate = RoundHalf(RoundHalf(a * 1.5f) - 0.25f), fused = RoundHalf(a * 1.5f - 0.25f);
+                // Narrowing float conversions may round to nearest even or toward zero on both APIs (WARP converts the float input
+                // toward zero), and the multiply-add may be fused (one rounding) or not: every combination is right, and every one is
+                // a 16-bit value -- math done in 32 bits does not match.
                 const float g = AsFloat(got[i]);
-                // (a GPU may fuse the multiply-add -- one rounding -- or not: either is right)
-                if (g != separate && g != fused && !Near(g, fused, 0, 1.0f / 1024.0f))
+                bool matched = false;
+                float nearest = 0.0f;
+                for (int mode = 0; mode < 2 && !matched; ++mode)
+                {
+                    const auto round = [mode](float v) { return mode == 0 ? RoundHalf(v) : RoundHalfTowardZero(v); };
+                    for (int inputMode = 0; inputMode < 2 && !matched; ++inputMode)
+                    {
+                        const float a = inputMode == 0 ? RoundHalf(AsFloat(in[i])) : RoundHalfTowardZero(AsFloat(in[i]));
+                        const float separate = round(round(a * 1.5f) - 0.25f), fused = round(a * 1.5f - 0.25f);
+                        if (mode == 0 && inputMode == 0)
+                            nearest = fused;
+                        matched = g == separate || g == fused;
+                    }
+                }
+                if (!matched)
                 {
                     r.status = Status::Fail;
-                    r.detail = "half(" + std::to_string(a) + ") * 1.5 - 0.25 = " + std::to_string(g) + ", expected " + std::to_string(fused);
+                    r.detail = "half(" + std::to_string(AsFloat(in[i])) + ") * 1.5 - 0.25 = " + std::to_string(g) + ", expected " + std::to_string(nearest) +
+                               " (or the same rounded toward zero)";
                     return r;
                 }
             }

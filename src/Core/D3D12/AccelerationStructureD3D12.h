@@ -1,10 +1,23 @@
 #pragma once
+#include <vector>
 #include "D3D12Common.h"
 #include "../AccelerationStructure.h"
 
 namespace NRI
 {
     class DeviceD3D12;
+
+    // One NRI build description as D3D12 build inputs. The size query, the build and the update all use it: D3D12 requires the
+    // geometry and the flags of a build to be the ones its sizes were queried with.
+    struct D3D12AccelerationStructureInputs
+    {
+        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs{};
+        std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> geometries; // (inputs.pGeometryDescs points here: do not copy the struct)
+
+        D3D12AccelerationStructureInputs(const AccelerationStructureBuildDesc& desc, bool performUpdate);
+        D3D12AccelerationStructureInputs(const D3D12AccelerationStructureInputs&) = delete;
+        D3D12AccelerationStructureInputs& operator=(const D3D12AccelerationStructureInputs&) = delete;
+    };
 
     class AccelerationStructureD3D12 final : public AccelerationStructure
     {

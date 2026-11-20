@@ -544,85 +544,24 @@ namespace NRI
 
     void CommandBufferD3D12::buildAccelerationStructure(const AccelerationStructureBuildDesc& buildDesc, uint64_t scratchAddress, AccelerationStructure& dstAS)
     {
+        const D3D12AccelerationStructureInputs build(buildDesc, false);
         D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC desc{};
         desc.DestAccelerationStructureData = dstAS.getDeviceAddress();
         desc.ScratchAccelerationStructureData = scratchAddress;
-
-        if (buildDesc.type == AccelerationStructureType::BottomLevel)
-        {
-            desc.Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
-            desc.Inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
-            desc.Inputs.NumDescs = static_cast<UINT>(buildDesc.triangles.size());
-            desc.Inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
-
-            std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> geomDescs(buildDesc.triangles.size());
-            for (size_t i = 0; i < buildDesc.triangles.size(); ++i)
-            {
-                const auto& tri = buildDesc.triangles[i];
-                geomDescs[i].Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
-                geomDescs[i].Flags = tri.isOpaque ? D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE : D3D12_RAYTRACING_GEOMETRY_FLAG_NONE;
-                geomDescs[i].Triangles.VertexBuffer.StartAddress = tri.vertexBufferAddress;
-                geomDescs[i].Triangles.VertexBuffer.StrideInBytes = tri.vertexStride;
-                geomDescs[i].Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
-                geomDescs[i].Triangles.VertexCount = tri.maxVertex;
-                geomDescs[i].Triangles.IndexBuffer = tri.indexBufferAddress + tri.primitiveOffset;
-                geomDescs[i].Triangles.IndexCount = tri.primitiveCount * 3;
-                geomDescs[i].Triangles.IndexFormat = DXGI_FORMAT_R32_UINT;
-            }
-            desc.Inputs.pGeometryDescs = geomDescs.data();
-            m_cmdList->BuildRaytracingAccelerationStructure(&desc, 0, nullptr);
-        }
-        else
-        {
-            desc.Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
-            desc.Inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
-            desc.Inputs.NumDescs = buildDesc.instances.instanceCount;
-            desc.Inputs.InstanceDescs = buildDesc.instances.instanceBufferAddress;
-            desc.Inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
-            m_cmdList->BuildRaytracingAccelerationStructure(&desc, 0, nullptr);
-        }
+        desc.Inputs = build.inputs;
+        m_cmdList->BuildRaytracingAccelerationStructure(&desc, 0, nullptr);
     }
 
     void CommandBufferD3D12::updateAccelerationStructure(const AccelerationStructureBuildDesc& buildDesc, uint64_t scratchAddress, AccelerationStructure& srcAS, AccelerationStructure& dstAS)
     {
+        // (the structure must have been built with AllowUpdate: the D3D12 debug layer reports it otherwise)
+        const D3D12AccelerationStructureInputs build(buildDesc, true);
         D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC desc{};
         desc.SourceAccelerationStructureData = srcAS.getDeviceAddress();
         desc.DestAccelerationStructureData = dstAS.getDeviceAddress();
         desc.ScratchAccelerationStructureData = scratchAddress;
-
-        if (buildDesc.type == AccelerationStructureType::BottomLevel)
-        {
-            desc.Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
-            desc.Inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
-            desc.Inputs.NumDescs = static_cast<UINT>(buildDesc.triangles.size());
-            desc.Inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE | D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
-
-            std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> geomDescs(buildDesc.triangles.size());
-            for (size_t i = 0; i < buildDesc.triangles.size(); ++i)
-            {
-                const auto& tri = buildDesc.triangles[i];
-                geomDescs[i].Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
-                geomDescs[i].Flags = tri.isOpaque ? D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE : D3D12_RAYTRACING_GEOMETRY_FLAG_NONE;
-                geomDescs[i].Triangles.VertexBuffer.StartAddress = tri.vertexBufferAddress;
-                geomDescs[i].Triangles.VertexBuffer.StrideInBytes = tri.vertexStride;
-                geomDescs[i].Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
-                geomDescs[i].Triangles.VertexCount = tri.maxVertex;
-                geomDescs[i].Triangles.IndexBuffer = tri.indexBufferAddress + tri.primitiveOffset;
-                geomDescs[i].Triangles.IndexCount = tri.primitiveCount * 3;
-                geomDescs[i].Triangles.IndexFormat = DXGI_FORMAT_R32_UINT;
-            }
-            desc.Inputs.pGeometryDescs = geomDescs.data();
-            m_cmdList->BuildRaytracingAccelerationStructure(&desc, 0, nullptr);
-        }
-        else
-        {
-            desc.Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
-            desc.Inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
-            desc.Inputs.NumDescs = buildDesc.instances.instanceCount;
-            desc.Inputs.InstanceDescs = buildDesc.instances.instanceBufferAddress;
-            desc.Inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE | D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
-            m_cmdList->BuildRaytracingAccelerationStructure(&desc, 0, nullptr);
-        }
+        desc.Inputs = build.inputs;
+        m_cmdList->BuildRaytracingAccelerationStructure(&desc, 0, nullptr);
     }
 
     void CommandBufferD3D12::accelerationStructureBarrier(AccelerationStructureBarrierType barrierType)

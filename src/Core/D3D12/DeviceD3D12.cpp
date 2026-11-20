@@ -410,24 +410,9 @@ namespace NRI
 
     AccelerationStructureBuildSizes DeviceD3D12::getAccelerationStructureBuildSizes(const AccelerationStructureBuildDesc& desc)
     {
-        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs{};
-        inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
-
-        if (desc.type == AccelerationStructureType::BottomLevel)
-        {
-            inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
-            inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
-            inputs.NumDescs = static_cast<UINT>(desc.triangles.size());
-        }
-        else
-        {
-            inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
-            inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
-            inputs.NumDescs = desc.instances.instanceCount;
-        }
-
+        const D3D12AccelerationStructureInputs build(desc, false);
         D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO prebuildInfo{};
-        m_device->GetRaytracingAccelerationStructurePrebuildInfo(&inputs, &prebuildInfo);
+        m_device->GetRaytracingAccelerationStructurePrebuildInfo(&build.inputs, &prebuildInfo);
 
         AccelerationStructureBuildSizes sizes{};
         sizes.accelerationStructureSize = prebuildInfo.ResultDataMaxSizeInBytes;
