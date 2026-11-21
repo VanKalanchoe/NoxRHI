@@ -2,7 +2,7 @@
 // ExampleApp.h -- what every cross-API example shares: an SDL window, the API picked on the command line, the device, swapchain,
 // descriptor heaps, shader compiler and render graph, the frame loop, and the host side of nox_gpu.slang's buffer references.
 //
-//   <Example>.exe --vk | --dx12 [--frames N] [--vsync] [--tearing]
+//   <Example>.exe --vk | --dx12 [--frames N] [--vsync] [--tearing] [--verbose]
 //
 // Without --vsync the frame rate is uncapped and the newest finished frame is shown without tearing (Vulkan MAILBOX, D3D12 Present(0, 0));
 // --tearing allows tearing instead (Vulkan IMMEDIATE, D3D12 DXGI_PRESENT_ALLOW_TEARING), as NVIDIA's NRI with SwapChainBits::ALLOW_TEARING.
@@ -37,11 +37,16 @@
 namespace nox
 {
     inline int g_Errors = 0;
+    inline bool g_Verbose = false; // (--verbose: NoxRHI's information lines too, e.g. the swapchain's present mode)
 
     inline void NRI_CALL OnNriLog(NriLogLevel level, const char* message, void*)
     {
         if (level == NRI_LOG_INFO)
+        {
+            if (g_Verbose)
+                std::fprintf(stderr, "[NoxRHI][INFO] %s\n", message);
             return;
+        }
         std::fprintf(stderr, "[NoxRHI][%s] %s\n", level == NRI_LOG_ERROR ? "ERROR" : "WARN", message);
         if (level == NRI_LOG_ERROR)
             ++g_Errors;
@@ -319,6 +324,8 @@ namespace nox
                     vsync = true;
                 else if (!std::strcmp(argv[i], "--tearing"))
                     tearing = true;
+                else if (!std::strcmp(argv[i], "--verbose"))
+                    g_Verbose = true;
                 else if (!std::strcmp(argv[i], "--probe"))
                     m_ProbesOn = true;
                 else if (!std::strcmp(argv[i], "--shader-checks"))
@@ -392,7 +399,10 @@ namespace nox
                         BaselineState(cmd);
                 });
 
-                std::printf("[%s] %s\n", example.Name(), ApiName());
+                std::printf("[%s] %s, present: %s\n", example.Name(), ApiName(),
+                            vsync ? (IsD3D12() ? "vsync (Present(1, 0))" : "vsync (FIFO)")
+                            : tearing ? (IsD3D12() ? "uncapped, tearing (Present(0, ALLOW_TEARING))" : "uncapped, tearing (IMMEDIATE, else FIFO)")
+                                      : (IsD3D12() ? "uncapped, no tearing (Present(0, 0))" : "uncapped, no tearing (MAILBOX, else FIFO)"));
                 example.Init(*this);
             }
             catch (const std::exception& e)
