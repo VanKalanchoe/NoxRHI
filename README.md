@@ -147,7 +147,7 @@ buffer in the shader instead).
 
 ## Cross-API Examples (one Slang source, `--vk` or `--dx12`)
 
-Four windowed examples, each drawn from **one** Slang file with no `#ifdef` of its own. Run each twice and compare: the window title names
+Five windowed examples, each drawn from **one** Slang file with no `#ifdef` of its own. Run each twice and compare: the window title names
 the API (and shows the fps and any live numbers).
 
 ```bat
@@ -155,6 +155,7 @@ build\Debug\GpuParticles.exe --vk          build\Debug\GpuParticles.exe --dx12
 build\Debug\BindlessScene.exe --vk         build\Debug\BindlessScene.exe --dx12
 build\Debug\MeshletCulling.exe --vk        build\Debug\MeshletCulling.exe --dx12
 build\Debug\RayQueryShadows.exe --vk       build\Debug\RayQueryShadows.exe --dx12
+build\Debug\PathTracer.exe --vk            build\Debug\PathTracer.exe --dx12         (--dlss-rr: Streamline on, DLSS-RR mode)
 :: --frames N: render N frames and exit (non-zero if NoxRHI, the D3D12 debug layer / Vulkan validation or the render graph reported an error)
 ```
 
@@ -164,16 +165,62 @@ build\Debug\RayQueryShadows.exe --vk       build\Debug\RayQueryShadows.exe --dx1
 | `BindlessScene` | 144 instanced cubes, each with its own texture from a bindless table (a non-uniform index: `SampleNonUniform`); per-frame constants from a CPU-written buffer; HDR target + reverse-Z depth; compute tonemap into a storage texture; fullscreen present | Space: pause |
 | `MeshletCulling` | task + mesh shaders: the task shader culls 576 spheres x 38 meshlets (frustum + normal cone), the mesh shader reads **byte-packed** triangle indices with `LoadByte`; the drawn count is read back into the title | F: freeze culling, C: colours, Space |
 | `RayQueryShadows` | a rasterized scene whose fragment shader casts shadow and ambient-occlusion rays with `RayQuery` against a TLAS rebuilt every frame (one per frame in flight) | S: shadows, A: AO rays, Space |
+| `PathTracer` | a 1-sample-per-pixel path tracer (ray queries in a compute shader: sun + sky, a diffuse and a specular bounce) denoised by **NRD** (REBLUR) or **DLSS Ray Reconstruction** (Streamline), next to an accumulated reference; shows each denoiser's input guides | 1 reference, 2 noisy, 3 NRD, 4 DLSS-RR, G guides, Space, +/- |
 
 `examples/Common` holds what they share: `ExampleApp.h` (window, API choice, device, swapchain, descriptor heaps, render graph, frame loop,
 uploads, buffer references), `ExampleMath.h` (column-major matrices, reverse-Z projection) and **`nox_gpu.slang`**, the one header that hides
-what differs between the two APIs' shaders. CI runs all four on D3D12 (WARP, debug layer on) for 30 frames on every push, plus
-`MeshletCulling --indirect` and `MeshletCulling --shader-checks`.
+what differs between the two APIs' shaders. CI runs all five on D3D12 (WARP, debug layer on) for 30 frames on every push, plus
+`MeshletCulling --indirect`, `MeshletCulling --shader-checks` and PathTracer's noisy mode and guides (CI builds without NRD / Streamline).
 
 Options every cross-API example takes: `--vk` / `--dx12`, `--frames N` (quit after N frames: the exit code says whether anything failed),
 `--vsync`, `--probe` (print what a render-graph texture holds) and `--shader-checks` (below). `MeshletCulling` also takes `--no-cull`
 (every meshlet drawn) and `--indirect` (the group count read by the GPU from an argument buffer -- `drawMeshTasksIndirect`, as the Nox
 engine draws -- instead of a direct `drawMeshTasks`).
+
+### PathTracer: NRD and DLSS Ray Reconstruction on both APIs
+
+`PathTracer` writes, every frame, exactly what each denoiser's headers ask for (NRD 4.17 `NRD.hlsli` / `NRDSettings.h`, Streamline
+2.14 `sl_dlss_d.h` as NoxRHI's Streamline context feeds it):
+
+| Input | NRD (REBLUR_DIFFUSE_SPECULAR) | DLSS-RR |
+|---|---|---|
+| depth | view-space Z, `R32_SFLOAT` (either sign; the sky beyond `denoisingRange`) | reverse-Z hardware depth (`depthInverted` is set), `R32_SFLOAT` |
+| motion | 2D, uv units, `prevUv = uv + mv`, `RG16F` (`motionVectorScale` 1, 1, 0) | the same texture (`mvecScale` 1, 1) |
+| normal + roughness | `NRD_FrontEnd_PackNormalAndRoughness` (encoding 2: `R10G10B10A2_UNORM`), linear roughness | world normal + linear roughness, `RGBA16F` (packed mode) |
+| signal | demodulated diffuse / specular radiance (material colour divided out) + the bounce's hit distance normalized by `REBLUR_FrontEnd_GetNormHitDist` (A, B, C = 3, 0.1, 20, the values REBLUR is given) | the noisy colour (`RGBA16F`), diffuse + specular albedo, the specular hit distance in world units (`R16F`) |
+| camera | column-major view / projection, current and previous (no jitter) | the same (NoxRHI transposes for Streamline); DLAA, no jitter |
+
+Run it, press **G** to step through the guides (normal, roughness, view Z, motion, albedos, hit distance, depth) and check them by eye,
+then compare **3** (NRD) and **4** (DLSS-RR) with **1** (the reference: press Space to stop the camera and let it accumulate). NRD needs
+the NRD SDK (`vendors/NRD`, from `scripts\install_dependencies.bat`) when NoxRHI is built -- its shader header is compiled into the path
+tracer (`NOX_HAS_NRD`). DLSS-RR needs the Streamline SDK, `--dlss-rr` (Streamline must be loaded before the device is created) and an
+NVIDIA RTX GPU. Without them those modes show the noisy image and say why. Tested: the path tracer, its guides and the reference compile
+and validate for both APIs (with and without NRD's header) and run in CI on D3D12; NRD and DLSS-RR run only on a machine with the SDKs
+and an NVIDIA GPU -- not tested here.
+
+**Streamline with `VK_EXT_descriptor_heap` (Streamline issues #109 and #122).** On Vulkan with descriptor heaps, DLSS reads none of the
+tagged images (a black result) unless a classic descriptor set is bound on the command buffer right before `slEvaluateFeature`. NVIDIA
+acknowledged it (#109, labels `bug` + `ack`, nvbug 6436675) and has not fixed it yet; the empty descriptor set is the known workaround,
+and NoxRHI's Streamline context binds one before every evaluate (`StreamlineContext.cpp`) -- it was not a mistake in the Nox engine. It
+cannot help DLSS frame generation (DLSS-G has no evaluate call on the application side). NVIDIA's own samples avoid Streamline here: NRI
+calls NGX directly for DLSS-SR / DLSS-RR (`NRIUpscaler.h`) and supports `VK_EXT_descriptor_heap`; an NGX path in NoxRHI would do the same.
+
+**After NRD or DLSS, NoxRHI binds its state again.** Both record into NoxRHI's command buffer with their own pipelines and descriptor
+sets (NRD on D3D12 also its own descriptor heaps and root signature), and Streamline runs with manual hooking and no command-list state
+tracking, so it restores nothing (NVIDIA's NRD sample calls `RestoreBindings` for the same reason). The extensions now call
+`restoreBindingsAfterExternalWork` after their dispatches: the descriptor heaps (and on D3D12 the root signature) are bound again and the
+cached pipeline is forgotten -- on D3D12 a pass after NRD in the same command list would otherwise read through NRD's heap, or run NRD's
+last shader when it bound the same pipeline as before. Code that records its own native commands calls
+`nriCmdRestoreBindingsAfterExternalWork` (or `CommandBuffer::restoreBindingsAfterExternalWork`) the same way.
+
+### What works the same on both APIs, with nothing to set
+
+- **Matrices:** plain `float4x4` and `mul(M, v)` everywhere (porting note 6) -- column-major on the C++ side, as glm and NVIDIA's MathLib.
+- **Buffers:** `BufferRef` / `RWBufferRef` (an address on Vulkan, a descriptor on D3D12); structs inside buffers have one layout.
+- **Push data:** `uint64_t` references + a `property` (D3D12's constant-buffer packing); NoxRHI reports a push struct that differs.
+- **Shaders:** each Vulkan shader gets the SPIR-V of its own entry point (porting note 10), as D3D12 does.
+- **External libraries:** NoxRHI's bindings come back after NRD / Streamline (above).
+- **Bugs that only crash Vulkan:** `--shader-checks` (below) reports the out-of-range index D3D12's bounds checks hide.
 
 ### Shader checks (`--shader-checks`): out-of-range indices reported instead of a lost device
 
@@ -307,7 +354,7 @@ lavapipe has none of them). The windowed examples create a Win32 surface, so on 
 | `NRI_ENABLE_STREAMLINE` | `ON` | Enable NVIDIA Streamline (DLSS-SR / DLSS-RR) extension |
 | `NRI_ENABLE_NRD` | `ON` | Enable NVIDIA NRD (SIGMA / REBLUR / RELAX) denoiser extension |
 | `NRI_ENABLE_PCH` | `ON` | Use private precompiled headers inside `NoxRHI::Core` for faster builds |
-| `NRI_BUILD_EXAMPLES` | `ON` | Build `ShaderCompat`, `HeadlessNone`, `HeadlessRender`, `StreamlineNRDDemo`, `ClearScreen`, `RenderGraphTriangle`, `TexturedQuads`, `ImGuiDemo`, `GpuParticles`, `BindlessScene`, `MeshletCulling` and `RayQueryShadows` |
+| `NRI_BUILD_EXAMPLES` | `ON` | Build `ShaderCompat`, `HeadlessNone`, `HeadlessRender`, `StreamlineNRDDemo`, `ClearScreen`, `RenderGraphTriangle`, `TexturedQuads`, `ImGuiDemo`, `GpuParticles`, `BindlessScene`, `MeshletCulling`, `RayQueryShadows` and `PathTracer` |
 
 ---
 

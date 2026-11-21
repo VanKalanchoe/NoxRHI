@@ -98,7 +98,7 @@ jobs:
           $failed = 0
           Write-Host "=== BindlessScene --probe ==="
           ./BindlessScene.exe --dx12 --frames 5 --probe
-          foreach ($example in 'GpuParticles', 'BindlessScene', 'MeshletCulling', 'RayQueryShadows') {
+          foreach ($example in 'GpuParticles', 'BindlessScene', 'MeshletCulling', 'RayQueryShadows', 'PathTracer') {
             Write-Host "=== $example ==="
             & "./$example.exe" --dx12 --frames 30
             $code = $LASTEXITCODE
@@ -111,6 +111,14 @@ jobs:
             & ./MeshletCulling.exe --dx12 --frames 30 @options
             $code = $LASTEXITCODE
             if ($code -ne 0) { Write-Host ("MeshletCulling $options exit code: {0} (0x{0:X8})" -f $code); $failed = 1 }
+          }
+          # PathTracer (CI builds without NRD / Streamline): the reference and noisy images with the probe (their averages: not black),
+          # a guide view, and the shader checks.
+          foreach ($options in @('--probe'), @('--mode', 'noisy', '--probe'), @('--guide', '1'), @('--shader-checks')) {
+            Write-Host "=== PathTracer $options ==="
+            & ./PathTracer.exe --dx12 --frames 12 @options
+            $code = $LASTEXITCODE
+            if ($code -ne 0) { Write-Host ("PathTracer $options exit code: {0} (0x{0:X8})" -f $code); $failed = 1 }
           }
           Pop-Location
           exit $failed

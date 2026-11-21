@@ -394,6 +394,13 @@ if(NRI_BUILD_EXAMPLES)
         noxrhi_add_cross_api_example(BindlessScene)
         noxrhi_add_cross_api_example(MeshletCulling)
         noxrhi_add_cross_api_example(RayQueryShadows)
+        noxrhi_add_cross_api_example(PathTracer)
+        # PathTracer's NRD mode packs its inputs with NRD's own shader functions (NRD.hlsli + the generated NRDConfig.hlsli); its DLSS-RR
+        # and NRD modes need the Streamline / NRD DLLs beside it.
+        if(NOXRHI_HAS_NRD AND EXISTS "${NOXRHI_NRD_DIR}/Shaders/NRD.hlsli")
+            target_compile_definitions(PathTracer PRIVATE NOXRHI_NRD_SHADER_DIR="${NOXRHI_NRD_DIR}/Shaders")
+        endif()
+        noxrhi_copy_streamline_nrd_deps(PathTracer)
 
         find_package(Stb QUIET)
         if(Stb_FOUND OR DEFINED Stb_INCLUDE_DIR)

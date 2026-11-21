@@ -109,6 +109,8 @@ namespace nox
         virtual void OnKey(SDL_Keycode) {}
         // Command-line arguments the host does not know (before Init); return how many were used (0: not this example's).
         virtual int OnArgument(int /*argc*/, char** /*argv*/, int /*index*/) { return 0; }
+        // Before the device is created (after the arguments): e.g. desc.enableStreamline for DLSS.
+        virtual void ConfigureDevice(nri::DeviceDesc& /*desc*/) {}
     };
 
     class Host
@@ -350,6 +352,7 @@ namespace nox
                 const std::string cache = std::string("shader_cache_") + example.Name() + (IsD3D12() ? "_dx12" : "_vk");
                 desc.shaderCacheDir = cache.c_str();
                 desc.logCallback = OnNriLog;
+                example.ConfigureDevice(desc);
                 device = nri::createDevice(desc);
                 swapchain = nri::createSwapchain(device, { uint32_t(m_Width), uint32_t(m_Height), vsync });
 
