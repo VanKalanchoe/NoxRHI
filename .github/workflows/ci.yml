@@ -114,7 +114,7 @@ jobs:
           }
           # PathTracer (CI builds without NRD / Streamline): the reference and noisy images with the probe (their averages: not black),
           # a guide view, and the shader checks.
-          foreach ($options in @('--probe'), @('--mode', 'noisy', '--probe'), @('--guide', '1'), @('--shader-checks')) {
+          foreach ($options in @('--probe'), @('--mode', 'noisy', '--probe'), @('--guide', '1'), @('--shader-checks'), @('--watch')) {
             Write-Host "=== PathTracer $options ==="
             & ./PathTracer.exe --dx12 --frames 12 @options
             $code = $LASTEXITCODE

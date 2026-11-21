@@ -173,7 +173,7 @@ what differs between the two APIs' shaders. CI runs all five on D3D12 (WARP, deb
 `MeshletCulling --indirect`, `MeshletCulling --shader-checks` and PathTracer's noisy mode and guides (CI builds without NRD / Streamline).
 
 Options every cross-API example takes: `--vk` / `--dx12`, `--frames N` (quit after N frames: the exit code says whether anything failed),
-`--vsync`, `--tearing`, `--verbose` (NoxRHI's information lines too), `--probe` (print what a render-graph texture holds) and `--shader-checks` (below). `MeshletCulling` also takes `--no-cull`
+`--vsync`, `--tearing`, `--verbose` (NoxRHI's information lines too), `--watch` (below), `--probe` (print what a render-graph texture holds) and `--shader-checks` (below). `MeshletCulling` also takes `--no-cull`
 (every meshlet drawn) and `--indirect` (the group count read by the GPU from an argument buffer -- `drawMeshTasksIndirect`, as the Nox
 engine draws -- instead of a direct `drawMeshTasks`).
 
@@ -263,6 +263,13 @@ updating for about a second while the frames keep running (not seen on D3D12, no
 reported by synchronization validation). `NOXRHI_VK_NRD_DUMMY_SET=0` turns it off, to compare. The Nox engine's NRD integration is the
 same as NoxRHI's (same queues, queued frames, states, heaps rebound after NRD); its path tracer resets NRD's history whenever the camera
 moves, so it never runs NRD's reprojection with a moving camera, which the PathTracer does every frame.
+
+**`--watch`: is the picture frozen on the GPU, or only on the screen?** Every frame a 64 x 64 patch from the centre of a texture is read
+back and compared with the frame before; a run of identical frames longer than 100 ms is printed when it ends:
+`[PathTracer] Vulkan: watch 'Display': the same pixels for 412 frames (1003 ms), frames 5120-5531`. PathTracer watches its final image, and
+in NRD mode also NRD's diffuse input (the path tracer's) and output. While the camera moves none of them should ever repeat: a frozen
+screen with no such line is the display not showing new frames; a line for `Display` and `NRD diffuse output` but not `NRD diffuse input`
+is NRD not writing new results.
 
 **Stalls.** Every example prints a frame whose host side took over 150 ms with where the time went:
 `[PathTracer] Vulkan: frame 812 stalled 2300 ms -- acquire (frame fence + swapchain image) 2299 ms, record 1 ms, submit 0 ms, present 0 ms`.

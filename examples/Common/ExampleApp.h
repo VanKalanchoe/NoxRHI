@@ -2,7 +2,7 @@
 // ExampleApp.h -- what every cross-API example shares: an SDL window, the API picked on the command line, the device, swapchain,
 // descriptor heaps, shader compiler and render graph, the frame loop, and the host side of nox_gpu.slang's buffer references.
 //
-//   <Example>.exe --vk | --dx12 [--frames N] [--vsync] [--tearing] [--verbose]
+//   <Example>.exe --vk | --dx12 [--frames N] [--vsync] [--tearing] [--verbose] [--watch]
 //
 // Without --vsync the frame rate is uncapped and the newest finished frame is shown without tearing (Vulkan MAILBOX, D3D12 Present(0, 0));
 // --tearing allows tearing instead (Vulkan IMMEDIATE, D3D12 DXGI_PRESENT_ALLOW_TEARING), as NVIDIA's NRI with SwapChainBits::ALLOW_TEARING.
@@ -307,6 +307,33 @@ namespace nox
                 });
         }
 
+        // --watch: a 64 x 64 patch from the centre of a render-graph texture is read back every frame and compared with the frame before;
+        // when it stayed the same for over 100 ms (and at least 3 frames) the run is printed when it ends -- "the GPU wrote the same
+        // pixels for N frames". To tell a picture that stops updating on the GPU from one that the display stops showing.
+        void Watch(nri::RenderGraph& graph, nri::RGTexture texture, const char* name, uint32_t bytesPerPixel, const FrameInfo& frame)
+        {
+            if (!m_WatchOn || frame.extent.width < 64 || frame.extent.height < 64)
+                return;
+            WatchSlot& watch = m_Watches[name];
+            const uint64_t bytes = 64ull * 64 * bytesPerPixel;
+            if (watch.pending[frame.frameSlot])
+                CheckWatch(name, watch, frame.frameSlot, bytes);
+            if (!watch.readback[frame.frameSlot])
+                watch.readback[frame.frameSlot] = device.createBuffer({ .size = bytes, .usage = NRI_BUFFER_USAGE_READBACK });
+            watch.pending[frame.frameSlot] = true;
+            watch.frameNumber[frame.frameSlot] = frame.frameNumber;
+            const nri::RGBuffer target = graph.ImportBuffer((std::string("Watch ") + name).c_str(), watch.readback[frame.frameSlot]);
+            const uint32_t x = frame.extent.width / 2 - 32, y = frame.extent.height / 2 - 32;
+            graph.AddPass((std::string("Watch ") + name).c_str(), nri::RGPassFlags::None,
+                [&](nri::RGBuilder& b) {
+                    b.Read(texture, nri::RGTextureAccess::CopySource);
+                    b.Write(target, nri::RGBufferAccess::CopyDestination);
+                },
+                [texture, target, x, y](nri::RGPassContext& ctx) {
+                    nriTextureCopyToBuffer(ctx.Texture(texture), ctx.Cmd().handle(), ctx.Buffer(target), x, y, 64, 64);
+                });
+        }
+
         // --- the app -------------------------------------------------------------------------------------------------------------
 
         bool Start(Example& example, int argc, char** argv)
@@ -328,6 +355,8 @@ namespace nox
                     g_Verbose = true;
                 else if (!std::strcmp(argv[i], "--probe"))
                     m_ProbesOn = true;
+                else if (!std::strcmp(argv[i], "--watch"))
+                    m_WatchOn = true;
                 else if (!std::strcmp(argv[i], "--shader-checks"))
                     m_ChecksOn = true;
                 else if (const int used = example.OnArgument(argc, argv, i); used > 0)
@@ -549,6 +578,7 @@ namespace nox
                 for (nri::Buffer& readback : m_ChecksReadback)
                     readback.reset();
                 m_Probes.clear();
+                m_Watches.clear();
                 m_Example->Shutdown(*this);
                 graph.ReleaseResources();
             }
@@ -753,6 +783,45 @@ namespace nox
 
         std::map<std::string, ProbeSlot> m_Probes;
         bool m_ProbesOn = false;
+
+        struct WatchSlot
+        {
+            nri::Buffer readback[kFramesInFlight];
+            bool pending[kFramesInFlight]{};
+            uint64_t frameNumber[kFramesInFlight]{};
+            uint64_t lastHash = 0, runFirstFrame = 0, runFrames = 0;
+            std::chrono::steady_clock::time_point runStart{};
+            bool any = false;
+        };
+
+        void CheckWatch(const char* name, WatchSlot& watch, uint32_t slot, uint64_t bytes)
+        {
+            watch.pending[slot] = false;
+            const auto* data = static_cast<const uint8_t*>(watch.readback[slot].map(0, bytes));
+            uint64_t hash = 1469598103934665603ull; // (FNV-1a)
+            for (uint64_t i = 0; i < bytes; ++i)
+                hash = (hash ^ data[i]) * 1099511628211ull;
+            watch.readback[slot].unmap();
+            const auto now = std::chrono::steady_clock::now();
+            if (watch.any && hash == watch.lastHash)
+            {
+                ++watch.runFrames;
+                return;
+            }
+            const double ms = std::chrono::duration<double, std::milli>(now - watch.runStart).count();
+            if (watch.any && watch.runFrames >= 2 && ms > 100.0)
+                std::printf("[%s] %s: watch '%s': the same pixels for %llu frames (%.0f ms), frames %llu-%llu\n", m_Example->Name(), ApiName(), name,
+                            static_cast<unsigned long long>(watch.runFrames + 1), ms, static_cast<unsigned long long>(watch.runFirstFrame),
+                            static_cast<unsigned long long>(watch.runFirstFrame + watch.runFrames));
+            watch.any = true;
+            watch.lastHash = hash;
+            watch.runStart = now;
+            watch.runFrames = 0;
+            watch.runFirstFrame = watch.frameNumber[slot];
+        }
+
+        std::map<std::string, WatchSlot> m_Watches;
+        bool m_WatchOn = false;
 
         std::string Title(float fps) const
         {

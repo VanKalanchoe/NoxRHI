@@ -359,6 +359,13 @@ public:
                 ctx.Cmd().dispatch(groupsX, groupsY, 1);
             });
 
+        // --watch: how long each of these kept the same pixels (the final image; in NRD mode also NRD's diffuse input and output).
+        host.Watch(graph, display, "Display", 8, frame);
+        if (mode == kNrd)
+        {
+            host.Watch(graph, diffuse, "NRD diffuse input", 8, frame);
+            host.Watch(graph, nrdDiffuse, "NRD diffuse output", 8, frame);
+        }
         host.Probe(graph, display, "Display", 8, frame); // (--probe: the composited image's average, e.g. to see in CI that it is not black)
 
         graph.AddPass("Present", nri::RGPassFlags::Raster,
