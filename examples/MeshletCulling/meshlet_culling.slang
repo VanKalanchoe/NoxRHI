@@ -4,10 +4,178 @@
 //   - the meshlet triangle stream is bytes (three local vertex indices per triangle). DXIL has no uint8_t, so the bytes are read out of
 //     32-bit words with nox_gpu.slang's LoadByte (identical on Vulkan) instead of through a uint8_t pointer;
 //   - the task payload holds 32-bit meshlet indices, not uint8_t offsets.
+// The mesh shader's indices go through NoxIndex / NOX_CHECK (nox_gpu.slang): nothing without --shader-checks; with it, an out-of-range
+// index is reported instead of faulting the GPU (how the Vulkan device loss of a task payload holding garbage was found).
+
+#include "nox_gpu.slang"
+
+static const uint kTaskGroupSize = 32;
+// The Nox engine's meshlet configuration (shaderIO.h: MAX_VERTICES / MAX_PRIMITIVES 64, MESH_SHADER_DISPATCH_X 32), proven on Vulkan:
+// 64 vertices and 64 triangles per meshlet, 32 mesh shader threads looping over both.
+static const uint kMaxVertices = 64;
+static const uint kMaxTriangles = 64;
+static const uint kMeshThreads = 32;
+
+struct Meshlet
+{
+    uint vertexOffset;   // first entry in meshletVertices
+    uint triangleOffset; // first byte in meshletTriangles
+    uint vertexCount;
+    uint triangleCount;
+    float4 sphere;       // xyz centre, w radius (mesh space)
+    float4 cone;         // xyz axis, w cutoff (> 1: never cull)
+};
+
+struct Vertex
+{
+    float4 position; // xyz
+    float4 normal;   // xyz
+};
+
+struct Instance
+{
+    float4 positionScale; // xyz position, w uniform scale
+    float4 color;         // rgb
+};
+
+struct View
+{
+    Mat4 viewProj;      // the camera that draws
+    float4 cullPlanes[5]; // the camera that culls (frozen with F): left, right, bottom, top, near
+    float4 cullPosition;  // xyz
+    uint meshletCount;    // meshlets per instance
+    uint instanceCount;
+    uint colorMode;       // 0: one colour per meshlet, 1: per instance
+    uint flags;           // bit 0: no culling (every meshlet visible)
+    uint vertexTotal;         // entries in vertices      (the bounds NOX_CHECK / NoxIndex test with --shader-checks)
+    uint meshletVertexTotal;  // entries in meshletVertices
+    uint triangleByteTotal;   // bytes in meshletTriangles
+    uint padding;
+};
+
+struct Push
+{
+    uint64_t viewRef;
+    uint64_t meshletsRef;
+    uint64_t meshletVerticesRef;
+    uint64_t meshletTrianglesRef; // packed bytes
+    uint64_t verticesRef;
+    uint64_t instancesRef;
+    uint64_t statsRef;          // [0]: meshlets drawn this frame
+
+    property BufferRef<View> view { get { return BufferRef<View>(viewRef); } }
+    property BufferRef<Meshlet> meshlets { get { return BufferRef<Meshlet>(meshletsRef); } }
+    property BufferRef<uint> meshletVertices { get { return BufferRef<uint>(meshletVerticesRef); } }
+    property BufferRef<uint> meshletTriangles { get { return BufferRef<uint>(meshletTrianglesRef); } }
+    property BufferRef<Vertex> vertices { get { return BufferRef<Vertex>(verticesRef); } }
+    property BufferRef<Instance> instances { get { return BufferRef<Instance>(instancesRef); } }
+    property RWBufferRef<uint> stats { get { return RWBufferRef<uint>(statsRef); } }
+};
+
+struct Payload
+{
+    uint items[kTaskGroupSize]; // instance * meshletCount + meshlet
+};
+
+bool IsVisible(View view, Meshlet meshlet, Instance instance)
+{
+    const float scale = instance.positionScale.w;
+    const float3 center = instance.positionScale.xyz + meshlet.sphere.xyz * scale;
+    const float radius = meshlet.sphere.w * scale;
+    [unroll]
+    for (int i = 0; i < 5; ++i)
+        if (dot(view.cullPlanes[i].xyz, center) + view.cullPlanes[i].w < -radius)
+            return false;
+    // Back-facing cone (meshoptimizer's test; instances are only translated and uniformly scaled, so the axis is unchanged).
+    const float3 toCenter = center - view.cullPosition.xyz;
+    return dot(toCenter, meshlet.cone.xyz) < meshlet.cone.w * length(toCenter) + radius;
+}
 
 
-// All of MeshletCulling's shaders in one module (the default). --split-files loads the task shader from meshlet_task.slang and the mesh /
-// fragment shaders from meshlet_mesh.slang instead, each compiled from its own file -- to tell whether keeping task and mesh shaders in
-// one Slang file matters on Vulkan.
-#include "meshlet_task.slang"
-#include "meshlet_mesh.slang"
+groupshared Payload gPayload;
+groupshared uint gVisibleCount;
+
+[shader("amplification")]
+[numthreads(kTaskGroupSize, 1, 1)]
+void tsCull(uint3 groupId : SV_GroupID, uint threadIndex : SV_GroupIndex, uniform Push pc)
+{
+    if (threadIndex == 0)
+        gVisibleCount = 0;
+    GroupMemoryBarrierWithGroupSync();
+
+    const View view = pc.view[0];
+    const uint item = groupId.x * kTaskGroupSize + threadIndex;
+    if (item < view.meshletCount * view.instanceCount)
+    {
+        const Meshlet meshlet = pc.meshlets[item % view.meshletCount];
+        const Instance instance = pc.instances[item / view.meshletCount];
+        if ((view.flags & 1) != 0 || IsVisible(view, meshlet, instance))
+        {
+            // (a groupshared counter, not wave intrinsics: the group may span several waves, e.g. on 16-wide hardware)
+            uint slot;
+            InterlockedAdd(gVisibleCount, 1, slot);
+            gPayload.items[slot] = item;
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if (threadIndex == 0)
+        AtomicAdd(pc.stats, 0, gVisibleCount);
+    DispatchMesh(gVisibleCount, 1, 1, gPayload);
+}
+
+struct MeshVertex
+{
+    float4 position : SV_Position;
+    float3 normal : NORMAL;
+    nointerpolation float3 color : COLOR0;
+};
+
+float3 HashColor(uint x)
+{
+    x = (x ^ 61u) ^ (x >> 16); x *= 9u; x ^= x >> 4; x *= 0x27d4eb2du; x ^= x >> 15;
+    return float3(float(x & 255u), float((x >> 8) & 255u), float((x >> 16) & 255u)) / 255.0 * 0.7 + 0.3;
+}
+
+[shader("mesh")]
+[outputtopology("triangle")]
+[numthreads(kMeshThreads, 1, 1)]
+void msMeshlet(uint3 groupId : SV_GroupID, uint threadIndex : SV_GroupIndex, in payload Payload payload, uniform Push pc,
+               OutputVertices<MeshVertex, kMaxVertices> outVertices, OutputIndices<uint3, kMaxTriangles> outTriangles)
+{
+    const View view = pc.view[0];
+    const uint item = NoxIndex(payload.items[NoxIndex(groupId.x, kTaskGroupSize)], view.meshletCount * view.instanceCount);
+    const Meshlet meshlet = pc.meshlets[item % view.meshletCount];
+    const Instance instance = pc.instances[item / view.meshletCount];
+    NOX_CHECK(meshlet.vertexCount <= kMaxVertices && meshlet.triangleCount <= kMaxTriangles, meshlet.vertexCount, meshlet.triangleCount);
+    NOX_CHECK(meshlet.vertexOffset + meshlet.vertexCount <= view.meshletVertexTotal, meshlet.vertexOffset, item);
+    NOX_CHECK(meshlet.triangleOffset + meshlet.triangleCount * 3 <= view.triangleByteTotal, meshlet.triangleOffset, item);
+    const uint vertexCount = min(meshlet.vertexCount, kMaxVertices), triangleCount = min(meshlet.triangleCount, kMaxTriangles);
+    SetMeshOutputCounts(vertexCount, triangleCount);
+
+    const float3 color = view.colorMode == 0 ? HashColor(item % view.meshletCount) : instance.color.rgb;
+    for (uint i = threadIndex; i < vertexCount; i += kMeshThreads)
+    {
+        const Vertex v = pc.vertices[NoxIndex(pc.meshletVertices[meshlet.vertexOffset + i], view.vertexTotal)];
+        const float3 world = instance.positionScale.xyz + v.position.xyz * instance.positionScale.w;
+        MeshVertex o;
+        o.position = view.viewProj.Transform(float4(world, 1.0));
+        o.normal = v.normal.xyz;
+        o.color = color;
+        outVertices[i] = o;
+    }
+    for (uint t = threadIndex; t < triangleCount; t += kMeshThreads)
+    {
+        const uint first = meshlet.triangleOffset + t * 3;
+        const uint3 triangle = uint3(LoadByte(pc.meshletTriangles, first), LoadByte(pc.meshletTriangles, first + 1), LoadByte(pc.meshletTriangles, first + 2));
+        NOX_CHECK(max(triangle.x, max(triangle.y, triangle.z)) < vertexCount, max(triangle.x, max(triangle.y, triangle.z)), item);
+        outTriangles[t] = triangle;
+    }
+}
+
+[shader("fragment")]
+float4 psMeshlet(MeshVertex input) : SV_Target
+{
+    const float3 n = normalize(input.normal);
+    const float light = saturate(dot(n, normalize(float3(0.4, 1.0, 0.3)))) * 0.8 + 0.2;
+    return float4(input.color * light, 1.0);
+}

@@ -1885,6 +1885,12 @@ NriGraphicsAPI NRI_CALL nriShaderCompilerGetTargetAPI(NriShaderCompiler compiler
     return compiler && compiler->impl ? toC(compiler->impl->getTargetAPI()) : NRI_GRAPHICS_API_VULKAN;
 }
 
+void NRI_CALL nriShaderCompilerSetDefine(NriShaderCompiler compiler, const char* name, const char* value)
+{
+    if (compiler && compiler->impl && name && *name)
+        compiler->impl->setDefine(name, value ? value : "");
+}
+
 void NRI_CALL nriShaderCompilerSetSearchPaths(NriShaderCompiler compiler, const char* const* paths, uint32_t pathCount)
 {
     if (!compiler || !compiler->impl)

@@ -379,7 +379,7 @@ if(NRI_BUILD_EXAMPLES)
             # file added to an example, or one edited without touching main.cpp, reaches the exe directory with the next build.
             add_custom_target(${name}_shaders ALL
                 COMMAND ${CMAKE_COMMAND} "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/examples/${name}"
-                    "-DCOMMON_FILE=${CMAKE_CURRENT_SOURCE_DIR}/examples/Common/nox_gpu.slang"
+                    "-DCOMMON_DIR=${CMAKE_CURRENT_SOURCE_DIR}/examples/Common"
                     "-DDESTINATION=$<TARGET_FILE_DIR:${name}>"
                     -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CopyExampleShaders.cmake"
                 COMMENT "Copying ${name}'s shaders")

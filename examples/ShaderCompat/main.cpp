@@ -584,16 +584,16 @@ namespace
                     const Push* push = nullptr; // (null: the base push data)
         };
 
-        nri::Pipeline* GetGfxPipeline(bool mesh, std::string& error, const char* fragment = "psGfx")
+        nri::Pipeline* GetGfxPipeline(bool mesh, std::string& error, const char* fragment = "psGfx", const char* task = "tsGfx", const char* meshEntry = "msGfx")
         {
-            const std::string key = std::string(mesh ? "#mesh" : "#raster") + fragment;
+            const std::string key = std::string(mesh ? std::string("#mesh") + task + meshEntry : "#raster") + fragment;
             if (auto found = m_Pipelines.find(key); found != m_Pipelines.end())
                 return &found->second;
             try
             {
                 nri::PipelineDesc desc{ .type = NRI_PIPELINE_GRAPHICS, .colorFormats = { NRI_FORMAT_RGBA8 }, .buildNow = true };
                 if (mesh)
-                    desc.shaders = { { NRI_SHADER_STAGE_TASK, "tsGfx", m_ShaderPath }, { NRI_SHADER_STAGE_MESH, "msGfx", m_ShaderPath },
+                    desc.shaders = { { NRI_SHADER_STAGE_TASK, task, m_ShaderPath }, { NRI_SHADER_STAGE_MESH, meshEntry, m_ShaderPath },
                                      { NRI_SHADER_STAGE_FRAGMENT, fragment, m_ShaderPath } };
                 else
                     desc.shaders = { { NRI_SHADER_STAGE_VERTEX, "vsGfx", m_ShaderPath }, { NRI_SHADER_STAGE_FRAGMENT, fragment, m_ShaderPath } };
@@ -773,7 +773,8 @@ namespace
         bool featureGated = false; // a pipeline that does not build means the device lacks the feature: SKIP
         bool exactAcrossApis = true;
         std::function<Result(Suite&, nri::Pipeline&)> run;
-        int graphics = 0; // 0: a compute entry point; 1: the raster pipeline (vsGfx / psGfx); 2: the mesh pipeline (tsGfx / msGfx / psGfx)
+        int graphics = 0; // 0: a compute entry point; 1: the raster pipeline (vsGfx / psGfx); 2: the mesh pipeline (tsGfx / msGfx / psGfx);
+                          // 3: the raster pipeline with psRayQuery; 4: the mesh pipeline through the payload (tsGfxPayload / msGfxPayload / psGfx)
     };
 
     std::vector<uint32_t> RandomWords(uint32_t count, uint32_t seed)
@@ -1411,6 +1412,8 @@ namespace
 
         tests.push_back({ "gfxMeshShader", "task + mesh shader (the orientation triangle)", false, true,
                           [orientation](Suite& s, nri::Pipeline& p) { return orientation(s, p, true); }, 2 });
+        tests.push_back({ "gfxMeshPayload", "the triangle sent through the task payload (a second task shader, another payload type)", false, true,
+                          [orientation](Suite& s, nri::Pipeline& p) { return orientation(s, p, true); }, 4 });
 
         tests.push_back({ "gfxRayQuery", "ray queries in a pixel shader (the instanced scene, every pixel checked)", true, false,
                           [expectedHit](Suite& s, nri::Pipeline& p)
@@ -1470,7 +1473,7 @@ namespace
             Result result;
             std::string error;
             const int errorsBefore = g_ValidationErrors;
-            if (test.graphics == 2 && !suite->SupportsMeshShaders())
+            if ((test.graphics == 2 || test.graphics == 4) && !suite->SupportsMeshShaders())
             {
                 result.detail = "the device has no mesh shaders";
                 std::printf("  %-4s %-17s %s -- %s\n", StatusText(result.status), test.entry.c_str(), test.what.c_str(), result.detail.c_str());
@@ -1481,6 +1484,7 @@ namespace
             nri::Pipeline* pipeline = test.graphics == 1 ? suite->GetGfxPipeline(false, error)
                                     : test.graphics == 2 ? suite->GetGfxPipeline(true, error)
                                     : test.graphics == 3 ? suite->GetGfxPipeline(false, error, "psRayQuery")
+                                    : test.graphics == 4 ? suite->GetGfxPipeline(true, error, "psGfx", "tsGfxPayload", "msGfxPayload")
                                                          : suite->GetPipeline(test.entry, error);
             if (pipeline)
             {

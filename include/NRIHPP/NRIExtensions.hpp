@@ -184,6 +184,7 @@ namespace nri
         explicit operator bool() const { return m_handle != nullptr; }
 
         void setTargetAPI(GraphicsAPI api) { nriShaderCompilerSetTargetAPI(m_handle, api); }
+        void setDefine(const char* name, const char* value) { nriShaderCompilerSetDefine(m_handle, name, value); }
         GraphicsAPI getTargetAPI() const { return nriShaderCompilerGetTargetAPI(m_handle); }
         void setSearchPaths(std::span<const std::string_view> paths)
         {

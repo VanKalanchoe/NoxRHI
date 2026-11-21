@@ -19,6 +19,9 @@ NRI_API void NRI_CALL nriShaderCompilerSetTargetAPI(NriShaderCompiler compiler, 
 NRI_API NriGraphicsAPI NRI_CALL nriShaderCompilerGetTargetAPI(NriShaderCompiler compiler);
 NRI_API void NRI_CALL nriShaderCompilerSetSearchPaths(NriShaderCompiler compiler, const char* const* paths, uint32_t pathCount);
 NRI_API void NRI_CALL nriShaderCompilerAddSearchPath(NriShaderCompiler compiler, const char* path);
+// A preprocessor define for every shader compiled from now on; value NULL or "" removes it. Defines are part of the shader cache key.
+// NOX_SHADER_CHECKS=1 turns on the GPU checks of examples/Common/nox_gpu.slang (NOX_CHECK / NoxIndex).
+NRI_API void NRI_CALL nriShaderCompilerSetDefine(NriShaderCompiler compiler, const char* name, const char* value);
 NRI_API bool NRI_CALL nriShaderCompilerCanCompile(NriShaderCompiler compiler);
 NRI_API uint64_t NRI_CALL nriShaderCompilerSourceHash(NriShaderCompiler compiler, const char* path);
 

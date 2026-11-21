@@ -38,6 +38,9 @@ namespace NRI
         virtual GraphicsAPI getTargetAPI() const { return GraphicsAPI::Vulkan; }
         virtual void setSearchPaths(std::span<const std::string> paths) {}
         virtual void addSearchPath(std::string_view path) {}
+        // A preprocessor define for every shader compiled from now on (an empty value removes it); part of sourceHash, so cached
+        // binaries compiled with other defines are not served. NOX_SHADER_CHECKS turns on nox_gpu.slang's GPU checks.
+        virtual void setDefine(std::string_view name, std::string_view value) { (void)name; (void)value; }
     };
 
     std::unique_ptr<ShaderCompiler> CreateSlangCompiler();

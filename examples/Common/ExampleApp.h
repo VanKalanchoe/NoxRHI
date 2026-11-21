@@ -313,6 +313,8 @@ namespace nox
                     vsync = true;
                 else if (!std::strcmp(argv[i], "--probe"))
                     m_ProbesOn = true;
+                else if (!std::strcmp(argv[i], "--shader-checks"))
+                    m_ChecksOn = true;
                 else if (const int used = example.OnArgument(argc, argv, i); used > 0)
                     i += used - 1;
                 else
@@ -367,6 +369,8 @@ namespace nox
                 compiler = nri::createSlangCompiler();
                 compiler.setTargetAPI(api);
                 compiler.addSearchPath(m_BaseDir.string()); // (nox_gpu.slang sits beside the executable)
+                if (m_ChecksOn)
+                    EnableShaderChecks(); // (before anything else takes an image slot, and before any shader compiles)
 
                 graph.SetLogCallback(OnGraphLog);
 #ifndef NDEBUG
@@ -450,7 +454,11 @@ namespace nox
                 m_LastFrame = now;
 
                 graph.Reset({ m_FrameNumber, frame.extent, frame.extent });
+                if (m_ChecksOn && m_ChecksPending[frame.frameSlot])
+                    ReadShaderChecks(frame.frameSlot); // (the frame that last used this slot has finished)
                 m_Example->Render(*this, graph, frame);
+                if (m_ChecksOn)
+                    AddShaderChecksPass(graph, frame.frameSlot);
                 graph.Compile();
                 const auto submissions = graph.Execute(frame.frameSlot);
                 for (size_t s = 0; s < submissions.size(); ++s)
@@ -492,6 +500,12 @@ namespace nox
             if (device)
             {
                 device.waitIdle();
+                for (uint32_t slot = 0; m_ChecksOn && slot < kFramesInFlight; ++slot)
+                    if (m_ChecksPending[slot])
+                        ReadShaderChecks(slot); // (the last frames' reports)
+                m_ChecksTexture.reset();
+                for (nri::Buffer& readback : m_ChecksReadback)
+                    readback.reset();
                 m_Probes.clear();
                 m_Example->Shutdown(*this);
                 graph.ReleaseResources();
@@ -537,7 +551,115 @@ namespace nox
                 SDL_DestroyWindow(m_Window);
         }
 
+        // --- shader checks (--shader-checks) ---------------------------------------------------------------------------------------
+        // nox_gpu.slang's NOX_CHECK / NoxIndex report into a small R32_SINT storage texture: [0] failures, [1] the first failure's line,
+        // [2] / [3] its values. A storage texture, not a buffer: storage images live in the resource heap's image range on both APIs (the
+        // path every example's storage textures use), so any shader reaches it by slot, without push data. It takes the first image slot
+        // and the compiler gets NOX_SHADER_CHECKS=1 and NOX_CHECKS_SLOT; the host copies it back every frame and prints a failure once.
+        bool ShaderChecksOn() const { return m_ChecksOn; }
+
     private:
+        static constexpr uint32_t kChecksWidth = 64; // (64 texels x 4 bytes: one 256-byte row, what D3D12's texture copies need)
+
+        void EnableShaderChecks()
+        {
+            m_ChecksTexture = device.createTexture({ .width = kChecksWidth, .height = 1, .usage = NRI_TEXTURE_USAGE_STORAGE, .format = NRI_FORMAT_R32_SINT });
+            ClearShaderChecks();
+            const uint32_t slot = ImageSlot(nriRegisterStorageTextureMip(resources.handle(), m_ChecksTexture.handle(), 0));
+            for (nri::Buffer& readback : m_ChecksReadback)
+                readback = device.createBuffer({ .size = kChecksWidth * 4, .usage = NRI_BUFFER_USAGE_READBACK });
+            compiler.setDefine("NOX_SHADER_CHECKS", "1");
+            compiler.setDefine("NOX_CHECKS_SLOT", std::to_string(slot).c_str());
+
+            // Self-test: a shader that fails a check on purpose must leave exactly one failure with its values in the report -- otherwise
+            // the checks cannot report on this GPU / API, and their silence would mean nothing.
+            nri::Pipeline selfTest = Compute("nox_checks_selftest.slang", "csNoxCheckSelfTest");
+            Submit([&](nri::CommandBuffer& cmd) {
+                cmd.bindPipeline(NRI_PIPELINE_BIND_POINT_COMPUTE, selfTest);
+                cmd.dispatch(1, 1, 1);
+                const nri::TextureBarrierDesc toCopy{ m_ChecksTexture.handle(), { NRI_ACCESS_SHADER_READ | NRI_ACCESS_SHADER_WRITE, kAllShaderStages },
+                                                      { NRI_ACCESS_TRANSFER_READ, NRI_STAGE_TRANSFER } };
+                cmd.resourceBarriers({ &toCopy, 1 }, {});
+                nriTextureCopyToBuffer(m_ChecksTexture.handle(), cmd.handle(), m_ChecksReadback[0].handle(), 0, 0, kChecksWidth, 1);
+            });
+            int32_t report[4] = {};
+            std::memcpy(report, m_ChecksReadback[0].map(0, sizeof(report)), sizeof(report));
+            m_ChecksReadback[0].unmap();
+            if (report[0] == 1 && report[1] > 0 && report[2] == 12345 && report[3] == 678)
+                std::printf("[%s] shader checks on (report: image slot %u; self-test passed)\n", m_Example->Name(), slot);
+            else
+            {
+                std::printf("[%s] SHADER CHECKS DO NOT WORK on %s: the self-test read %d failure(s), line %d, values %d, %d (expected 1, 12345, 678)\n",
+                            m_Example->Name(), ApiName(), report[0], report[1], report[2], report[3]);
+                ++g_Errors;
+            }
+            ClearShaderChecks();
+        }
+
+        // Zeroes the report and leaves it ready for shader access.
+        void ClearShaderChecks()
+        {
+            const uint32_t rowBytes = kChecksWidth * 4;
+            nri::Buffer staging = device.createBuffer({ .size = rowBytes, .usage = NRI_BUFFER_USAGE_STAGING });
+            std::memset(staging.map(0, rowBytes), 0, rowBytes);
+            staging.unmap();
+            Submit([&](nri::CommandBuffer& cmd) {
+                const NriTextureRegionUpload region{ .stagingOffset = 0, .x = 0, .y = 0, .width = kChecksWidth, .height = 1, .rowPitch = rowBytes };
+                nriTextureRecordRegionUploads(m_ChecksTexture.handle(), cmd.handle(), staging.handle(), &region, 1);
+                const nri::TextureBarrierDesc barrier{ m_ChecksTexture.handle(), { NRI_ACCESS_TRANSFER_WRITE, NRI_STAGE_TRANSFER },
+                                                       { NRI_ACCESS_SHADER_READ | NRI_ACCESS_SHADER_WRITE, kAllShaderStages } };
+                cmd.resourceBarriers({ &barrier, 1 }, {});
+            });
+        }
+
+        // Copies the report to this frame slot's readback buffer, last in the frame: shaders wrote it without declaring it, so the
+        // barriers are explicit -- every shader stage's writes before the copy, and the texture back to shader access after it.
+        void AddShaderChecksPass(nri::RenderGraph& graph, uint32_t frameSlot)
+        {
+            const nri::RGBuffer target = graph.ImportBuffer("Shader checks readback", m_ChecksReadback[frameSlot]);
+            graph.AddPass("Shader checks", nri::RGPassFlags::None,
+                [&](nri::RGBuilder& b) { b.Write(target, nri::RGBufferAccess::CopyDestination); },
+                [this, target](nri::RGPassContext& ctx) {
+                    nri::CommandBuffer& cmd = ctx.Cmd();
+                    const nri::TextureBarrierDesc toCopy{ m_ChecksTexture.handle(), { NRI_ACCESS_SHADER_READ | NRI_ACCESS_SHADER_WRITE, kAllShaderStages },
+                                                          { NRI_ACCESS_TRANSFER_READ, NRI_STAGE_TRANSFER } };
+                    cmd.resourceBarriers({ &toCopy, 1 }, {});
+                    nriTextureCopyToBuffer(m_ChecksTexture.handle(), cmd.handle(), ctx.Buffer(target), 0, 0, kChecksWidth, 1);
+                    const nri::TextureBarrierDesc toShaders{ m_ChecksTexture.handle(), { NRI_ACCESS_TRANSFER_READ, NRI_STAGE_TRANSFER },
+                                                             { NRI_ACCESS_SHADER_READ | NRI_ACCESS_SHADER_WRITE, kAllShaderStages } };
+                    cmd.resourceBarriers({ &toShaders, 1 }, {});
+                });
+            m_ChecksPending[frameSlot] = true;
+        }
+
+        void ReadShaderChecks(uint32_t frameSlot)
+        {
+            m_ChecksPending[frameSlot] = false;
+            int32_t report[4] = {};
+            std::memcpy(report, m_ChecksReadback[frameSlot].map(0, sizeof(report)), sizeof(report));
+            m_ChecksReadback[frameSlot].unmap();
+            const uint32_t failures = uint32_t(report[0]);
+            if (failures == m_ChecksPrinted)
+                return;
+            if (m_ChecksPrinted == 0)
+            {
+                std::printf("[%s] SHADER CHECK FAILED: NOX_CHECK / NoxIndex at line %d of its .slang file -- values %d, %d (%u failure(s) so far)\n",
+                            m_Example->Name(), report[1], report[2], report[3], failures);
+                ++g_Errors;
+            }
+            else
+                std::printf("[%s] shader checks: %u failure(s) so far (the first: line %d)\n", m_Example->Name(), failures, report[1]);
+            std::fflush(stdout);
+            m_ChecksPrinted = failures;
+        }
+
+        static constexpr uint32_t kAllShaderStages = NRI_STAGE_VERTEX | NRI_STAGE_TASK | NRI_STAGE_MESH | NRI_STAGE_FRAGMENT | NRI_STAGE_COMPUTE | NRI_STAGE_RAY_TRACING;
+        bool m_ChecksOn = false;
+        nri::Texture m_ChecksTexture;
+        nri::Buffer m_ChecksReadback[kFramesInFlight];
+        bool m_ChecksPending[kFramesInFlight]{};
+        uint32_t m_ChecksPrinted = 0;
+
         struct ProbeSlot
         {
             nri::Buffer readback[kFramesInFlight];

@@ -55,6 +55,21 @@ namespace NRI
         m_searchPaths.assign(paths.begin(), paths.end());
     }
 
+    void SlangCompiler::setDefine(std::string_view name, std::string_view value)
+    {
+        std::lock_guard lock(m_searchPathsMutex);
+        const auto it = std::find_if(m_defines.begin(), m_defines.end(), [&](const auto& define) { return define.first == name; });
+        if (value.empty())
+        {
+            if (it != m_defines.end())
+                m_defines.erase(it);
+        }
+        else if (it != m_defines.end())
+            it->second = std::string(value);
+        else
+            m_defines.emplace_back(std::string(name), std::string(value));
+    }
+
     void SlangCompiler::addSearchPath(std::string_view path)
     {
         std::lock_guard lock(m_searchPathsMutex);
@@ -162,7 +177,17 @@ namespace NRI
         // ("entry-point code": Vulkan SPIR-V holds one entry point each since compileEntryPoints -- binaries of whole-file modules are not
         // served again)
         static const uint64_t compilerHash = Hash::compute(std::string("slang " SLANG_TAG_VERSION " entry-point code"));
-        return Hash::compute(&compilerHash, sizeof(compilerHash), sourceHash);
+        uint64_t hash = Hash::compute(&compilerHash, sizeof(compilerHash), sourceHash);
+        // The defines are part of the key too: a binary compiled with NOX_SHADER_CHECKS is not served without it, and the other way round.
+        std::string defines;
+        {
+            std::lock_guard lock(m_searchPathsMutex);
+            for (const auto& [name, value] : m_defines)
+                defines += name + "=" + value + ";";
+        }
+        if (!defines.empty())
+            hash = Hash::compute(&hash, sizeof(hash), Hash::compute(defines));
+        return hash;
     }
 
     Slang::ComPtr<slang::IModule> SlangCompiler::loadModule(const std::string& path, slang::IGlobalSession* globalSession, Slang::ComPtr<slang::ISession>& session)
@@ -216,10 +241,15 @@ namespace NRI
         }
 
         std::vector<std::string> searchPathsCopy;
+        std::vector<std::pair<std::string, std::string>> definesCopy;
         {
             std::lock_guard lock(m_searchPathsMutex);
             searchPathsCopy = m_searchPaths;
+            definesCopy = m_defines;
         }
+        for (const auto& [name, value] : definesCopy)
+            slangOptions.push_back({ slang::CompilerOptionName::MacroDefine,
+                                     { .kind = slang::CompilerOptionValueKind::String, .stringValue0 = name.c_str(), .stringValue1 = value.c_str() } });
         std::vector<const char*> searchPathPtrs;
         searchPathPtrs.reserve(searchPathsCopy.size());
         for (const std::string& p : searchPathsCopy)

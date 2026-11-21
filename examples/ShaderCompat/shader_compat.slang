@@ -529,6 +529,40 @@ void msGfx(uint tid : SV_GroupIndex, in payload MeshPayload meshPayload, OutputI
         triangles[0] = uint3(0, 1, 2);
 }
 
+// The same triangle with its corners and colour sent through the task payload: a second task shader in this file, with a payload of a
+// different type. On Vulkan each shader must get the SPIR-V of its own entry point (a module with this file's two task shaders made an
+// NVIDIA driver hand the mesh shader garbage instead of the payload, and Slang writes invalid SPIR-V for task shaders with different
+// payload types in one module); a wrong payload draws a wrong triangle, which the orientation checks catch.
+struct TrianglePayload
+{
+    float2 corners[3];
+    float4 color;
+};
+groupshared TrianglePayload gTrianglePayload;
+
+[shader("amplification")]
+[numthreads(1, 1, 1)]
+void tsGfxPayload()
+{
+    gTrianglePayload.corners[0] = float2(-1, 1);
+    gTrianglePayload.corners[1] = float2(0, 1);
+    gTrianglePayload.corners[2] = float2(-1, 0);
+    gTrianglePayload.color = float4(1, 0, 0, 1);
+    DispatchMesh(1, 1, 1, gTrianglePayload);
+}
+
+[shader("mesh")]
+[outputtopology("triangle")]
+[numthreads(3, 1, 1)]
+void msGfxPayload(uint tid : SV_GroupIndex, in payload TrianglePayload trianglePayload, OutputIndices<uint3, 1> triangles, OutputVertices<GfxOut, 3> verts, uniform Push pc)
+{
+    SetMeshOutputCounts(3, 1);
+    if (tid < 3)
+        verts[tid] = MakeVertex(trianglePayload.corners[tid], 0.5, trianglePayload.color);
+    if (tid == 0)
+        triangles[0] = uint3(0, 1, 2);
+}
+
 // Ray queries in a pixel shader (RayQueryShadows traces from its fragment shader): each pixel of the 64 x 64 target traces the instanced
 // scene along +Z from (-5 + x * 10 / 64, 3 - y * 6 / 64); red: (instance + 1) / 4, green: hit, blue: a first-hit query's hit.
 [shader("fragment")]

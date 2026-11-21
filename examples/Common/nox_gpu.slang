@@ -97,6 +97,47 @@ uint AtomicCompareExchange(RWBufferRef<uint> buffer, uint index, uint compare, u
     return previous;
 }
 
+// ---------------------------------------------------------------------------------------------------------------------------------
+// GPU checks: catch an out-of-range index before it faults the GPU. On Vulkan a buffer reference is a raw device address, so a bad index
+// loses the device with no message; D3D12 reads through bounds-checked descriptors and returns 0, so the same bug looks fine there.
+//   NOX_CHECK(condition, a, b)  -- when `condition` is false: counts a failure and reports the first one's line and the values a, b.
+//   NoxIndex(index, count)      -- `index` when it is below `count`, else 0 (reported with index and count): the read stays in range.
+// Both compile to nothing / to `index` unless the compiler defines NOX_SHADER_CHECKS (the examples: --shader-checks; any app:
+// nriShaderCompilerSetDefine("NOX_SHADER_CHECKS", "1") plus NOX_CHECKS_SLOT). The report is an R32_SINT storage texture in the resource
+// heap's image range at slot NOX_CHECKS_SLOT -- [0] failures, [1] first failure's line, [2] / [3] its values -- read back by the host.
+#ifdef NOX_SHADER_CHECKS
+#ifndef NOX_CHECKS_SLOT
+#error NOX_SHADER_CHECKS needs NOX_CHECKS_SLOT: the image slot of the report texture
+#endif
+void NoxCheckFailed(uint line, uint a, uint b)
+{
+    RWTexture2D<int> report = RWTexture2D<int>.Handle(uint2(NOX_CHECKS_SLOT, 0));
+    int previous;
+    InterlockedAdd(report[uint2(0, 0)], 1, previous);
+    int first;
+    InterlockedCompareExchange(report[uint2(1, 0)], 0, int(line), first);
+    if (first == 0)
+    {
+        report[uint2(2, 0)] = int(a);
+        report[uint2(3, 0)] = int(b);
+    }
+}
+
+uint NoxCheckedIndex(uint index, uint count, uint line)
+{
+    if (index < count)
+        return index;
+    NoxCheckFailed(line, index, count);
+    return 0;
+}
+
+#define NOX_CHECK(condition, a, b) do { if (!(condition)) NoxCheckFailed(__LINE__, uint(a), uint(b)); } while (false)
+#define NoxIndex(index, count) NoxCheckedIndex(uint(index), uint(count), __LINE__)
+#else
+#define NOX_CHECK(condition, a, b) do { } while (false)
+#define NoxIndex(index, count) (index)
+#endif
+
 // One byte of a buffer of packed bytes (DXIL has no uint8_t: four bytes per word, little-endian, as the CPU wrote them).
 uint LoadByte(BufferRef<uint> words, uint byteIndex)
 {

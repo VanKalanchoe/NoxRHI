@@ -167,18 +167,49 @@ build\Debug\RayQueryShadows.exe --vk       build\Debug\RayQueryShadows.exe --dx1
 
 `examples/Common` holds what they share: `ExampleApp.h` (window, API choice, device, swapchain, descriptor heaps, render graph, frame loop,
 uploads, buffer references), `ExampleMath.h` (column-major matrices, reverse-Z projection) and **`nox_gpu.slang`**, the one header that hides
-what differs between the two APIs' shaders. CI runs all four on D3D12 (WARP, debug layer on) for 30 frames on every push, and
-MeshletCulling's other draw paths (`--indirect`, `--task-engine`, `--task-single`).
+what differs between the two APIs' shaders. CI runs all four on D3D12 (WARP, debug layer on) for 30 frames on every push, plus
+`MeshletCulling --indirect` and `MeshletCulling --shader-checks`.
 
-`MeshletCulling` start-up options, to narrow down a driver problem: `--no-cull`, `--no-stats` (no counter atomic), `--mesh-only` (no task
-shader), `--split-files` (task and mesh shaders compiled from separate files), `--no-readback`, `--no-depth`, `--groups N`,
-`--task-single` (a one-thread task shader), `--task-engine` (the Nox engine's task shader design: 64 meshlets per group, bitmask + prefix
-compaction, and the engine's 72-byte payload: two `uint`s + 64 byte offsets, packed four per `uint`), `--indirect` (draw with
-`drawMeshTasksIndirect` from a GPU argument buffer, as the engine does) and `--checked` (the task path's mesh shaders test every index
-before reading through it -- payload entry, meshlet counts and offsets, vertex and triangle indices -- draw nothing for a group that fails
-and print the first failure: `CHECK FAILED (...): code N: <what>: <values>`). The first line it prints names the path it took. Why
-`--checked` matters: on Vulkan a buffer reference is a raw device address, so an out-of-range index faults the GPU (device lost), while
-D3D12 reads the same buffer through a bounds-checked descriptor and gets 0 -- a bad index can run "fine" on D3D12 and crash on Vulkan.
+Options every cross-API example takes: `--vk` / `--dx12`, `--frames N` (quit after N frames: the exit code says whether anything failed),
+`--vsync`, `--probe` (print what a render-graph texture holds) and `--shader-checks` (below). `MeshletCulling` also takes `--no-cull`
+(every meshlet drawn) and `--indirect` (the group count read by the GPU from an argument buffer -- `drawMeshTasksIndirect`, as the Nox
+engine draws -- instead of a direct `drawMeshTasks`).
+
+### Shader checks (`--shader-checks`): out-of-range indices reported instead of a lost device
+
+On Vulkan a buffer reference is a raw device address (BDA), so an out-of-range index faults the GPU: `ErrorDeviceLost`, often a frozen
+PC, and no message. D3D12 reads the same buffer through a bounds-checked descriptor and gets 0 -- the bug runs "fine" there. (This is how
+MeshletCulling's Vulkan crash hid; porting note 10.) `nox_gpu.slang` has two checks for any shader:
+
+```slang
+NOX_CHECK(meshlet.vertexCount <= kMaxVertices, meshlet.vertexCount, item); // false: a failure is counted; the first one's line and values are reported
+const uint i = NoxIndex(index, count); // index when below count, else 0 (reported with index and count): the read stays in range
+```
+
+Without the define `NOX_SHADER_CHECKS` both compile to nothing (`NoxIndex(i, n)` is `i`), so they can stay in shipping shaders. With
+`--shader-checks` the example host turns them on and prints the first failure, then counts:
+
+```
+[MeshletCulling] shader checks on (report: image slot 0; self-test passed)
+[MeshletCulling] SHADER CHECK FAILED: NOX_CHECK / NoxIndex at line <line> of its .slang file -- values <a>, <b> (<n> failure(s) so far)
+```
+
+A failure counts as an error (the exit code fails, so CI catches it). How it works, to do the same in another app (the Nox engine):
+1. Create a small `NRI_FORMAT_R32_SINT` storage texture (64 x 1: one 256-byte row, what D3D12's texture copies need), zero it, and
+   register it **first** in the resource heap (`nriRegisterStorageTextureMip`): storage images sit in the heap's image range on both
+   APIs, so every shader reaches it by slot, with no push data. (Not a buffer: on Vulkan NoxRHI's buffer descriptors sit after the
+   images, and shaders reach buffers by address.)
+2. Before any shader compiles: `nriShaderCompilerSetDefine(compiler, "NOX_SHADER_CHECKS", "1")` and `"NOX_CHECKS_SLOT"` = that slot
+   (+ `nriGetDescriptorHeapImageIndexOffset`). Defines are part of the shader cache key, so checked and unchecked binaries never mix.
+3. Each frame, after the passes: a barrier from shader writes (all shader stages) to transfer read, `nriTextureCopyToBuffer` into a
+   readback buffer, and a barrier back to shader access; read it once the frame's fence has passed. Texels: [0] failures, [1] the
+   first failure's line, [2] / [3] its values.
+4. Self-test it once: `examples/Common/nox_checks_selftest.slang` fails a check on purpose; expect 1 failure with 12345 and 678. The
+   example host does all of this (`ExampleApp.h`, `EnableShaderChecks`).
+
+The line is that of the `.slang` file holding the check (which file is not recorded: give checks distinct values to tell them apart).
+The checks cost atomics only when they fail, plus the compare; a frame with checks on runs slower and is for finding bugs. The Vulkan
+validation layers' GPU-assisted validation is the other tool, but it did not report MeshletCulling's bad index before the device was lost.
 
 ### Porting Vulkan-only Slang (such as the Nox engine's shaders) to D3D12
 
@@ -228,7 +259,7 @@ already work on both and need nothing.
    dispatch arguments today, so a shader that reads `SV_DrawIndex` needs that added before it runs on D3D12.
 10. **One entry point per SPIR-V module (the MeshletCulling device loss).** NoxRHI used to create every Vulkan shader from the *whole
     file's* SPIR-V (all entry points, picked by name). With two task shaders in one file, an NVIDIA driver handed MeshletCulling's mesh
-    shaders garbage instead of the task payload: `--checked` caught ~7,300 groups a frame reading the float 19.94 (a vertex's clip-space
+    shaders garbage instead of the task payload: a check of every index (now `--shader-checks`) caught ~7,300 groups a frame reading the float 19.94 (a vertex's clip-space
     `w`) as a meshlet index, and without the check the GPU faulted (device lost). D3D12 compiles each entry point by itself and was fine;
     so was the engine-design task shader, alone in its file. NoxRHI now loads and links a file once and gives each Vulkan shader the SPIR-V
     of its own entry point only (`ShaderCompiler::compileEntryPoints`, Slang's `getEntryPointCode`); the shader cache key changed with it.

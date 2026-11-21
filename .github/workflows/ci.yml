@@ -104,15 +104,13 @@ jobs:
             $code = $LASTEXITCODE
             if ($code -ne 0) { Write-Host ("$example exit code: {0} (0x{0:X8})" -f $code); $failed = 1 }
           }
-          # MeshletCulling's other draw paths: indirect (ExecuteIndirect with a DispatchMesh signature) and the engine-design task shader.
-          # --checked: the mesh shaders test every index; a correct run reports no failure.
-          foreach ($options in @('--indirect'), @('--task-engine'), @('--task-engine', '--indirect'), @('--task-single'), @('--checked'), @('--task-engine', '--checked')) {
+          # MeshletCulling's indirect draw (ExecuteIndirect with a DispatchMesh signature) and the shader checks (--shader-checks: the host's
+          # self-test of the report, then the mesh shader's NoxIndex / NOX_CHECK; a reported failure is an error, so the exit code fails).
+          foreach ($options in @('--indirect'), @('--shader-checks'), @('--indirect', '--shader-checks')) {
             Write-Host "=== MeshletCulling $options ==="
-            $output = & ./MeshletCulling.exe --dx12 --frames 30 @options 2>&1
+            & ./MeshletCulling.exe --dx12 --frames 30 @options
             $code = $LASTEXITCODE
-            $output | ForEach-Object { Write-Host $_ }
             if ($code -ne 0) { Write-Host ("MeshletCulling $options exit code: {0} (0x{0:X8})" -f $code); $failed = 1 }
-            if ($output -match 'CHECK FAILED') { Write-Host "MeshletCulling $options reported a failed index check"; $failed = 1 }
           }
           Pop-Location
           exit $failed

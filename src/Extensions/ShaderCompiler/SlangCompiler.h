@@ -31,6 +31,7 @@ namespace NRI
         GraphicsAPI getTargetAPI() const override { return m_targetAPI; }
         void setSearchPaths(std::span<const std::string> paths) override;
         void addSearchPath(std::string_view path) override;
+        void setDefine(std::string_view name, std::string_view value) override;
 
     private:
         // A session with NoxRHI's options for the target API and the file loaded into it (throws with the first error when it does not compile).
@@ -48,5 +49,6 @@ namespace NRI
         GraphicsAPI m_targetAPI = GraphicsAPI::Vulkan;
         std::mutex m_searchPathsMutex;
         std::vector<std::string> m_searchPaths{ ".", "shaders" };
+        std::vector<std::pair<std::string, std::string>> m_defines; // (guarded by m_searchPathsMutex)
     };
 }
