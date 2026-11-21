@@ -868,6 +868,12 @@ void NRI_CALL nriCmdSetLogicOpEnable(NriCommandBuffer cmd, bool enable)
     if (cmd && cmd->impl) cmd->impl->setLogicOpEnable(enable);
 }
 
+void NRI_CALL nriCmdRestoreBindingsAfterExternalWork(NriCommandBuffer cmd)
+{
+    if (cmd && cmd->impl)
+        cmd->impl->restoreBindingsAfterExternalWork();
+}
+
 void NRI_CALL nriCmdBindDescriptorHeaps(NriCommandBuffer cmd, NriDescriptorHeap resourceHeap, NriDescriptorHeap samplerHeap)
 {
     if (cmd && cmd->impl)

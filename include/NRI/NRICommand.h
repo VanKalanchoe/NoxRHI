@@ -232,6 +232,10 @@ NRI_API void NRI_CALL nriCmdSetColorWriteMask(NriCommandBuffer cmd, uint32_t fir
 NRI_API void NRI_CALL nriCmdSetLogicOpEnable(NriCommandBuffer cmd, bool enable);
 
 NRI_API void NRI_CALL nriCmdBindDescriptorHeaps(NriCommandBuffer cmd, NriDescriptorHeap resourceHeap, NriDescriptorHeap samplerHeap);
+// After recording native commands into this command buffer (another library that binds its own pipelines / descriptor sets / heaps):
+// binds the descriptor heaps bound last (and on D3D12 the root signature) again and forgets the cached pipeline. NoxRHI's NRD and
+// Streamline extensions call it themselves.
+NRI_API void NRI_CALL nriCmdRestoreBindingsAfterExternalWork(NriCommandBuffer cmd);
 NRI_API void NRI_CALL nriCmdPushData(NriCommandBuffer cmd, const void* data, uint32_t size);
 NRI_API void NRI_CALL nriCmdBindVertexBuffer(NriCommandBuffer cmd, uint32_t firstBinding, NriBuffer buffer, uint64_t offset);
 NRI_API void NRI_CALL nriCmdBindIndexBuffer(NriCommandBuffer cmd, NriBuffer buffer, uint64_t offset);

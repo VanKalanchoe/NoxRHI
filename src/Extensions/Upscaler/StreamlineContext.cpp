@@ -927,6 +927,8 @@ namespace NRI
         const sl::BaseStructure* inputs[] = { &viewport };
         const sl::Feature featureToEval = useRayReconstruction ? sl::kFeatureDLSS_RR : sl::kFeatureDLSS;
         const sl::Result evalRes = slEvaluateFeature(featureToEval, *frameToken, inputs, static_cast<uint32_t>(std::size(inputs)), slCmd);
+        // Streamline runs with eUseManualHooking and eDisableCLStateTracking: it restores no command-list state after its dispatches.
+        cmd.restoreBindingsAfterExternalWork();
         if (evalRes != sl::Result::eOk)
         {
             NRI_LOG_WARN("[Streamline] slEvaluateFeature failed: {}", static_cast<int>(evalRes));

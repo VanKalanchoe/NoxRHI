@@ -7,14 +7,14 @@
 
 struct Object
 {
-    Mat4 model;
-    Mat4 normalMatrix; // inverse transpose of the model matrix (non-uniform scales)
+    float4x4 model;
+    float4x4 normalMatrix; // inverse transpose of the model matrix (non-uniform scales)
     float4 color;      // rgb albedo, a: 1 = checker pattern
 };
 
 struct Frame
 {
-    Mat4 viewProj;
+    float4x4 viewProj;
     float4 cameraPosition; // xyz
     float4 sunDirection;   // xyz: towards the sun
     uint objectCount;
@@ -56,9 +56,9 @@ VertexOut vsScene(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID, 
     const Object object = pc.objects[instanceId];
     const Vertex v = pc.vertices[vertexId];
     VertexOut o;
-    o.world = object.model.TransformPoint(v.position.xyz);
-    o.position = frame.viewProj.Transform(float4(o.world, 1.0));
-    o.normal = object.normalMatrix.TransformVector(v.normal.xyz);
+    o.world = mul(object.model, float4(v.position.xyz, 1.0)).xyz;
+    o.position = mul(frame.viewProj, float4(o.world, 1.0));
+    o.normal = mul(object.normalMatrix, float4(v.normal.xyz, 0.0)).xyz;
     o.color = object.color;
     return o;
 }

@@ -8,7 +8,7 @@
 
 struct Scene
 {
-    Mat4 viewProj;
+    float4x4 viewProj;
     float4 cameraPosition; // xyz
     float4 lightDirection; // xyz: towards the light (normalized)
     float4 lightColor;     // rgb: radiance
@@ -80,7 +80,7 @@ VertexOut vsScene(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID, 
     const float3 world = instance.positionScale.xyz + local * instance.positionScale.w;
 
     VertexOut o;
-    o.position = scene.viewProj.Transform(float4(world, 1.0));
+    o.position = mul(scene.viewProj, float4(world, 1.0));
     o.worldPosition = world;
     o.normal = RotateX(RotateY(v.normal.xyz, angle), angle * 0.6);
     o.uv = v.uv.xy;

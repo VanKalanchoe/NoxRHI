@@ -103,6 +103,7 @@ namespace NRI
     void CommandBufferVK::begin(uint32_t index, bool oneTimeSubmit)
     {
         m_currentFrameIndex = index;
+        m_boundResourceHeap = m_boundSamplerHeap = nullptr;
 
         if (m_resetOnBegin)
             m_commandBuffers[index].reset();
@@ -480,8 +481,20 @@ namespace NRI
         
     }*/
     
+    void CommandBufferVK::restoreBindingsAfterExternalWork()
+    {
+        // NRD and DLSS bind classic descriptor sets and pipelines; NoxRHI's shaders read through VK_EXT_descriptor_heap's heaps, bound
+        // again here. (Pipelines and push data are bound by every pass that uses them.)
+        if (m_boundResourceHeap || m_boundSamplerHeap)
+            bindDescriptorHeaps(m_boundResourceHeap, m_boundSamplerHeap);
+    }
+
     void CommandBufferVK::bindDescriptorHeaps(DescriptorHeap* resourceHeap, DescriptorHeap* samplerHeap)
     {
+        if (resourceHeap)
+            m_boundResourceHeap = resourceHeap;
+        if (samplerHeap)
+            m_boundSamplerHeap = samplerHeap;
         if (resourceHeap)
         {
             // Bind the heap containing resources (buffers and images)

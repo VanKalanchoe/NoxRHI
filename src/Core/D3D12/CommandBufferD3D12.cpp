@@ -90,6 +90,7 @@ namespace NRI
         m_isRecording = true;
         m_currentPipeline = nullptr;
         m_boundPso = nullptr;
+        m_boundResourceHeap = m_boundSamplerHeap = nullptr;
         m_currentBindPoint = m_allocator.getCommandListType() == D3D12_COMMAND_LIST_TYPE_COMPUTE
             ? PipelineBindPoint::Compute
             : PipelineBindPoint::Graphics;
@@ -291,8 +292,23 @@ namespace NRI
         m_cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     }
 
+    void CommandBufferD3D12::restoreBindingsAfterExternalWork()
+    {
+        // NRD sets its own descriptor heaps, root signature and pipeline states on this list, and Streamline (manual hooking, no
+        // command-list state tracking) restores nothing: the heaps and NoxRHI's root signature go back, and the cached pipeline is
+        // forgotten -- otherwise binding the pipeline that was bound before would be skipped while another one is set on the list.
+        m_boundPso = nullptr;
+        m_currentPipeline = nullptr;
+        if (m_boundResourceHeap || m_boundSamplerHeap)
+            bindDescriptorHeaps(m_boundResourceHeap, m_boundSamplerHeap);
+    }
+
     void CommandBufferD3D12::bindDescriptorHeaps(DescriptorHeap* resourceHeap, DescriptorHeap* samplerHeap)
     {
+        if (resourceHeap)
+            m_boundResourceHeap = resourceHeap;
+        if (samplerHeap)
+            m_boundSamplerHeap = samplerHeap;
         ID3D12DescriptorHeap* heaps[2]{};
         UINT count = 0;
         if (resourceHeap)

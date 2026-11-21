@@ -50,6 +50,7 @@ namespace NRI
         void setColorWriteMask(uint32_t firstAttachment, uint32_t colorWriteMask) override;
         void setLogicOpEnable(bool enable) override;
         void bindDescriptorHeaps(DescriptorHeap* resourceHeap, DescriptorHeap* samplerHeap) override;
+        void restoreBindingsAfterExternalWork() override;
         void pushData(const void* data, uint32_t size) override;
         void bindVertexBuffers(uint32_t firstBinding, Buffer& buffer, uint64_t offset) override;
         void bindIndexBuffer(Buffer& buffer, uint64_t offet) override;
@@ -109,5 +110,8 @@ namespace NRI
         std::vector<vk::BufferCopy> m_copyRegionScratch; // copyBuffer(regions)
         // Caches the index passed into the begin method
         uint32_t m_currentFrameIndex = 0;
+        // The heaps bound last in this recording (restoreBindingsAfterExternalWork binds them again)
+        DescriptorHeap* m_boundResourceHeap = nullptr;
+        DescriptorHeap* m_boundSamplerHeap = nullptr;
     };
 }

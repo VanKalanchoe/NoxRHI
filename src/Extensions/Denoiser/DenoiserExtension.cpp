@@ -236,7 +236,9 @@ namespace NRI
             fillVK(dispatch.inDiffRadianceHitDist, textures.inDiffRadianceHitDist);
             fillVK(dispatch.outDiffRadianceHitDist, textures.outDiffRadianceHitDist);
 
-            return m_impl->host.denoiseVK(identifiers, identifierCount, dispatch);
+            const bool denoised = m_impl->host.denoiseVK(identifiers, identifierCount, dispatch);
+            cmd.restoreBindingsAfterExternalWork(); // (NRD bound its own pipelines and descriptor sets)
+            return denoised;
 #endif
         }
         else if (m_device->getAPI() == GraphicsAPI::D3D12)
@@ -281,7 +283,9 @@ namespace NRI
             prepD3D12(dispatch.inDiffRadianceHitDist, textures.inDiffRadianceHitDist, false);
             prepD3D12(dispatch.outDiffRadianceHitDist, textures.outDiffRadianceHitDist, true);
 
-            return m_impl->host.denoiseD3D12(identifiers, identifierCount, dispatch);
+            const bool denoised = m_impl->host.denoiseD3D12(identifiers, identifierCount, dispatch);
+            cmd.restoreBindingsAfterExternalWork(); // (NRD set its own heaps, root signature and pipelines)
+            return denoised;
 #endif
         }
         return false;

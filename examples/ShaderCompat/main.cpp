@@ -871,7 +871,7 @@ namespace
             return Compare(got, want, "out");
         } });
 
-        tests.push_back({ "csStructLayout", "a struct through nox_gpu.slang's BufferRef: layout, stride, Mat4, LoadByte", false, true, [](Suite& s, nri::Pipeline& p)
+        tests.push_back({ "csStructLayout", "a struct through nox_gpu.slang's BufferRef: layout, stride, a float4x4 member, LoadByte", false, true, [](Suite& s, nri::Pipeline& p)
         {
             struct LayoutProbe
             {

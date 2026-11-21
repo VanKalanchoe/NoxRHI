@@ -40,7 +40,7 @@ struct Instance
 
 struct View
 {
-    Mat4 viewProj;      // the camera that draws
+    float4x4 viewProj;      // the camera that draws
     float4 cullPlanes[5]; // the camera that culls (frozen with F): left, right, bottom, top, near
     float4 cullPosition;  // xyz
     uint meshletCount;    // meshlets per instance
@@ -158,7 +158,7 @@ void msMeshlet(uint3 groupId : SV_GroupID, uint threadIndex : SV_GroupIndex, in 
         const Vertex v = pc.vertices[NoxIndex(pc.meshletVertices[meshlet.vertexOffset + i], view.vertexTotal)];
         const float3 world = instance.positionScale.xyz + v.position.xyz * instance.positionScale.w;
         MeshVertex o;
-        o.position = view.viewProj.Transform(float4(world, 1.0));
+        o.position = mul(view.viewProj, float4(world, 1.0));
         o.normal = v.normal.xyz;
         o.color = color;
         outVertices[i] = o;

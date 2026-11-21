@@ -242,8 +242,14 @@ already work on both and need nothing.
 5. **Non-uniform texture indices.** An index that differs inside a wave (per-instance or per-pixel materials) needs `NonUniformResourceIndex`.
    Slang carries it into DXIL, but for Vulkan's descriptor heap it emits no `NonUniform` decoration (checked with Slang 2026.14.1 and 2026.22.1),
    which this Vulkan path needs. `SampleNonUniform` scalarizes on Vulkan until Slang emits it; this applies to the engine's Vulkan path today too.
-6. **Matrices in buffers.** Use four `float4` columns (`Mat4` in `nox_gpu.slang`, multiplied with explicit columns) rather than relying on a
-   matrix layout setting meaning the same for every kind of buffer on both APIs.
+6. **Matrices: plain `float4x4` and `mul(M, v)`, nothing to set.** NoxRHI compiles every shader with Slang's column-major matrix layout --
+   HLSL's own default, and what NVIDIA's NRD sample relies on (its constant buffers declare `float4x4` with no `row_major` /
+   `column_major` keyword, and the C++ side copies its column-major MathLib matrices straight in). So a `float4x4` is four columns in
+   memory on both APIs, whether it comes from push data, a buffer reference or a struct inside a buffer: Vulkan loads it through a
+   `ColMajor` pointer, D3D12 assembles it from `ByteAddressBuffer` loads with the same column order. Write column-major matrices on the
+   C++ side (glm, MathLib, `ExampleMath.h`'s `Mat4`) and multiply `mul(M, v)`. ShaderCompat's `csMatrix` (a `float4x4` read straight from
+   a buffer) and `csStructLayout` (a `float4x4` member) check it on both APIs. (The examples used a hand-written four-column `Mat4` before
+   this was verified; it is gone.)
 7. **Small differences to know:** `SV_InstanceID` does not include the draw's first instance on D3D12 (Vulkan's does); wave sizes differ (WARP 4,
    GPUs 16 / 32 / 64), so a group that relies on one wave per group must use groupshared memory instead; push data is at most 128 bytes on D3D12
    (32 root constants).

@@ -625,6 +625,7 @@ namespace nri
             nriCmdBindDescriptorHeaps(m_handle, resourceHeap ? resourceHeap->handle() : nullptr,
                                       samplerHeap ? samplerHeap->handle() : nullptr);
         }
+        void restoreBindingsAfterExternalWork() { nriCmdRestoreBindingsAfterExternalWork(m_handle); }
         void pushData(const void* data, uint32_t size) { nriCmdPushData(m_handle, data, size); }
         void bindVertexBuffer(uint32_t firstBinding, const Buffer& buffer, uint64_t offset = 0)
         {

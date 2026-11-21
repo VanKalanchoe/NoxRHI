@@ -70,6 +70,7 @@ namespace NRI
         void setLogicOpEnable(bool enable) override {}
 
         void bindDescriptorHeaps(DescriptorHeap* resourceHeap, DescriptorHeap* samplerHeap) override;
+        void restoreBindingsAfterExternalWork() override;
         void pushData(const void* data, uint32_t size) override;
         void bindVertexBuffers(uint32_t firstBinding, Buffer& buffer, uint64_t offset) override;
         void bindIndexBuffer(Buffer& buffer, uint64_t offet) override;
@@ -124,6 +125,9 @@ namespace NRI
         bool m_isRecording = false;
         PipelineD3D12* m_currentPipeline = nullptr;
         ID3D12PipelineState* m_boundPso = nullptr;
+        // The heaps bound last in this recording (restoreBindingsAfterExternalWork binds them and the root signature again)
+        DescriptorHeap* m_boundResourceHeap = nullptr;
+        DescriptorHeap* m_boundSamplerHeap = nullptr;
         PipelineBindPoint m_currentBindPoint = PipelineBindPoint::Graphics;
         uint32_t m_rasterizationSamples = 1; // (a pipeline variant per sample count: D3D12 bakes it into the PSO)
         bool m_hasDepthAttachment = false;

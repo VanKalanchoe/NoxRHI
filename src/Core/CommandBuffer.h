@@ -227,6 +227,11 @@ namespace NRI
         virtual void setLogicOpEnable(bool enable) = 0;
         
         virtual void bindDescriptorHeaps(DescriptorHeap* resourceHeap, DescriptorHeap* samplerHeap) = 0;
+        // After code outside NoxRHI recorded into this command buffer (NRD, Streamline / DLSS): binds again what that code may have
+        // replaced -- the descriptor heaps bound last (and on D3D12 the root signature), and forgets the cached pipeline, so the next
+        // bindPipeline really binds. NRD binds its own pipelines, descriptor sets and (D3D12) heaps; Streamline runs with manual hooking
+        // and no command-list state tracking, so it restores nothing (NVIDIA's NRD sample calls RestoreBindings for the same reason).
+        virtual void restoreBindingsAfterExternalWork() {}
         virtual void pushData(const void* data, uint32_t size) = 0;
         virtual void bindVertexBuffers(uint32_t firstBinding, Buffer& buffer, uint64_t offset) = 0;
         virtual void bindIndexBuffer(Buffer& buffer, uint64_t offet) = 0;

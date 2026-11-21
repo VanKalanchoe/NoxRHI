@@ -124,7 +124,7 @@ struct LayoutProbe   // C++: ShaderCompat's LayoutProbe, 120 bytes
     float2 e;        //  40
     uint f;          //  48
     uint g;          //  52
-    Mat4 m;          //  56
+    float4x4 m;      //  56: four columns in memory (the C++ side writes column-major, as glm and NVIDIA's MathLib do)
 };
 
 [shader("compute")]
@@ -147,7 +147,7 @@ void csStructLayout(uint3 id : SV_DispatchThreadID, uniform Push pc)
     StoreOut(pc, o++, uint(p.d & 0xFFFFFFFFull)); StoreOut(pc, o++, uint(p.d >> 32));
     StoreOutFloat(pc, o++, p.e.x); StoreOutFloat(pc, o++, p.e.y);
     StoreOut(pc, o++, p.f); StoreOut(pc, o++, p.g);
-    const float4 t = p.m.Transform(float4(1.0, 2.0, 3.0, 4.0));
+    const float4 t = mul(p.m, float4(1.0, 2.0, 3.0, 4.0)); // (M * v; the C++ side checks it against its column-major matrix)
     StoreOutFloat(pc, o++, t.x); StoreOutFloat(pc, o++, t.y); StoreOutFloat(pc, o++, t.z); StoreOutFloat(pc, o++, t.w);
     for (uint i = 0; i < 8; ++i) // bytes 120 .. 127 (element 1's first bytes), through LoadByte
         StoreOut(pc, o++, LoadByte(words, 120 + i));
@@ -278,22 +278,25 @@ void csInt64(uint3 id : SV_DispatchThreadID, uniform Push pc)
 
 // --- 10. matrix layout: a float4x4 read from a buffer, multiplied by a vector -----------------------------------------------------------
 
-float4x4 LoadMatrixColumnMajor(Push pc, uint first)
+// A float4x4 read straight from a buffer: four columns of four floats in memory (the CPU writes them that way, as glm and NVIDIA's
+// MathLib store matrices). NoxRHI compiles with Slang's column-major matrix layout -- HLSL's own default, the packing NVIDIA's NRD
+// sample relies on -- so the same bytes give the same matrix on Vulkan (a pointer load, ColMajor) and D3D12 (ByteAddressBuffer loads).
+float4x4 LoadMatrix(Push pc, uint first)
 {
-    // The buffer holds four columns of four floats (the CPU writes them that way); built explicitly, so the result does not depend
-    // on how each API lays out a matrix read straight from memory.
-    float4 c0 = float4(LoadInFloat(pc, first + 0), LoadInFloat(pc, first + 1), LoadInFloat(pc, first + 2), LoadInFloat(pc, first + 3));
-    float4 c1 = float4(LoadInFloat(pc, first + 4), LoadInFloat(pc, first + 5), LoadInFloat(pc, first + 6), LoadInFloat(pc, first + 7));
-    float4 c2 = float4(LoadInFloat(pc, first + 8), LoadInFloat(pc, first + 9), LoadInFloat(pc, first + 10), LoadInFloat(pc, first + 11));
-    float4 c3 = float4(LoadInFloat(pc, first + 12), LoadInFloat(pc, first + 13), LoadInFloat(pc, first + 14), LoadInFloat(pc, first + 15));
-    return transpose(float4x4(c0, c1, c2, c3)); // (float4x4(a, b, c, d) takes rows)
+    BufferRef<float4x4> matrices;
+#ifdef NOX_VULKAN
+    matrices.handle = pc.inAddress;
+#else
+    matrices.handle = pc.inSlot;
+#endif
+    return matrices.Load(first / 16);
 }
 
 [shader("compute")]
 [numthreads(1, 1, 1)]
 void csMatrix(uniform Push pc)
 {
-    const float4x4 m = LoadMatrixColumnMajor(pc, 0);
+    const float4x4 m = LoadMatrix(pc, 0);
     const float4 v = float4(LoadInFloat(pc, 16), LoadInFloat(pc, 17), LoadInFloat(pc, 18), LoadInFloat(pc, 19));
     const float4 mv = mul(m, v);   // M * v
     const float4 vm = mul(v, m);   // v * M (= transpose(M) * v)

@@ -154,16 +154,9 @@ RaytracingAccelerationStructure LoadTlas(uint64_t handle)
 #endif
 }
 
-// A column-major 4 x 4 matrix as four columns (ExampleMath.h's Mat4 on the host). Multiplying with the columns explicitly means no
-// matrix-layout setting (row / column major, per API or per buffer kind) can change its meaning.
-struct Mat4
-{
-    float4 c0, c1, c2, c3;
-
-    float4 Transform(float4 v) { return c0 * v.x + c1 * v.y + c2 * v.z + c3 * v.w; }
-    float3 TransformPoint(float3 p) { return (c0 * p.x + c1 * p.y + c2 * p.z + c3).xyz; }
-    float3 TransformVector(float3 v) { return (c0 * v.x + c1 * v.y + c2 * v.z).xyz; }
-};
+// Matrices: plain float4x4 and mul(M, v), in buffers and push data alike. NoxRHI compiles with Slang's column-major matrix layout (HLSL's
+// own default, what NVIDIA's NRD sample relies on), so a float4x4 is four columns in memory on both APIs -- the C++ side writes
+// column-major matrices (glm, NVIDIA's MathLib, ExampleMath.h's Mat4). ShaderCompat's csMatrix and csStructLayout check it.
 
 // Samples a texture whose slot may differ between the lanes of a wave (per-instance or per-pixel material textures).
 //   D3D12: NonUniformResourceIndex reaches DXIL (CreateHandleFromHeap's nonUniformIndex flag).

@@ -12,7 +12,7 @@ struct Particle
 
 struct Camera
 {
-    Mat4 viewProj;
+    float4x4 viewProj;
     float4 right; // xyz: the camera's right vector in world space
     float4 up;    // xyz: the camera's up vector
 };
@@ -126,7 +126,7 @@ VertexOut vsParticle(uint vertexId : SV_VertexID, uniform DrawPush pc)
     const float3 world = p.positionLife.xyz + (camera.right.xyz * corner.x + camera.up.xyz * corner.y) * size;
 
     VertexOut o;
-    o.position = camera.viewProj.Transform(float4(world, 1.0));
+    o.position = mul(camera.viewProj, float4(world, 1.0));
     o.corner = corner;
     o.color = float4(SpeedColor(length(p.velocitySeed.xyz)), smoothstep(0.0, 0.15, life));
     return o;
