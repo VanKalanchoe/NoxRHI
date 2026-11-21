@@ -117,6 +117,11 @@ public:
 
     int OnArgument(int argc, char** argv, int index) override
     {
+        if (!std::strcmp(argv[index], "--share-command-buffer"))
+        {
+            m_DenoiserPassFlags = nri::RGPassFlags::None; // (to compare: NRD / DLSS-RR recorded with the passes around them)
+            return 1;
+        }
         if (!std::strcmp(argv[index], "--dlss-rr"))
         {
             m_StreamlineWanted = true;
@@ -280,7 +285,7 @@ public:
             reblur.hitDistanceB = kHitDistanceB;
             reblur.hitDistanceC = kHitDistanceC;
             m_Denoiser.setReblurSettings(0, reblur);
-            graph.AddPass("NRD", nri::RGPassFlags::None,
+            graph.AddPass("NRD", m_DenoiserPassFlags,
                 [&](nri::RGBuilder& b) {
                     for (const nri::RGTexture& t : { viewZ, motion, normalRoughness, diffuse, specular })
                         b.Read(t, nri::RGTextureAccess::StorageRead);
@@ -327,7 +332,7 @@ public:
             rr.reset = m_ResetRR;
             m_ResetRR = false;
             rr.mode = NRI_UPSCALER_MODE_DLAA;     // (render size = output size; no jitter: the guides are pixel centres)
-            graph.AddPass("DLSS-RR", nri::RGPassFlags::None,
+            graph.AddPass("DLSS-RR", m_DenoiserPassFlags,
                 [&](nri::RGBuilder& b) {
                     for (const nri::RGTexture& t : { color, depth, motion, diffuseAlbedo, specularAlbedo, rrNormalRoughness, specularHitDistance })
                         b.Read(t, nri::RGTextureAccess::StorageRead);
@@ -657,6 +662,10 @@ private:
     nox::FrameConstants<Frame> m_Frame;
     nri::Pipeline m_PathTrace, m_Composite, m_Present;
     nri::Denoiser m_Denoiser;
+    // NRD and DLSS-RR record their own native commands: each in a command buffer of its own (RGPassFlags::OwnCommandBuffer). On Vulkan,
+    // NoxRHI's composite after NRD in the same command buffer sometimes had no effect for 50-90 frames (the picture "froze"; --watch
+    // showed NRD's output changing and the final image not). --share-command-buffer turns it off, to compare.
+    nri::RGPassFlags m_DenoiserPassFlags = nri::RGPassFlags::OwnCommandBuffer;
     nri::Upscaler m_Upscaler;
     bool m_StreamlineWanted = false, m_NrdAvailable = false, m_NrdShaders = false, m_NrdFailed = false, m_RRFailed = false;
     bool m_ResetNrd = true, m_ResetRR = true, m_Paused = false, m_FirstFrame = true;

@@ -114,7 +114,12 @@ namespace nri
         Raster = 1 << 0,
         NeverCull = 1 << 1,
         RayTracing = 1 << 2,
-        AsyncCompute = 1 << 3
+        AsyncCompute = 1 << 3,
+        // The pass records into a command buffer of its own: the passes before and after it are recorded into others. For passes that
+        // record another library's native commands (NRD, Streamline / DLSS) -- on Vulkan with VK_EXT_descriptor_heap, NoxRHI's heap-based
+        // shaders that followed NRD's classic descriptor sets in the same command buffer sometimes had no effect (NVIDIA driver; the
+        // PathTracer's composite kept its old pixels for 50-90 frames while NRD's output changed), even with the heaps bound again.
+        OwnCommandBuffer = 1 << 4
     };
 
     inline RGPassFlags operator|(RGPassFlags a, RGPassFlags b)

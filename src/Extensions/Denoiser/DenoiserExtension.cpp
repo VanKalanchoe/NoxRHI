@@ -1,7 +1,6 @@
 #include "DenoiserExtension.h"
 #include "NrdIntegrationHost.h"
 
-#include <cstdlib>
 #include <cstring>
 #include <stdexcept>
 #include <vector>
@@ -27,36 +26,6 @@ namespace NRI
     struct DenoiserExtension::Impl
     {
         NrdIntegrationHost host;
-
-#if defined(NRI_ENABLE_VULKAN)
-        // An empty classic descriptor set bound before NRD's dispatches on Vulkan (VK_EXT_descriptor_heap devices): the workaround for
-        // NVIDIA's descriptor-heap bug that hides DLSS's resources (Streamline #109 / #122, nvbug 6436675), tried for NRD's denoised
-        // picture that sometimes stops updating for about a second on Vulkan (PathTracer, NRD mode, uncapped frame rate).
-        // NOXRHI_VK_NRD_DUMMY_SET=0 turns it off, to compare.
-        bool dummySetWanted = true;
-        bool dummySetReady = false;
-        vk::raii::DescriptorSetLayout dummySetLayout = nullptr;
-        vk::raii::DescriptorPool dummyPool = nullptr;
-        vk::raii::PipelineLayout dummyPipelineLayout = nullptr;
-        vk::DescriptorSet dummySet = {};
-
-        void bindDummyDescriptorSet(vk::raii::Device& vkDevice, vk::CommandBuffer cmd)
-        {
-            if (!dummySetWanted)
-                return;
-            if (!dummySetReady)
-            {
-                dummySetLayout = vk::raii::DescriptorSetLayout(vkDevice, vk::DescriptorSetLayoutCreateInfo{});
-                dummyPool = vk::raii::DescriptorPool(vkDevice, vk::DescriptorPoolCreateInfo{ .maxSets = 1 });
-                const vk::DescriptorSetAllocateInfo allocInfo{ .descriptorPool = *dummyPool, .descriptorSetCount = 1, .pSetLayouts = &*dummySetLayout };
-                dummySet = (*vkDevice).allocateDescriptorSets(allocInfo).front();
-                dummyPipelineLayout = vk::raii::PipelineLayout(vkDevice, vk::PipelineLayoutCreateInfo{ .setLayoutCount = 1, .pSetLayouts = &*dummySetLayout });
-                dummySetReady = true;
-                NRI_LOG_WARN("[NRD] Vulkan: an empty descriptor set is bound before NRD's dispatches (NOXRHI_VK_NRD_DUMMY_SET=0 turns it off).");
-            }
-            cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *dummyPipelineLayout, 0, { dummySet }, {});
-        }
-#endif
     };
 
     DenoiserExtension::DenoiserExtension(std::shared_ptr<Device> device, const NriDenoiserDesc& desc)
@@ -64,10 +33,6 @@ namespace NRI
     {
         if (!m_device)
             throw std::runtime_error("DenoiserExtension requires a valid device");
-#if defined(NRI_ENABLE_VULKAN)
-        if (const char* env = std::getenv("NOXRHI_VK_NRD_DUMMY_SET"); env && env[0] == '0')
-            m_impl->dummySetWanted = false;
-#endif
 
 #if defined(NRI_ENABLE_NRD)
         std::vector<NrdInstanceSpec> specs;
@@ -271,7 +236,6 @@ namespace NRI
             fillVK(dispatch.inDiffRadianceHitDist, textures.inDiffRadianceHitDist);
             fillVK(dispatch.outDiffRadianceHitDist, textures.outDiffRadianceHitDist);
 
-            m_impl->bindDummyDescriptorSet(devVK.getDevice(), *cmdVK.getActiveNativeBuffer());
             const bool denoised = m_impl->host.denoiseVK(identifiers, identifierCount, dispatch);
             cmd.restoreBindingsAfterExternalWork(); // (NRD bound its own pipelines and descriptor sets)
             return denoised;

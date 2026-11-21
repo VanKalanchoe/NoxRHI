@@ -1227,13 +1227,17 @@ namespace nri
         const uint32_t unitsLeft = static_cast<uint32_t>(m_AsyncBlocks.size()) * 3 + 1;
         bool open = false;
         uint32_t chunkPasses = 0;
+        bool previousOwnCommandBuffer = false; // (RGPassFlags::OwnCommandBuffer: a chunk boundary before and after such a pass)
         for (uint32_t position = firstPosition; position < endPosition; ++position)
         {
             Pass& pass = m_Passes[m_ExecutedScratch[position]];
             if (pass.Queue != queue)
                 continue;
             const float passMs = GetEstimatedRecordMs(pass);
-            const bool split = open && chunkPasses > 0 && m_ChunkRecordMs.back() + passMs * 0.5f > targetMs &&
+            const bool ownCommandBuffer = HasFlag(pass.Flags, RGPassFlags::OwnCommandBuffer);
+            const bool isolate = (ownCommandBuffer || previousOwnCommandBuffer);
+            previousOwnCommandBuffer = ownCommandBuffer;
+            const bool split = open && chunkPasses > 0 && (isolate || m_ChunkRecordMs.back() + passMs * 0.5f > targetMs) &&
                                m_Chunks.size() + unitsLeft < MaxRecordedChunks;
             if (!open || split)
             {
@@ -1323,6 +1327,7 @@ namespace nri
         uint32_t chunkPasses = 0;
         uint32_t splitEvent = RGInvalidIndex;
         uint32_t splitStackSize = 0;
+        bool previousOwnCommandBuffer = false; // (RGPassFlags::OwnCommandBuffer: a chunk boundary before and after such a pass)
         for (uint32_t eventIndex = 0; eventIndex < m_Events.size(); ++eventIndex)
         {
             const Event& event = m_Events[eventIndex];
@@ -1348,7 +1353,10 @@ namespace nri
 
             const Pass& pass = m_Passes[event.Index];
             const float passMs = GetEstimatedRecordMs(pass);
-            if (chunkPasses > 0 && m_Chunks.size() < chunkCount && m_ChunkRecordMs.back() + passMs * 0.5f > targetMs)
+            const bool ownCommandBuffer = HasFlag(pass.Flags, RGPassFlags::OwnCommandBuffer);
+            const bool isolate = chunkPasses > 0 && (ownCommandBuffer || previousOwnCommandBuffer) && m_Chunks.size() < MaxRecordedChunks;
+            previousOwnCommandBuffer = ownCommandBuffer;
+            if (isolate || (chunkPasses > 0 && m_Chunks.size() < chunkCount && m_ChunkRecordMs.back() + passMs * 0.5f > targetMs))
             {
                 m_Chunks.back().EndEvent = splitEvent;
                 Chunk next;

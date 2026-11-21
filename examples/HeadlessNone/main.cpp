@@ -140,6 +140,42 @@ int main()
                 device.submit(sub.Queue, sub.CommandBuffers, sub.Waits, sub.Signals);
         }
 
+        // RGPassFlags::OwnCommandBuffer: with one chunk planned (no parallel recording) the flagged pass still gets a command buffer of its
+        // own, and the passes before and after it others -- A | B(own) | C D.
+        {
+            renderGraph.SetParallelRecording(false);
+            device.beginFrame(kTickCount);
+            const uint32_t frameSlot = static_cast<uint32_t>(kTickCount % kFramesInFlight);
+            renderGraph.Reset({ kTickCount, kVirtualExtent, kVirtualExtent });
+            std::array<NriCommandBuffer, 4> recordedIn{};
+            const char* names[4] = { "IsolateA", "IsolateB (own command buffer)", "IsolateC", "IsolateD" };
+            for (uint32_t i = 0; i < 4; ++i)
+            {
+                const nri::RGPassFlags flags = i == 1 ? nri::RGPassFlags::NeverCull | nri::RGPassFlags::OwnCommandBuffer : nri::RGPassFlags::NeverCull;
+                renderGraph.AddPass(names[i], flags, [](nri::RGBuilder&) {},
+                    [&recordedIn, i](nri::RGPassContext& ctx) { recordedIn[i] = ctx.Cmd().handle(); });
+            }
+            renderGraph.Compile();
+            const auto submissions = renderGraph.Execute(frameSlot);
+            size_t commandBufferCount = 0;
+            for (const auto& sub : submissions)
+            {
+                commandBufferCount += sub.CommandBuffers.size();
+                device.submit(sub.Queue, sub.CommandBuffers, sub.Waits, sub.Signals);
+            }
+            const bool isolated = recordedIn[0] && recordedIn[1] && recordedIn[2] && recordedIn[3] && recordedIn[0] != recordedIn[1] &&
+                                  recordedIn[1] != recordedIn[2] && recordedIn[0] != recordedIn[2] && recordedIn[2] == recordedIn[3] &&
+                                  commandBufferCount == 3;
+            if (!isolated)
+            {
+                std::fprintf(stderr, "[HeadlessNone] OwnCommandBuffer: expected A | B | C D in 3 command buffers, got %zu command buffer(s).\n",
+                             commandBufferCount);
+                return 1;
+            }
+            std::printf("[HeadlessNone] OwnCommandBuffer: the flagged pass recorded alone (3 command buffers: A | B | C D).\n");
+            renderGraph.SetParallelRecording(true);
+        }
+
         renderGraph.ReleaseResources();
         device.waitIdle();
 

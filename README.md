@@ -255,14 +255,19 @@ hook runs `presentCommon()` (bookkeeping, nothing that waits).
 **Synchronization validation (Vulkan).** `set NOXRHI_VK_SYNC_VALIDATION=1` before starting a Debug build (validation on, the Vulkan SDK's
 layer installed) turns on the validation layer's synchronization validation: a missing or wrong barrier -- between NoxRHI's passes, or
 between NoxRHI's work and NRD's or Streamline's -- is reported as a validation error (`[NoxRHI][ERROR] Vulkan validation ...`, counted in
-the exit code). It is slow; it is for hunting a hazard, e.g. the PathTracer's NRD mode on Vulkan, whose denoised picture sometimes stops
-updating for about a second while the frames keep running (not seen on D3D12, nor in the modes without NRD, nor with `--vsync`).
+the exit code). It is slow; it is for hunting a hazard. (It found none behind the PathTracer's NRD-mode freeze below.)
 
-**NRD on Vulkan: an empty descriptor set first (being tested).** Before NRD's dispatches NoxRHI binds an empty classic descriptor set
--- the workaround for NVIDIA's descriptor-heap bug above -- to see whether it ends the PathTracer's NRD freezes (no barrier hazard was
-reported by synchronization validation). `NOXRHI_VK_NRD_DUMMY_SET=0` turns it off, to compare. The Nox engine's NRD integration is the
-same as NoxRHI's (same queues, queued frames, states, heaps rebound after NRD); its path tracer resets NRD's history whenever the camera
-moves, so it never runs NRD's reprojection with a moving camera, which the PathTracer does every frame.
+**NRD / DLSS passes get a command buffer of their own (`RGPassFlags::OwnCommandBuffer`).** On Vulkan the PathTracer's NRD mode
+sometimes kept showing the same picture for 50-90 frames (~0.1-0.2 s, longer at times) while the frames kept running. `--watch` located
+it: NRD's input and output changed every frame, the final image did not -- the composite pass right after NRD had no effect. It came and
+went because the render graph re-plans its command buffers every frame from measured recording times, so NRD and the composite only
+sometimes shared one. The composite reads and writes through NoxRHI's descriptor heap (`VK_EXT_descriptor_heap`), NRD binds classic
+descriptor sets, and NoxRHI binds its heaps again after NRD -- in the same command buffer that was not always enough on the NVIDIA driver
+(the reverse of NVIDIA's DLSS descriptor-heap bug above). Synchronization validation reported nothing, and an empty descriptor set bound
+before NRD did not help (removed). A pass flagged `RGPassFlags::OwnCommandBuffer` is recorded into a command buffer of its own: the passes
+after it start in a fresh one whose heaps are bound from the start, as when the split happened by chance. The PathTracer flags its NRD and
+DLSS-RR passes (`--share-command-buffer` turns it off, to compare; `--single-chunk` makes the graph record everything else into one command
+buffer). Flag the passes in which you call NRD or Streamline the same way. D3D12 never showed it. HeadlessNone checks the split.
 
 **`--watch`: is the picture frozen on the GPU, or only on the screen?** Every frame a 64 x 64 patch from the centre of a texture is read
 back and compared with the frame before; a run of identical frames longer than 100 ms is printed when it ends:

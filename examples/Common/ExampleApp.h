@@ -2,7 +2,7 @@
 // ExampleApp.h -- what every cross-API example shares: an SDL window, the API picked on the command line, the device, swapchain,
 // descriptor heaps, shader compiler and render graph, the frame loop, and the host side of nox_gpu.slang's buffer references.
 //
-//   <Example>.exe --vk | --dx12 [--frames N] [--vsync] [--tearing] [--verbose] [--watch]
+//   <Example>.exe --vk | --dx12 [--frames N] [--vsync] [--tearing] [--verbose] [--watch] [--single-chunk]
 //
 // Without --vsync the frame rate is uncapped and the newest finished frame is shown without tearing (Vulkan MAILBOX, D3D12 Present(0, 0));
 // --tearing allows tearing instead (Vulkan IMMEDIATE, D3D12 DXGI_PRESENT_ALLOW_TEARING), as NVIDIA's NRI with SwapChainBits::ALLOW_TEARING.
@@ -357,6 +357,8 @@ namespace nox
                     m_ProbesOn = true;
                 else if (!std::strcmp(argv[i], "--watch"))
                     m_WatchOn = true;
+                else if (!std::strcmp(argv[i], "--single-chunk"))
+                    m_SingleChunk = true;
                 else if (!std::strcmp(argv[i], "--shader-checks"))
                     m_ChecksOn = true;
                 else if (const int used = example.OnArgument(argc, argv, i); used > 0)
@@ -422,6 +424,8 @@ namespace nox
                 graph.SetValidationEnabled(true);
 #endif
                 graph.Initialize(device, resources, kFramesInFlight);
+                if (m_SingleChunk)
+                    graph.SetParallelRecording(false); // (--single-chunk: one command buffer per frame, except where a pass asks for its own)
                 graph.SetCommandBufferSetup([this](nri::CommandBuffer& cmd, nri::QueueType queue) {
                     cmd.bindDescriptorHeaps(&resources, &samplers);
                     if (queue == NRI_QUEUE_GRAPHICS)
@@ -822,6 +826,7 @@ namespace nox
 
         std::map<std::string, WatchSlot> m_Watches;
         bool m_WatchOn = false;
+        bool m_SingleChunk = false;
 
         std::string Title(float fps) const
         {
