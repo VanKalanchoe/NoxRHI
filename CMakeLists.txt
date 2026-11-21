@@ -345,10 +345,16 @@ if(NRI_BUILD_EXAMPLES)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CMAKE_CURRENT_SOURCE_DIR}/examples/ShaderCompat/shader_compat.slang"
             $<TARGET_FILE_DIR:ShaderCompat>/shader_compat.slang
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_CURRENT_SOURCE_DIR}/examples/Common/nox_gpu.slang"
-            $<TARGET_FILE_DIR:ShaderCompat>/nox_gpu.slang
     )
+
+    # examples/Common's shaders (nox_gpu.slang, nox_checks_selftest.slang) next to the executables, by one step that the examples depend
+    # on: copied once, not by every example's step -- those ran in parallel into the same directory and collided on Windows ("cannot set
+    # permissions"). The step lists the files when it runs (cmake/CopyExampleShaders.cmake), so a new file is copied by the next build.
+    add_custom_target(noxrhi_example_common_shaders ALL
+        COMMAND ${CMAKE_COMMAND} "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/examples/Common" "-DDESTINATION=$<TARGET_FILE_DIR:ShaderCompat>"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CopyExampleShaders.cmake"
+        COMMENT "Copying examples/Common's shaders")
+    add_dependencies(ShaderCompat noxrhi_example_common_shaders)
 
     add_executable(StreamlineNRDDemo examples/StreamlineNRDDemo/main.cpp)
     target_link_libraries(StreamlineNRDDemo PRIVATE NoxRHI::HPP)
@@ -375,15 +381,14 @@ if(NRI_BUILD_EXAMPLES)
             add_executable(${name} examples/${name}/main.cpp examples/Common/ExampleApp.h examples/Common/ExampleMath.h)
             target_link_libraries(${name} PRIVATE NoxRHI::RenderGraph SDL3::SDL3)
             noxrhi_copy_runtime_deps(${name})
-            # The shaders are copied by a step that runs on every build and lists the files then (cmake/CopyExampleShaders.cmake): a .slang
-            # file added to an example, or one edited without touching main.cpp, reaches the exe directory with the next build.
+            # The example's own shaders, copied by a step that runs on every build and lists the files then (cmake/CopyExampleShaders.cmake):
+            # a .slang file added to an example, or one edited without touching main.cpp, reaches the exe directory with the next build.
+            # examples/Common's come from noxrhi_example_common_shaders.
             add_custom_target(${name}_shaders ALL
-                COMMAND ${CMAKE_COMMAND} "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/examples/${name}"
-                    "-DCOMMON_DIR=${CMAKE_CURRENT_SOURCE_DIR}/examples/Common"
-                    "-DDESTINATION=$<TARGET_FILE_DIR:${name}>"
+                COMMAND ${CMAKE_COMMAND} "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/examples/${name}" "-DDESTINATION=$<TARGET_FILE_DIR:${name}>"
                     -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CopyExampleShaders.cmake"
                 COMMENT "Copying ${name}'s shaders")
-            add_dependencies(${name} ${name}_shaders)
+            add_dependencies(${name} ${name}_shaders noxrhi_example_common_shaders)
         endfunction()
         noxrhi_add_cross_api_example(GpuParticles)
         noxrhi_add_cross_api_example(BindlessScene)
