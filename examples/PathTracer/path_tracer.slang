@@ -13,7 +13,7 @@
 // NRD's packing comes from NRD.hlsli (vendors/NRD/Shaders): compiled in when the host defines NOX_HAS_NRD.
 
 #include "nox_gpu.slang"
-#if NOX_HAS_NRD
+#ifdef NOX_HAS_NRD
 #include "NRD.hlsli"
 #endif
 
@@ -331,7 +331,7 @@ void csPathTrace(uint3 id : SV_DispatchThreadID, uniform Push pc)
 
     // NRD inputs.
     Store(targets.viewZ, pixel, float4(viewZ, 0, 0, 0));
-#if NOX_HAS_NRD
+#ifdef NOX_HAS_NRD
     Store(targets.normalRoughness, pixel, NRD_FrontEnd_PackNormalAndRoughness(primary.normal, primary.roughness, 0.0));
     const float3 hitParams = frame.hitDistanceParams.xyz;
     Store(targets.diffuse, pixel, REBLUR_FrontEnd_PackRadianceAndNormHitDist(diffuse, REBLUR_FrontEnd_GetNormHitDist(diffuseHit, viewZ, hitParams, 1.0), true));
@@ -373,7 +373,7 @@ void csComposite(uint3 id : SV_DispatchThreadID, uniform Push pc)
         }
         else if (frame.mode == 2 && hit)
         {
-#if NOX_HAS_NRD
+#ifdef NOX_HAS_NRD
             // NRD's output is demodulated: the material colours go back on (the noisy colour stays for the sky).
             const float3 diffuse = REBLUR_BackEnd_UnpackRadianceAndNormHitDist(Read(targets.nrdDiffuse, pixel)).rgb;
             const float3 specular = REBLUR_BackEnd_UnpackRadianceAndNormHitDist(Read(targets.nrdSpecular, pixel)).rgb;
