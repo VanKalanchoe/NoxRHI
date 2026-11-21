@@ -252,6 +252,12 @@ Vulkan hooks are in place. Without `--dlss-rr` (no Streamline) nothing changes. 
 plugin that hooks acquire / create-swapchain is DLSS-G (frame generation), which the examples do not load, and the common plugin's present
 hook runs `presentCommon()` (bookkeeping, nothing that waits).
 
+**Synchronization validation (Vulkan).** `set NOXRHI_VK_SYNC_VALIDATION=1` before starting a Debug build (validation on, the Vulkan SDK's
+layer installed) turns on the validation layer's synchronization validation: a missing or wrong barrier -- between NoxRHI's passes, or
+between NoxRHI's work and NRD's or Streamline's -- is reported as a validation error (`[NoxRHI][ERROR] Vulkan validation ...`, counted in
+the exit code). It is slow; it is for hunting a hazard, e.g. the PathTracer's NRD mode on Vulkan, whose denoised picture sometimes stops
+updating for about a second while the frames keep running (not seen on D3D12, nor in the modes without NRD, nor with `--vsync`).
+
 **Stalls.** Every example prints a frame whose host side took over 150 ms with where the time went:
 `[PathTracer] Vulkan: frame 812 stalled 2300 ms -- acquire (frame fence + swapchain image) 2299 ms, record 1 ms, submit 0 ms, present 0 ms`.
 *Acquire* is waiting for the GPU to finish the frame that last used the slot, then for a swapchain image; *record* is the example's passes

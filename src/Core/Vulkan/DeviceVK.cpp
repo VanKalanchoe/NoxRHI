@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <cstdlib>
 #include <string>
 
 #ifdef _WIN32
@@ -444,8 +445,28 @@ namespace NRI
             m_debugUtilsEnabled = true;
         }
 
+        // NOXRHI_VK_SYNC_VALIDATION=1 (with validation on): the validation layer's synchronization validation too -- missing or wrong
+        // barriers between passes, and between NoxRHI's work and an extension's (NRD, Streamline), reported as validation errors. Slow;
+        // for hunting a hazard. (VK_EXT_validation_features, which the validation layer provides.)
+        const vk::ValidationFeatureEnableEXT syncValidation = vk::ValidationFeatureEnableEXT::eSynchronizationValidation;
+        vk::ValidationFeaturesEXT validationFeatures{ .enabledValidationFeatureCount = 1, .pEnabledValidationFeatures = &syncValidation };
+        bool syncValidationOn = false;
+        if (const char* env = std::getenv("NOXRHI_VK_SYNC_VALIDATION"); env && env[0] == '1')
+        {
+            const auto layerExtensions = m_validationEnabled ? m_context.enumerateInstanceExtensionProperties(std::string(validationLayers.front()))
+                                                             : std::vector<vk::ExtensionProperties>{};
+            if (std::ranges::any_of(layerExtensions, [](const auto& e) { return strcmp(e.extensionName, vk::EXTValidationFeaturesExtensionName) == 0; }))
+            {
+                requiredExtensions.push_back(vk::EXTValidationFeaturesExtensionName);
+                syncValidationOn = true;
+            }
+            else
+                NRI_LOG_WARN("NOXRHI_VK_SYNC_VALIDATION: needs the validation layer (a Debug build, the Vulkan SDK installed); not enabled.");
+        }
+
         vk::InstanceCreateInfo createInfo
         {
+            .pNext = syncValidationOn ? &validationFeatures : nullptr,
             .pApplicationInfo = &appInfo,
             .enabledLayerCount = static_cast<uint32_t>(requiredLayers.size()),
             .ppEnabledLayerNames = requiredLayers.data(),
@@ -453,6 +474,8 @@ namespace NRI
             .ppEnabledExtensionNames = requiredExtensions.data()
         };
         m_instance = vk::raii::Instance(m_context, createInfo);
+        if (syncValidationOn)
+            NRI_LOG_WARN("Vulkan synchronization validation on (NOXRHI_VK_SYNC_VALIDATION=1): hazards are reported as validation errors.");
         VULKAN_HPP_DEFAULT_DISPATCHER.init(*m_instance, vkGetInstanceProcAddr);
     }
 
