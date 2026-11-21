@@ -161,16 +161,33 @@ namespace NRI
                 proxy->Release();
         }
 
-        D3D12_COMMAND_QUEUE_DESC queueDesc{};
-        queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
-        queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-        ThrowIfFailed(queueDevice->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&m_directQueue)), "Create Direct CommandQueue");
-
-        queueDesc.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
-        queueDevice->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&m_computeQueue));
-
-        queueDesc.Type = D3D12_COMMAND_LIST_TYPE_COPY;
-        queueDevice->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&m_copyQueue));
+        // Through the proxy device a queue comes back as Streamline's D3D12CommandQueue proxy: NoxRHI (and NRD, which gets the queues)
+        // uses the native queue behind it (slGetNativeInterface), as the guide asks -- the proxy expects Streamline's own command list
+        // proxies and, released after slShutdown, crashed (0xC0000005). The direct queue's proxy is kept for one call: the swapchain is
+        // created on it (Streamline's factory looks for its queue proxy there); it is released before slShutdown.
+        const bool proxied = queueDevice.Get() != m_device.Get();
+        const auto createQueue = [&](D3D12_COMMAND_LIST_TYPE type, ComPtr<ID3D12CommandQueue>& native, ComPtr<ID3D12CommandQueue>* keepProxy) -> HRESULT {
+            D3D12_COMMAND_QUEUE_DESC queueDesc{};
+            queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
+            queueDesc.Type = type;
+            ComPtr<ID3D12CommandQueue> queue;
+            const HRESULT hr = queueDevice->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&queue));
+            if (FAILED(hr))
+                return hr;
+            void* base = nullptr;
+            if (proxied && m_streamline->nativeD3D12Interface(queue.Get(), &base))
+            {
+                native.Attach(static_cast<ID3D12CommandQueue*>(base));
+                if (keepProxy)
+                    *keepProxy = queue;
+            }
+            else
+                native = queue;
+            return hr;
+        };
+        ThrowIfFailed(createQueue(D3D12_COMMAND_LIST_TYPE_DIRECT, m_directQueue, &m_directQueueProxy), "Create Direct CommandQueue");
+        createQueue(D3D12_COMMAND_LIST_TYPE_COMPUTE, m_computeQueue, nullptr);
+        createQueue(D3D12_COMMAND_LIST_TYPE_COPY, m_copyQueue, nullptr);
 
         ThrowIfFailed(m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_waitIdleFence)), "CreateFence");
         m_waitIdleEvent = CreateEventEx(nullptr, nullptr, 0, EVENT_ALL_ACCESS);
@@ -358,6 +375,7 @@ namespace NRI
         waitIdle();
         m_shuttingDown = true;
         drainDeferredDeletions();
+        m_directQueueProxy.Reset(); // (a Streamline object: released while Streamline is still up)
         if (m_streamline)
         {
             m_streamline->shutdown();
@@ -618,6 +636,8 @@ namespace NRI
             m_allocator->setCurrentFrameIndex(frameNumber);
         }
         collectDeferredDeletions();
+        if (m_streamline)
+            m_streamline->beginFrame(frameNumber);
     }
 
     void DeviceD3D12::getMemoryStats(std::vector<MemoryHeapStats>& outHeaps) const

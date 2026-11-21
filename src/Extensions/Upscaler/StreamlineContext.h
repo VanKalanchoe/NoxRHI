@@ -73,6 +73,12 @@ namespace NRI
         // D3D12: replaces *iface (an ID3D12Device / IDXGIFactory, with its reference) by Streamline's proxy for it (slUpgradeInterface).
         // The device's command queues and the swapchain's factory go through it, as the manual-hooking guide asks.
         bool upgradeD3D12Interface(void** iface) const;
+        // D3D12: the native interface behind one of Streamline's proxies, with a reference (slGetNativeInterface). The guide: use native
+        // interfaces everywhere except for the hooked calls.
+        bool nativeD3D12Interface(void* proxy, void** native) const;
+        // The frame's Streamline token, from the device's frame number (slGetNewFrameToken with the host's index), once per frame at its
+        // start -- every frame, not only those that evaluate DLSS: Streamline's present hook counts every frame.
+        void beginFrame(uint32_t frameNumber);
 
         NriResult getOptimalSettings(NriUpscalerType type,
                                      NriUpscalerMode mode,

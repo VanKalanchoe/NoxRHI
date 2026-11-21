@@ -289,6 +289,8 @@ namespace NRI
         m_allocator->setCurrentFrameIndex(frameNumber);
         freeRetiredSparseMemory();
         collectDeferredDeletions();
+        if (m_streamline)
+            m_streamline->beginFrame(frameNumber);
     }
 
     void DeviceVK::getMemoryStats(std::vector<MemoryHeapStats>& outHeaps) const

@@ -214,8 +214,19 @@ Vulkan present proxy, and only when the swapchain had not created its own surfac
   `vkQueuePresentKHR` and `vkDeviceWaitIdle` go through the proxies from the interposer's `vkGetDeviceProcAddr` / `vkGetInstanceProcAddr`.
 - **D3D12:** the device is registered with Streamline before the command queues are created through its proxy device, and the swapchain
   comes from its proxy factory (`slUpgradeInterface`), so `Present`, `GetBuffer` and `GetCurrentBackBufferIndex` go through it.
+- **D3D12 queues stay native.** Through the proxy device a queue comes back as Streamline's queue *proxy*; NoxRHI takes the native queue
+  behind it (`slGetNativeInterface`) for everything -- "use native interfaces everywhere except the hooked calls" -- and keeps the
+  direct queue's proxy only to create the swapchain on (Streamline's factory looks for it), released before `slShutdown`. Using the
+  proxy everywhere crashed (`0xC0000005`) with `--dlss-rr`.
+- **A frame token every frame.** The device's `beginFrame(frameNumber)` takes the frame's token (`slGetNewFrameToken` with that index),
+  as the guide's frame loop does; NoxRHI used to take one only when DLSS was evaluated, numbered by its own counter, while Streamline's
+  present hook counts every frame.
 - At shutdown only the features that ran are freed (freeing DLSS-SR after only DLSS-RR ran gave `slFreeResources(DLSS) failed: 25`,
   `eErrorInvalidParameter`).
+
+Debug builds copy Streamline's **development** DLLs (`bin/x64/development`) and NRD's / NRI's Debug DLLs beside the example; Release
+builds copy the **production** DLLs (`bin/x64`) and NRD's / NRI's Release DLLs. The DLSS models (`nvngx_dlss*.dll`) are the same; the
+development Streamline adds logging and checks.
 
 The examples' log says `[Streamline] Vulkan: present, swapchain, surface and device-wait-idle go through Streamline's proxies` when the
 Vulkan hooks are in place. Without `--dlss-rr` (no Streamline) nothing changes.

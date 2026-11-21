@@ -228,6 +228,9 @@ namespace NRI
         bool dlssEvaluated = false;   // (DLSS-SR evaluated since the last reset: its resources exist)
         bool dlssRREvaluated = false; // (DLSS-RR likewise)
         uint32_t frameIndex = 0;
+#if defined(NRI_ENABLE_STREAMLINE)
+        sl::FrameToken* frameToken = nullptr; // (this frame's, from beginFrame)
+#endif
 
 #if defined(NRI_ENABLE_VULKAN)
         bool dummyDescriptorSetReady = false;
@@ -513,6 +516,43 @@ namespace NRI
 #endif
     }
 
+    bool StreamlineContext::nativeD3D12Interface(void* proxy, void** native) const
+    {
+#if defined(NRI_ENABLE_STREAMLINE) && defined(_WIN32)
+        if (!m_initialized || !proxy || !native)
+            return false;
+        const sl::Result result = slGetNativeInterface(proxy, native);
+        if (result != sl::Result::eOk)
+        {
+            NRI_LOG_WARN("[Streamline] slGetNativeInterface failed: {}", static_cast<int>(result));
+            return false;
+        }
+        return *native != nullptr;
+#else
+        (void)proxy;
+        (void)native;
+        return false;
+#endif
+    }
+
+    void StreamlineContext::beginFrame(uint32_t frameNumber)
+    {
+#if defined(NRI_ENABLE_STREAMLINE)
+        if (!m_initialized)
+            return;
+        m_impl->frameIndex = frameNumber;
+        m_impl->frameToken = nullptr;
+        const sl::Result result = slGetNewFrameToken(m_impl->frameToken, &m_impl->frameIndex);
+        if (result != sl::Result::eOk)
+        {
+            NRI_LOG_WARN("[Streamline] slGetNewFrameToken failed: {}", static_cast<int>(result));
+            m_impl->frameToken = nullptr;
+        }
+#else
+        (void)frameNumber;
+#endif
+    }
+
     void StreamlineContext::shutdown()
     {
 #if defined(NRI_ENABLE_VULKAN)
@@ -642,14 +682,12 @@ namespace NRI
         Texture2D* depthTex = textures.depth;
         Texture2D* mvecTex = textures.motionVectors;
 
-        sl::FrameToken* frameToken = nullptr;
-        m_impl->frameIndex++;
-        const sl::Result tokenRes = slGetNewFrameToken(frameToken, &m_impl->frameIndex);
-        if (tokenRes != sl::Result::eOk || !frameToken)
-        {
-            NRI_LOG_WARN("[Streamline] slGetNewFrameToken failed: {}", static_cast<int>(tokenRes));
+        // (the frame's token comes from beginFrame, called by the device every frame; a host that never called it gets one here)
+        if (!m_impl->frameToken)
+            beginFrame(m_impl->frameIndex + 1);
+        sl::FrameToken* frameToken = m_impl->frameToken;
+        if (!frameToken)
             return false;
-        }
 
         const uint32_t outW = outputTex->GetWidth();
         const uint32_t outH = outputTex->GetHeight();

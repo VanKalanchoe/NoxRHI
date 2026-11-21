@@ -28,6 +28,8 @@ namespace NRI
         IDXGIFactory6* getNativeFactory() const { return m_factory.Get(); }
         IDXGIAdapter4* getNativeAdapter() const { return m_adapter.Get(); }
         ID3D12CommandQueue* getGraphicsQueue() const { return m_directQueue.Get(); }
+        // The queue a swapchain is created on: Streamline's proxy of the direct queue when Streamline is up, else the direct queue.
+        ID3D12CommandQueue* getSwapchainQueue() const { return m_directQueueProxy ? m_directQueueProxy.Get() : m_directQueue.Get(); }
         ID3D12CommandQueue* getComputeQueue() const { return m_computeQueue ? m_computeQueue.Get() : m_directQueue.Get(); }
         ID3D12CommandQueue* getTransferQueue() const { return m_copyQueue ? m_copyQueue.Get() : m_directQueue.Get(); }
         ID3D12RootSignature* getGlobalRootSignature() const { return m_globalRootSignature.Get(); }
@@ -96,6 +98,7 @@ namespace NRI
         ComPtr<ID3D12Device5> m_device;
 
         ComPtr<ID3D12CommandQueue> m_directQueue;
+        ComPtr<ID3D12CommandQueue> m_directQueueProxy; // (Streamline's proxy of m_directQueue: only to create the swapchain on)
         ComPtr<ID3D12CommandQueue> m_computeQueue;
         ComPtr<ID3D12CommandQueue> m_copyQueue;
 

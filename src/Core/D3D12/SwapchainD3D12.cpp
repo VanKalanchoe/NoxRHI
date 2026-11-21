@@ -62,7 +62,7 @@ namespace NRI
 
         ComPtr<IDXGISwapChain1> swapChain1;
         ThrowIfFailed(factory->CreateSwapChainForHwnd(
-            m_deviceD3D12.getGraphicsQueue(),
+            m_deviceD3D12.getSwapchainQueue(),
             hwnd,
             &swapChainDesc,
             nullptr,
