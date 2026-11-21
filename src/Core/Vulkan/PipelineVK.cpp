@@ -178,7 +178,9 @@ namespace NRI
             std::mutex Mutex;
             std::condition_variable Done;
             bool Finished = false;
-            std::vector<char> Spirv;
+            // Each entry point's SPIR-V on its own (ShaderCompiler::compileEntryPoints); empty when the compiler cannot -- the stage is
+            // then compiled by itself (compile(path, entryPoint)).
+            std::vector<std::pair<std::string, std::vector<char>>> EntryPoints;
             std::exception_ptr Error;
             uint64_t Sequence = 0;
             // Compiled ahead for pipelines created later (CompileModulesNow): kept by trimModuleCache until a pipeline takes it -- the
@@ -194,7 +196,8 @@ namespace NRI
         std::mutex s_compilingMutex;
         std::unordered_set<std::string> s_compiling;
 
-        std::vector<char> compileModuleOnce(const std::string& sourcePath, ShaderCompiler& compiler)
+        // A source's entry points, compiled once however many pipelines and stages use them (the first caller compiles, the others wait).
+        std::shared_ptr<ModuleCompile> compileModuleOnce(const std::string& sourcePath, ShaderCompiler& compiler)
         {
             const std::string key = sourcePath + "|" + std::to_string(compiler.sourceHash(sourcePath));
             std::shared_ptr<ModuleCompile> entry;
@@ -214,7 +217,7 @@ namespace NRI
             }
             if (compileHere)
             {
-                std::vector<char> spirv;
+                std::vector<std::pair<std::string, std::vector<char>>> entryPoints;
                 std::exception_ptr error;
                 {
                     std::lock_guard compilingLock(s_compilingMutex);
@@ -223,7 +226,7 @@ namespace NRI
                 const auto started = std::chrono::steady_clock::now();
                 try
                 {
-                    spirv = compiler.compile(sourcePath);
+                    entryPoints = compiler.compileEntryPoints(sourcePath);
                 }
                 catch (...)
                 {
@@ -238,7 +241,7 @@ namespace NRI
                                   std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
                 {
                     std::lock_guard lock(entry->Mutex);
-                    entry->Spirv = std::move(spirv);
+                    entry->EntryPoints = std::move(entryPoints);
                     entry->Error = error;
                     entry->Finished = true;
                 }
@@ -248,7 +251,32 @@ namespace NRI
             entry->Done.wait(lock, [&] { return entry->Finished; });
             if (entry->Error)
                 std::rethrow_exception(entry->Error);
-            return entry->Spirv;
+            return entry;
+        }
+
+        // One stage's SPIR-V: its entry point alone, never the whole file. A module with a file's other entry points hands the driver
+        // their variables as well -- on an NVIDIA GPU MeshletCulling's mesh shaders then read garbage from the task payload while two
+        // task shaders shared the module (device lost; D3D12, which compiles each entry point, was fine) -- and Slang writes invalid
+        // SPIR-V for task shaders with different payload types in one module.
+        std::vector<char> compileEntryPointOnce(const std::string& sourcePath, const std::string& entryPoint, ShaderCompiler& compiler)
+        {
+            const std::shared_ptr<ModuleCompile> module = compileModuleOnce(sourcePath, compiler);
+            {
+                std::unique_lock lock(module->Mutex);
+                if (module->EntryPoints.empty())
+                {
+                    lock.unlock();
+                    return compiler.compile(sourcePath, entryPoint); // (a compiler without compileEntryPoints: this entry point by itself)
+                }
+            }
+            std::lock_guard lock(module->Mutex);
+            for (const auto& [name, spirv] : module->EntryPoints)
+                if (name == entryPoint)
+                    return spirv;
+            std::string names;
+            for (const auto& [name, spirv] : module->EntryPoints)
+                names += (names.empty() ? "" : ", ") + name;
+            throw std::runtime_error("Shader entry point '" + entryPoint + "' not found in " + sourcePath + " (it has: " + names + ")");
         }
 
         // After the start-up: the most recent few modules stay (a hot reload of one entry point finds its siblings' module).
@@ -295,7 +323,7 @@ namespace NRI
                 return std::vector<char>(cached.begin(), cached.end());
         }
         t_compiledInBuild = true;
-        std::vector<char> spirv = compileModuleOnce(shaderDesc.sourcePath, compiler);
+        std::vector<char> spirv = compileEntryPointOnce(shaderDesc.sourcePath, shaderDesc.entryPoint, compiler);
         writeFileAtomic(path, spirv.data(), spirv.size(), forceCompile);
         return spirv;
     }

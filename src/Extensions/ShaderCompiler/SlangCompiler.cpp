@@ -159,29 +159,14 @@ namespace NRI
         // keep serving the old compiler's SPIR-V / DXIL from the cache).
         // (the version NoxRHI was built against -- a header define, so it needs no slang.dll: a game shipped without Slang finds the
         // binaries the build compiled)
-        static const uint64_t compilerHash = Hash::compute(std::string("slang " SLANG_TAG_VERSION));
+        // ("entry-point code": Vulkan SPIR-V holds one entry point each since compileEntryPoints -- binaries of whole-file modules are not
+        // served again)
+        static const uint64_t compilerHash = Hash::compute(std::string("slang " SLANG_TAG_VERSION " entry-point code"));
         return Hash::compute(&compilerHash, sizeof(compilerHash), sourceHash);
     }
 
-    std::vector<char> SlangCompiler::compile(const std::string& path, std::string_view entryPoint)
+    Slang::ComPtr<slang::IModule> SlangCompiler::loadModule(const std::string& path, slang::IGlobalSession* globalSession, Slang::ComPtr<slang::ISession>& session)
     {
-        if (!std::filesystem::exists(path))
-            NRI_LOG_ERROR("SlangCompiler::compile file not found: {}", path);
-        if (s_ShaderProgress && s_ShaderProgress->OnCompile)
-            s_ShaderProgress->OnCompile(path);
-        Slang::ComPtr<slang::IGlobalSession> globalSession = acquireSession();
-        if (!globalSession)
-            throw std::runtime_error("No precompiled binary for '" + path + "' and slang.dll is not available");
-
-        struct SessionReturn
-        {
-            SlangCompiler* Compiler;
-            Slang::ComPtr<slang::IGlobalSession> Session;
-            ~SessionReturn() { Compiler->releaseSession(std::move(Session)); }
-        } sessionReturn{ this, globalSession };
-
-        Slang::ComPtr<slang::ISession> session;
-
         auto slangTargets{
             std::to_array<slang::TargetDesc>({
                 {
@@ -252,6 +237,8 @@ namespace NRI
         };
 
         globalSession->createSession(slangSessionDesc, session.writeRef());
+        if (!session)
+            throw std::runtime_error("Slang failed to create a session for: " + path);
 
         std::string moduleName = std::filesystem::path(path).stem().string();
 
@@ -297,6 +284,28 @@ namespace NRI
             }
             throw std::runtime_error("Slang failed to load module: " + path + (firstError.empty() ? std::string() : "\n" + firstError));
         }
+        return slangModule;
+    }
+
+    std::vector<char> SlangCompiler::compile(const std::string& path, std::string_view entryPoint)
+    {
+        if (!std::filesystem::exists(path))
+            NRI_LOG_ERROR("SlangCompiler::compile file not found: {}", path);
+        if (s_ShaderProgress && s_ShaderProgress->OnCompile)
+            s_ShaderProgress->OnCompile(path);
+        Slang::ComPtr<slang::IGlobalSession> globalSession = acquireSession();
+        if (!globalSession)
+            throw std::runtime_error("No precompiled binary for '" + path + "' and slang.dll is not available");
+
+        struct SessionReturn
+        {
+            SlangCompiler* Compiler;
+            Slang::ComPtr<slang::IGlobalSession> Session;
+            ~SessionReturn() { Compiler->releaseSession(std::move(Session)); }
+        } sessionReturn{ this, globalSession };
+
+        Slang::ComPtr<slang::ISession> session;
+        Slang::ComPtr<slang::IModule> slangModule = loadModule(path, globalSession.get(), session);
 
         Slang::ComPtr<ISlangBlob> targetCode;
         Slang::ComPtr<slang::IBlob> targetDiagnostics;
@@ -378,5 +387,82 @@ namespace NRI
         size_t dataSize = targetCode->getBufferSize();
 
         return std::vector<char>(dataPtr, dataPtr + dataSize);
+    }
+    std::vector<std::pair<std::string, std::vector<char>>> SlangCompiler::compileEntryPoints(const std::string& path)
+    {
+        if (!std::filesystem::exists(path))
+            NRI_LOG_ERROR("SlangCompiler::compileEntryPoints file not found: {}", path);
+        if (s_ShaderProgress && s_ShaderProgress->OnCompile)
+            s_ShaderProgress->OnCompile(path);
+        Slang::ComPtr<slang::IGlobalSession> globalSession = acquireSession();
+        if (!globalSession)
+            throw std::runtime_error("No precompiled binary for '" + path + "' and slang.dll is not available");
+        struct SessionReturn
+        {
+            SlangCompiler* Compiler;
+            Slang::ComPtr<slang::IGlobalSession> Session;
+            ~SessionReturn() { Compiler->releaseSession(std::move(Session)); }
+        } sessionReturn{ this, globalSession };
+
+        Slang::ComPtr<slang::ISession> session;
+        Slang::ComPtr<slang::IModule> slangModule = loadModule(path, globalSession.get(), session);
+
+        // The module and all of its entry points, linked once; then each entry point's code on its own (getEntryPointCode emits that
+        // entry point and only what it uses).
+        const SlangInt32 count = slangModule->getDefinedEntryPointCount();
+        std::vector<Slang::ComPtr<slang::IEntryPoint>> entryPoints(size_t(std::max<SlangInt32>(count, 0)));
+        std::vector<slang::IComponentType*> components{ slangModule.get() };
+        for (SlangInt32 i = 0; i < count; ++i)
+        {
+            slangModule->getDefinedEntryPoint(i, entryPoints[size_t(i)].writeRef());
+            if (!entryPoints[size_t(i)])
+                throw std::runtime_error("Slang could not read entry point " + std::to_string(i) + " of: " + path);
+            components.push_back(entryPoints[size_t(i)].get());
+        }
+        Slang::ComPtr<slang::IComponentType> composed;
+        Slang::ComPtr<slang::IBlob> diagnostics;
+        SlangResult result = session->createCompositeComponentType(components.data(), SlangInt(components.size()), composed.writeRef(), diagnostics.writeRef());
+        if (SLANG_FAILED(result) || !composed)
+            throw std::runtime_error("Slang failed to compose the entry points of: " + path +
+                                     (diagnostics ? "\n" + std::string(static_cast<const char*>(diagnostics->getBufferPointer())) : std::string()));
+        Slang::ComPtr<slang::IComponentType> linked;
+        diagnostics = nullptr;
+        result = composed->link(linked.writeRef(), diagnostics.writeRef());
+        if (SLANG_FAILED(result) || !linked)
+            throw std::runtime_error("Slang failed to link the entry points of: " + path +
+                                     (diagnostics ? "\n" + std::string(static_cast<const char*>(diagnostics->getBufferPointer())) : std::string()));
+        if (diagnostics)
+            NRI_LOG_WARN("Slang link diagnostics ({}): {}", path, static_cast<const char*>(diagnostics->getBufferPointer()));
+
+        slang::ProgramLayout* layout = linked->getLayout(0);
+        std::vector<std::pair<std::string, std::vector<char>>> codes;
+        codes.reserve(size_t(std::max<SlangInt32>(count, 0)));
+        for (SlangInt32 i = 0; i < count; ++i)
+        {
+            slang::EntryPointReflection* reflection = layout ? layout->getEntryPointByIndex(SlangUInt(i)) : nullptr;
+            const std::string name = reflection && reflection->getName() ? reflection->getName() : std::string();
+            if (m_targetAPI == GraphicsAPI::D3D12)
+            {
+                // (the same push data check as compile(): this entry point alone)
+                slang::IComponentType* single[] = { slangModule.get(), entryPoints[size_t(i)].get() };
+                Slang::ComPtr<slang::IComponentType> singleComposed, singleLinked;
+                if (SLANG_SUCCEEDED(session->createCompositeComponentType(single, 2, singleComposed.writeRef(), nullptr)) && singleComposed &&
+                    SLANG_SUCCEEDED(singleComposed->link(singleLinked.writeRef(), nullptr)) && singleLinked)
+                    if (const std::string difference = CheckPushLayoutMatchesScalar(singleLinked.get()); !difference.empty())
+                        NRI_LOG_ERROR("Push data of '{}' ({}) differs between the APIs: {}. Keep structs out of push data (a uint64_t reference "
+                                      "with a property, see nox_gpu.slang) and keep vectors inside 16-byte rows.", name, path, difference);
+            }
+            Slang::ComPtr<slang::IBlob> code;
+            diagnostics = nullptr;
+            result = linked->getEntryPointCode(i, 0, code.writeRef(), diagnostics.writeRef());
+            if (SLANG_FAILED(result) || !code)
+                throw std::runtime_error("Slang failed to generate code for entry point '" + name + "' of: " + path +
+                                         (diagnostics ? "\n" + std::string(static_cast<const char*>(diagnostics->getBufferPointer())) : std::string()));
+            if (diagnostics)
+                NRI_LOG_WARN("Slang target-code diagnostics ({}:{}): {}", path, name, static_cast<const char*>(diagnostics->getBufferPointer()));
+            const char* bytes = static_cast<const char*>(code->getBufferPointer());
+            codes.emplace_back(name, std::vector<char>(bytes, bytes + code->getBufferSize()));
+        }
+        return codes;
     }
 }

@@ -26,6 +26,12 @@ namespace NRI
         virtual ~ShaderCompiler() = default;
 
         virtual std::vector<char> compile(const std::string& path, std::string_view entryPoint = {}) = 0;
+        // Every entry point of a file, each as target code of its own -- one entry point and only the variables it uses -- from one load
+        // and one link of the file. Vulkan creates its shaders from these: a SPIR-V module holding a file's other entry points gave the
+        // driver their variables too (MeshletCulling's mesh shaders read garbage from the task payload on an NVIDIA GPU while two task
+        // shaders shared the module), and Slang emits invalid SPIR-V for task shaders with different payload types in one module.
+        // Empty when the compiler cannot (the caller compiles entry points one at a time).
+        virtual std::vector<std::pair<std::string, std::vector<char>>> compileEntryPoints(const std::string& path) { (void)path; return {}; }
         virtual uint64_t sourceHash(const std::string& path) = 0;
         virtual bool canCompile() = 0;
         virtual void setTargetAPI(GraphicsAPI api) {}

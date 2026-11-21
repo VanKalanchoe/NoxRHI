@@ -226,11 +226,15 @@ already work on both and need nothing.
 9. **Draw index in indirect draws.** The engine's task shader reads `SV_DrawIndex` (Vulkan's `DrawIndex`). D3D12 has no draw index (dxc rejects `SV_DrawIndex`): the usual
    way is a root constant per indirect record, set by the command signature next to the dispatch arguments. NoxRHI's signature holds only the
    dispatch arguments today, so a shader that reads `SV_DrawIndex` needs that added before it runs on D3D12.
-10. **Slang: one payload type per file for task shaders.** In a file with several task shaders whose payloads are of *different* types,
-    Slang (2026.22.1) gives only the first type's payload the task payload storage class; the others become plain groupshared memory, which
-    is invalid SPIR-V (each entry point compiled alone is valid). NoxRHI compiles a whole file into one SPIR-V module on Vulkan, so keep
-    such task shaders in separate files (MeshletCulling's `meshlet_task_engine.slang`). Task shaders sharing one payload type, and mesh
-    shaders reading different payload types, compile correctly.
+10. **One entry point per SPIR-V module (the MeshletCulling device loss).** NoxRHI used to create every Vulkan shader from the *whole
+    file's* SPIR-V (all entry points, picked by name). With two task shaders in one file, an NVIDIA driver handed MeshletCulling's mesh
+    shaders garbage instead of the task payload: `--checked` caught ~7,300 groups a frame reading the float 19.94 (a vertex's clip-space
+    `w`) as a meshlet index, and without the check the GPU faulted (device lost). D3D12 compiles each entry point by itself and was fine;
+    so was the engine-design task shader, alone in its file. NoxRHI now loads and links a file once and gives each Vulkan shader the SPIR-V
+    of its own entry point only (`ShaderCompiler::compileEntryPoints`, Slang's `getEntryPointCode`); the shader cache key changed with it.
+    This also avoids a Slang bug: in one module, task shaders whose payloads have different types get the task payload storage class
+    only for the first type (invalid SPIR-V). **The Nox engine's NRI still compiles whole modules** -- safe today only because each of its
+    files has one task shader; port this change before a file holds several.
 
 Struct layout through `BufferRef` is the same on both APIs (C-like / scalar: no `float3` padding, 64-bit members 8-byte aligned);
 ShaderCompat's `csStructLayout` checks it at runtime.

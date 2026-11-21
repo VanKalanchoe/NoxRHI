@@ -1,8 +1,7 @@
-// MeshletCulling's --task-engine task shader, in a file of its own: a Slang module with several task shaders whose payloads are of
-// different types gives only the first type's payload the task payload storage class (TaskPayloadWorkgroupEXT); the others become
-// plain groupshared memory (Workgroup) -- invalid SPIR-V that spirv-val rejects (Slang 2026.22.1; each entry point compiled on its
-// own is valid). NoxRHI compiles a whole file into one SPIR-V module on Vulkan, so this payload type (PayloadEngine) must not share a
-// file with tsCull / tsCullSingle (Payload).
+// MeshletCulling's --task-engine task shader, in a file of its own (as the Nox engine keeps each task shader). It used to have to be: a
+// Slang module with several task shaders whose payloads are of different types gives only the first type's payload the task payload
+// storage class (TaskPayloadWorkgroupEXT) -- invalid SPIR-V. NoxRHI now compiles each Vulkan entry point on its own, which avoids that
+// (README porting note 10).
 #pragma once
 
 #include "meshlet_common.slang"

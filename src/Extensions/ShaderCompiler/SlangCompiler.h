@@ -24,6 +24,7 @@ namespace NRI
         ~SlangCompiler() override = default;
 
         std::vector<char> compile(const std::string& path, std::string_view entryPoint = {}) override;
+        std::vector<std::pair<std::string, std::vector<char>>> compileEntryPoints(const std::string& path) override;
         uint64_t sourceHash(const std::string& path) override;
         bool canCompile() override;
         void setTargetAPI(GraphicsAPI api) override { m_targetAPI = api; }
@@ -32,6 +33,8 @@ namespace NRI
         void addSearchPath(std::string_view path) override;
 
     private:
+        // A session with NoxRHI's options for the target API and the file loaded into it (throws with the first error when it does not compile).
+        Slang::ComPtr<slang::IModule> loadModule(const std::string& path, slang::IGlobalSession* globalSession, Slang::ComPtr<slang::ISession>& session);
         Slang::ComPtr<slang::IGlobalSession> acquireSession();
         void releaseSession(Slang::ComPtr<slang::IGlobalSession> session);
 
