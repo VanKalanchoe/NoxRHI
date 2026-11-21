@@ -375,12 +375,15 @@ if(NRI_BUILD_EXAMPLES)
             add_executable(${name} examples/${name}/main.cpp examples/Common/ExampleApp.h examples/Common/ExampleMath.h)
             target_link_libraries(${name} PRIVATE NoxRHI::RenderGraph SDL3::SDL3)
             noxrhi_copy_runtime_deps(${name})
-            # (CONFIGURE_DEPENDS: a .slang file added to an example is picked up by the next build, without re-running CMake by hand)
-            file(GLOB example_shaders CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/examples/${name}/*.slang")
-            add_custom_command(TARGET ${name} POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different ${example_shaders}
-                    "${CMAKE_CURRENT_SOURCE_DIR}/examples/Common/nox_gpu.slang" $<TARGET_FILE_DIR:${name}>
-            )
+            # The shaders are copied by a step that runs on every build and lists the files then (cmake/CopyExampleShaders.cmake): a .slang
+            # file added to an example, or one edited without touching main.cpp, reaches the exe directory with the next build.
+            add_custom_target(${name}_shaders ALL
+                COMMAND ${CMAKE_COMMAND} "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/examples/${name}"
+                    "-DCOMMON_FILE=${CMAKE_CURRENT_SOURCE_DIR}/examples/Common/nox_gpu.slang"
+                    "-DDESTINATION=$<TARGET_FILE_DIR:${name}>"
+                    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CopyExampleShaders.cmake"
+                COMMENT "Copying ${name}'s shaders")
+            add_dependencies(${name} ${name}_shaders)
         endfunction()
         noxrhi_add_cross_api_example(GpuParticles)
         noxrhi_add_cross_api_example(BindlessScene)

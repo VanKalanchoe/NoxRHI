@@ -196,7 +196,9 @@ public:
         m_Push.vertices = upload(sphere.vertices.data(), sphere.vertices.size() * sizeof(Vertex), m_Vertices);
         m_Push.instances = upload(instances.data(), instances.size() * sizeof(Instance), m_Instances);
 
-        m_Stats = host.CreateBuffer(4, NRI_BUFFER_USAGE_STORAGE);
+        // The drawn-meshlet counter the task shader adds to with an atomic: device-local (STORAGE_STATIC), as the Nox engine's cluster
+        // statistics are. STORAGE is host-visible memory on Vulkan, and task-shader atomics on it lost the device (NRIResource.h).
+        m_Stats = host.CreateBuffer(4, NRI_BUFFER_USAGE_STORAGE_STATIC);
         m_Push.stats = host.Refs(m_Stats, 4, true).write;
         const uint32_t zero = 0;
         m_Zero = host.CreateBuffer(4, NRI_BUFFER_USAGE_STAGING, &zero);

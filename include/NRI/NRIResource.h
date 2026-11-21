@@ -14,6 +14,11 @@ typedef enum NriBufferUsage
     NRI_BUFFER_USAGE_UNIFORM = 1,
     NRI_BUFFER_USAGE_VERTEX = 2,
     NRI_BUFFER_USAGE_INDEX = 3,
+    // STORAGE: shader-writable and CPU-writable -- on Vulkan host-visible, mapped memory (VRAM through the BAR when the driver offers it,
+    // otherwise system RAM); on D3D12 a default-heap (VRAM) buffer. STORAGE_STATIC: VRAM only, filled by copies or shaders.
+    // Data the GPU writes -- above all with atomics (counters, statistics, culling lists) -- belongs in STORAGE_STATIC: GPU atomics on
+    // host memory can hang the device (MeshletCulling's task-shader counter lost the device on Vulkan until it moved there). INDIRECT /
+    // INDIRECT_STATIC are the same pair for draw arguments.
     NRI_BUFFER_USAGE_STORAGE = 4,
     NRI_BUFFER_USAGE_STORAGE_STATIC = 5,
     NRI_BUFFER_USAGE_DESCRIPTOR_HEAP = 6,

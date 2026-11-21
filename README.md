@@ -216,6 +216,9 @@ already work on both and need nothing.
    vertices from a buffer, as all four examples do). Indirect mesh draws (`drawMeshTasksIndirect`, `drawMeshTasksIndirectCount`, which the
    engine's meshlet path uses) run as `ExecuteIndirect` with a DispatchMesh command signature; the argument records are the same 12 bytes as
    Vulkan's `VkDrawMeshTasksIndirectCommandEXT`. The by-device-address form has no D3D12 equivalent (it logs an error).
+   **Buffers the GPU writes with atomics must be `STORAGE_STATIC`** (VRAM). `STORAGE` is host-visible, mapped memory on Vulkan (possibly
+   system RAM) but VRAM on D3D12, so a counter there works on D3D12 and can hang the device on Vulkan: MeshletCulling's task-shader counter
+   did, on an NVIDIA GPU, until it moved to `STORAGE_STATIC` (the engine's cluster statistics already use it).
 9. **Draw index in indirect draws.** The engine's task shader reads `SV_DrawIndex` (Vulkan's `DrawIndex`). D3D12 has no draw index (dxc rejects `SV_DrawIndex`): the usual
    way is a root constant per indirect record, set by the command signature next to the dispatch arguments. NoxRHI's signature holds only the
    dispatch arguments today, so a shader that reads `SV_DrawIndex` needs that added before it runs on D3D12.
