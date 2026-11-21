@@ -11,6 +11,7 @@ namespace NRI
         uint32_t Height = 0;
         bool VSync = true;
         NativeWindowHandle Window{}; // If hwnd == nullptr and vkSurface == 0, uses the device's primary surface
+        bool AllowTearing = false;   // Without vsync: tearing allowed (Vulkan IMMEDIATE) instead of the newest frame without tearing (MAILBOX)
     };
 
     enum class FrameResult { Success, ResizeRequired };

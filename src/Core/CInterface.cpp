@@ -518,6 +518,7 @@ NriResult NRI_CALL nriCreateSwapchain(NriDevice device, const NriSwapchainDesc* 
         cppDesc.Height = desc->height;
         cppDesc.VSync = desc->vsync;
         cppDesc.Window = toCpp(desc->window);
+        cppDesc.AllowTearing = desc->allowTearing;
         std::shared_ptr<NRI::Swapchain> impl = device->impl->createSwapchain(cppDesc);
         *outSwapchain = new NriSwapchain_T{ device->impl, std::move(impl) };
         return NRI_SUCCESS;

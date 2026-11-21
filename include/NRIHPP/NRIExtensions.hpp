@@ -94,6 +94,7 @@ namespace nri
         uint32_t height = 0;
         bool vsync = true;
         NativeWindowHandle window{};
+        bool allowTearing = false; // (without vsync: tearing allowed -- Vulkan IMMEDIATE -- instead of MAILBOX; see NriSwapchainDesc)
     };
 
     class Swapchain
@@ -146,7 +147,8 @@ namespace nri
             .width = desc.width,
             .height = desc.height,
             .vsync = desc.vsync,
-            .window = desc.window
+            .window = desc.window,
+            .allowTearing = desc.allowTearing
         };
         NriSwapchain sc = nullptr;
         checkResult(nriCreateSwapchain(device.handle(), &cDesc, &sc), "nriCreateSwapchain");

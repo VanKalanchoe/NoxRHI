@@ -17,6 +17,9 @@ typedef struct NriSwapchainDesc
     uint32_t height;
     bool vsync;
     NriNativeWindowHandle window; // If hwnd == NULL && vkSurface == 0, uses the device's primary window
+    // Without vsync: false (the default) presents the newest finished frame without tearing (Vulkan MAILBOX, D3D12 Present(0, 0));
+    // true allows tearing (Vulkan IMMEDIATE, D3D12 DXGI_PRESENT_ALLOW_TEARING). The choice NVIDIA's NRI makes (SwapChainBits::ALLOW_TEARING).
+    bool allowTearing;
 } NriSwapchainDesc;
 
 NRI_API NriResult NRI_CALL nriCreateSwapchain(NriDevice device, const NriSwapchainDesc* desc, NriSwapchain* outSwapchain);

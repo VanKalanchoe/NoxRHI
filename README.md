@@ -173,9 +173,22 @@ what differs between the two APIs' shaders. CI runs all five on D3D12 (WARP, deb
 `MeshletCulling --indirect`, `MeshletCulling --shader-checks` and PathTracer's noisy mode and guides (CI builds without NRD / Streamline).
 
 Options every cross-API example takes: `--vk` / `--dx12`, `--frames N` (quit after N frames: the exit code says whether anything failed),
-`--vsync`, `--probe` (print what a render-graph texture holds) and `--shader-checks` (below). `MeshletCulling` also takes `--no-cull`
+`--vsync`, `--tearing`, `--probe` (print what a render-graph texture holds) and `--shader-checks` (below). `MeshletCulling` also takes `--no-cull`
 (every meshlet drawn) and `--indirect` (the group count read by the GPU from an argument buffer -- `drawMeshTasksIndirect`, as the Nox
 engine draws -- instead of a direct `drawMeshTasks`).
+
+**Present modes** (`NriSwapchainDesc::vsync` / `allowTearing`, the choice NVIDIA's NRI makes with `SwapChainBits::VSYNC` /
+`ALLOW_TEARING`):
+
+| Options | Vulkan | D3D12 |
+|---|---|---|
+| (none, the default) | `MAILBOX`: uncapped, no tearing, the newest finished frame at vblank | `Present(0, 0)`: the compositor shows the newest frame |
+| `--tearing` | `IMMEDIATE`: uncapped, tears | `Present(0, DXGI_PRESENT_ALLOW_TEARING)` |
+| `--vsync` | `FIFO`: capped to the refresh rate | `Present(1, 0)` |
+
+A mode the driver lacks falls back to `FIFO`; the log names the mode chosen (`Swapchain present mode: Mailbox`). Before, vsync off always
+meant `IMMEDIATE` (as the Nox engine still does): in a window on an NVIDIA GPU it froze the PathTracer's picture now and then for about a
+second while the frames kept running (no stall reported), then jumped ahead; `FIFO` never did, and D3D12 never did either.
 
 ### PathTracer: NRD and DLSS Ray Reconstruction on both APIs
 

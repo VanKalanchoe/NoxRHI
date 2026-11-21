@@ -124,7 +124,8 @@ namespace NRI
     FrameResult SwapchainD3D12::present(uint32_t frameIndex, uint32_t imageIndex)
     {
         UINT syncInterval = m_desc.VSync ? 1 : 0;
-        UINT flags = (!m_desc.VSync) ? DXGI_PRESENT_ALLOW_TEARING : 0;
+        // (no vsync, no tearing: Present(0, 0) -- the compositor shows the newest frame, as Vulkan's MAILBOX)
+        UINT flags = (!m_desc.VSync && m_desc.AllowTearing) ? DXGI_PRESENT_ALLOW_TEARING : 0;
         HRESULT hr = m_swapChain->Present(syncInterval, flags);
 
         if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)

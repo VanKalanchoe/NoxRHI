@@ -2,7 +2,10 @@
 // ExampleApp.h -- what every cross-API example shares: an SDL window, the API picked on the command line, the device, swapchain,
 // descriptor heaps, shader compiler and render graph, the frame loop, and the host side of nox_gpu.slang's buffer references.
 //
-//   <Example>.exe --vk | --dx12 [--frames N] [--vsync]
+//   <Example>.exe --vk | --dx12 [--frames N] [--vsync] [--tearing]
+//
+// Without --vsync the frame rate is uncapped and the newest finished frame is shown without tearing (Vulkan MAILBOX, D3D12 Present(0, 0));
+// --tearing allows tearing instead (Vulkan IMMEDIATE, D3D12 DXGI_PRESENT_ALLOW_TEARING), as NVIDIA's NRI with SwapChainBits::ALLOW_TEARING.
 //
 // The window title names the API, so two runs side by side show the same Slang source on both. --frames N renders N frames and exits
 // (non-zero when NoxRHI or the render graph reported an error), for smoke tests.
@@ -124,6 +127,7 @@ namespace nox
         nri::ShaderCompiler compiler;
         nri::RenderGraph graph;
         bool vsync = false;
+        bool tearing = false;
 
         bool IsD3D12() const { return api == NRI_GRAPHICS_API_D3D12; }
         // Text shown after the API and fps in the window title (and printed when it changes, at most once a second).
@@ -313,6 +317,8 @@ namespace nox
                     m_MaxFrames = std::atoi(argv[++i]);
                 else if (!std::strcmp(argv[i], "--vsync"))
                     vsync = true;
+                else if (!std::strcmp(argv[i], "--tearing"))
+                    tearing = true;
                 else if (!std::strcmp(argv[i], "--probe"))
                     m_ProbesOn = true;
                 else if (!std::strcmp(argv[i], "--shader-checks"))
@@ -354,7 +360,7 @@ namespace nox
                 desc.logCallback = OnNriLog;
                 example.ConfigureDevice(desc);
                 device = nri::createDevice(desc);
-                swapchain = nri::createSwapchain(device, { uint32_t(m_Width), uint32_t(m_Height), vsync });
+                swapchain = nri::createSwapchain(device, { .width = uint32_t(m_Width), .height = uint32_t(m_Height), .vsync = vsync, .allowTearing = tearing });
 
                 resources = device.createDescriptorHeap({ .type = NRI_DESCRIPTOR_HEAP_RESOURCE, .maxBufferDescriptors = 256, .maxImageDescriptors = 256 });
                 nri::SamplerDesc linearRepeat{};
@@ -432,7 +438,7 @@ namespace nox
                     device.waitIdle();
                     graph.ReleaseResources();
                     swapchain.reset();
-                    swapchain = nri::createSwapchain(device, { uint32_t(m_Width), uint32_t(m_Height), vsync });
+                    swapchain = nri::createSwapchain(device, { .width = uint32_t(m_Width), .height = uint32_t(m_Height), .vsync = vsync, .allowTearing = tearing });
                     m_NeedsResize = false;
                 }
 

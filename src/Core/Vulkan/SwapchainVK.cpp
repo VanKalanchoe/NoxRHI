@@ -1,5 +1,6 @@
 #include "SwapchainVK.h"
 #include "DeviceVK.h"
+#include "../Log.h"
 #include "../../Extensions/Upscaler/StreamlineContext.h"
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -80,7 +81,8 @@ namespace NRI
         m_swapChainSurfaceFormat = m_deviceVK.getSurfaceFormat();
 
         std::vector<vk::PresentModeKHR> availablePresentModes = physicalDevice.getSurfacePresentModesKHR(surface);
-        vk::PresentModeKHR presentMode = chooseSwapPresentMode(availablePresentModes, desc.VSync);
+        vk::PresentModeKHR presentMode = chooseSwapPresentMode(availablePresentModes, desc.VSync, desc.AllowTearing);
+        NRI_LOG_INFO("Swapchain present mode: {}", vk::to_string(presentMode));
 
         vk::SwapchainCreateInfoKHR swapChainCreateInfo{
             .surface = surface,
@@ -129,24 +131,18 @@ namespace NRI
         }
     }
 
-    vk::PresentModeKHR SwapchainVK::chooseSwapPresentMode(std::vector<vk::PresentModeKHR> const& availablePresentModes, bool vSync)
+    // As NVIDIA's NRI (Source/VK/SwapChainVK.hpp): vsync -> FIFO; no vsync -> MAILBOX (uncapped, no tearing: the newest finished image is
+    // shown at vblank), or IMMEDIATE when tearing is allowed; FIFO is the fallback (the one mode every driver has). IMMEDIATE in a window
+    // on an NVIDIA GPU froze the picture now and then for about a second while the frames kept running (PathTracer with NRD).
+    vk::PresentModeKHR SwapchainVK::chooseSwapPresentMode(std::vector<vk::PresentModeKHR> const& availablePresentModes, bool vSync, bool allowTearing)
     {
         assert(std::ranges::any_of(availablePresentModes, [](auto presentMode) { return presentMode == vk::PresentModeKHR::eFifo; }));
-        
+        const auto available = [&](vk::PresentModeKHR mode) { return std::ranges::find(availablePresentModes, mode) != availablePresentModes.end(); };
+
         if (vSync)
-        {
-            return vk::PresentModeKHR::eFifo; 
-        }
-        
-        if (std::ranges::any_of(availablePresentModes, [](const vk::PresentModeKHR mode) { return vk::PresentModeKHR::eImmediate == mode; }))
-        {
-            return vk::PresentModeKHR::eImmediate;
-        }
-        
-        return std::ranges::any_of(availablePresentModes,
-                                   [](const vk::PresentModeKHR value) { return vk::PresentModeKHR::eMailbox == value; })
-                   ? vk::PresentModeKHR::eMailbox
-                   : vk::PresentModeKHR::eFifo;
+            return vk::PresentModeKHR::eFifo;
+        const vk::PresentModeKHR uncapped = allowTearing ? vk::PresentModeKHR::eImmediate : vk::PresentModeKHR::eMailbox;
+        return available(uncapped) ? uncapped : vk::PresentModeKHR::eFifo;
     }
 
     vk::SurfaceFormatKHR SwapchainVK::chooseSwapSurfaceFormat(const std::vector<vk::SurfaceFormatKHR>& availableFormats)
