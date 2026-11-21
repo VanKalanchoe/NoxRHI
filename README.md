@@ -173,8 +173,12 @@ MeshletCulling's other draw paths (`--indirect`, `--task-engine`, `--task-single
 `MeshletCulling` start-up options, to narrow down a driver problem: `--no-cull`, `--no-stats` (no counter atomic), `--mesh-only` (no task
 shader), `--split-files` (task and mesh shaders compiled from separate files), `--no-readback`, `--no-depth`, `--groups N`,
 `--task-single` (a one-thread task shader), `--task-engine` (the Nox engine's task shader design: 64 meshlets per group, bitmask + prefix
-compaction, payload = base index + offsets) and `--indirect` (draw with `drawMeshTasksIndirect` from a GPU argument buffer, as the engine
-does). The first line it prints names the path it took.
+compaction, and the engine's 72-byte payload: two `uint`s + 64 byte offsets, packed four per `uint`), `--indirect` (draw with
+`drawMeshTasksIndirect` from a GPU argument buffer, as the engine does) and `--checked` (the task path's mesh shaders test every index
+before reading through it -- payload entry, meshlet counts and offsets, vertex and triangle indices -- draw nothing for a group that fails
+and print the first failure: `CHECK FAILED (...): code N: <what>: <values>`). The first line it prints names the path it took. Why
+`--checked` matters: on Vulkan a buffer reference is a raw device address, so an out-of-range index faults the GPU (device lost), while
+D3D12 reads the same buffer through a bounds-checked descriptor and gets 0 -- a bad index can run "fine" on D3D12 and crash on Vulkan.
 
 ### Porting Vulkan-only Slang (such as the Nox engine's shaders) to D3D12
 

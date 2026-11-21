@@ -23,26 +23,48 @@ void msMeshlet(uint3 groupId : SV_GroupID, uint threadIndex : SV_GroupIndex, in 
                OutputVertices<MeshVertex, kMaxVertices> outVertices, OutputIndices<uint3, kMaxTriangles> outTriangles)
 {
     const View view = pc.view[0];
-    const uint item = payload.items[groupId.x];
+    // --checked: the payload entry and everything derived from it are tested before they are read; a group that fails draws nothing
+    // and the first failure is reported (main.cpp prints it), so an out-of-range index shows up instead of faulting the GPU.
+    const bool checked = (view.flags & 4) != 0;
+    // (one SetMeshOutputCounts call, as DXIL requires: a failed group outputs 0 vertices and triangles; item 0 keeps its reads in range)
+    const bool inRange = !checked || MeshletInRange(pc, view, groupId.x, kTaskGroupSize, groupId.x < kTaskGroupSize ? payload.items[groupId.x] : 0, threadIndex);
+    const uint item = inRange ? payload.items[groupId.x] : 0;
     const Meshlet meshlet = pc.meshlets[item % view.meshletCount];
     const Instance instance = pc.instances[item / view.meshletCount];
-    SetMeshOutputCounts(meshlet.vertexCount, meshlet.triangleCount);
+    const uint vertexCount = inRange ? meshlet.vertexCount : 0, triangleCount = inRange ? meshlet.triangleCount : 0;
+    SetMeshOutputCounts(vertexCount, triangleCount);
 
     const float3 color = view.colorMode == 0 ? HashColor(item % view.meshletCount) : instance.color.rgb;
-    for (uint i = threadIndex; i < meshlet.vertexCount; i += kMeshThreads)
+    for (uint i = threadIndex; i < vertexCount; i += kMeshThreads)
     {
-        const Vertex v = pc.vertices[pc.meshletVertices[meshlet.vertexOffset + i]];
-        const float3 world = instance.positionScale.xyz + v.position.xyz * instance.positionScale.w;
+        const uint vertexIndex = pc.meshletVertices[meshlet.vertexOffset + i];
         MeshVertex o;
-        o.position = view.viewProj.Transform(float4(world, 1.0));
-        o.normal = v.normal.xyz;
+        if (checked && vertexIndex >= view.vertexTotal)
+        {
+            ReportCheck(pc, kCheckVertexIndex, vertexIndex, item); // (not read: the vertex collapses to the origin)
+            o.position = float4(0, 0, 0, 1);
+            o.normal = float3(0, 1, 0);
+        }
+        else
+        {
+            const Vertex v = pc.vertices[vertexIndex];
+            const float3 world = instance.positionScale.xyz + v.position.xyz * instance.positionScale.w;
+            o.position = view.viewProj.Transform(float4(world, 1.0));
+            o.normal = v.normal.xyz;
+        }
         o.color = color;
         outVertices[i] = o;
     }
-    for (uint t = threadIndex; t < meshlet.triangleCount; t += kMeshThreads)
+    for (uint t = threadIndex; t < triangleCount; t += kMeshThreads)
     {
         const uint first = meshlet.triangleOffset + t * 3;
-        outTriangles[t] = uint3(LoadByte(pc.meshletTriangles, first), LoadByte(pc.meshletTriangles, first + 1), LoadByte(pc.meshletTriangles, first + 2));
+        uint3 triangle = uint3(LoadByte(pc.meshletTriangles, first), LoadByte(pc.meshletTriangles, first + 1), LoadByte(pc.meshletTriangles, first + 2));
+        if (checked && max(triangle.x, max(triangle.y, triangle.z)) >= vertexCount)
+        {
+            ReportCheck(pc, kCheckTriangleIndex, max(triangle.x, max(triangle.y, triangle.z)), item);
+            triangle = uint3(0, 0, 0); // (degenerate: not drawn)
+        }
+        outTriangles[t] = triangle;
     }
 }
 
@@ -77,8 +99,8 @@ void msMeshletDirect(uint3 groupId : SV_GroupID, uint threadIndex : SV_GroupInde
     }
 }
 
-// --task-engine's mesh shader: the item is the payload's base plus the group's offset (the Nox engine's VisibilityBuffer meshMain reads
-// groupMeshletOffset + meshletIndices[groupId] the same way). Otherwise msMeshlet.
+// --task-engine's mesh shader: the item is the payload's base plus the group's byte offset (the Nox engine's VisibilityBuffer meshMain
+// reads groupMeshletOffset + meshletIndices[groupId] the same way). Otherwise msMeshlet, --checked included.
 [shader("mesh")]
 [outputtopology("triangle")]
 [numthreads(kMeshThreads, 1, 1)]
@@ -86,26 +108,46 @@ void msMeshletEngine(uint3 groupId : SV_GroupID, uint threadIndex : SV_GroupInde
                      OutputVertices<MeshVertex, kMaxVertices> outVertices, OutputIndices<uint3, kMaxTriangles> outTriangles)
 {
     const View view = pc.view[0];
-    const uint item = payload.baseItem + payload.offsets[groupId.x];
+    const bool checked = (view.flags & 4) != 0;
+    const bool inRange = !checked || MeshletInRange(pc, view, groupId.x, kEngineTaskGroupSize,
+                                                    groupId.x < kEngineTaskGroupSize ? payload.baseItem + PayloadOffset(payload, groupId.x) : 0, threadIndex);
+    const uint item = inRange ? payload.baseItem + PayloadOffset(payload, groupId.x) : 0;
     const Meshlet meshlet = pc.meshlets[item % view.meshletCount];
     const Instance instance = pc.instances[item / view.meshletCount];
-    SetMeshOutputCounts(meshlet.vertexCount, meshlet.triangleCount);
+    const uint vertexCount = inRange ? meshlet.vertexCount : 0, triangleCount = inRange ? meshlet.triangleCount : 0;
+    SetMeshOutputCounts(vertexCount, triangleCount);
 
     const float3 color = view.colorMode == 0 ? HashColor(item % view.meshletCount) : instance.color.rgb;
-    for (uint i = threadIndex; i < meshlet.vertexCount; i += kMeshThreads)
+    for (uint i = threadIndex; i < vertexCount; i += kMeshThreads)
     {
-        const Vertex v = pc.vertices[pc.meshletVertices[meshlet.vertexOffset + i]];
-        const float3 world = instance.positionScale.xyz + v.position.xyz * instance.positionScale.w;
+        const uint vertexIndex = pc.meshletVertices[meshlet.vertexOffset + i];
         MeshVertex o;
-        o.position = view.viewProj.Transform(float4(world, 1.0));
-        o.normal = v.normal.xyz;
+        if (checked && vertexIndex >= view.vertexTotal)
+        {
+            ReportCheck(pc, kCheckVertexIndex, vertexIndex, item); // (not read: the vertex collapses to the origin)
+            o.position = float4(0, 0, 0, 1);
+            o.normal = float3(0, 1, 0);
+        }
+        else
+        {
+            const Vertex v = pc.vertices[vertexIndex];
+            const float3 world = instance.positionScale.xyz + v.position.xyz * instance.positionScale.w;
+            o.position = view.viewProj.Transform(float4(world, 1.0));
+            o.normal = v.normal.xyz;
+        }
         o.color = color;
         outVertices[i] = o;
     }
-    for (uint t = threadIndex; t < meshlet.triangleCount; t += kMeshThreads)
+    for (uint t = threadIndex; t < triangleCount; t += kMeshThreads)
     {
         const uint first = meshlet.triangleOffset + t * 3;
-        outTriangles[t] = uint3(LoadByte(pc.meshletTriangles, first), LoadByte(pc.meshletTriangles, first + 1), LoadByte(pc.meshletTriangles, first + 2));
+        uint3 triangle = uint3(LoadByte(pc.meshletTriangles, first), LoadByte(pc.meshletTriangles, first + 1), LoadByte(pc.meshletTriangles, first + 2));
+        if (checked && max(triangle.x, max(triangle.y, triangle.z)) >= vertexCount)
+        {
+            ReportCheck(pc, kCheckTriangleIndex, max(triangle.x, max(triangle.y, triangle.z)), item);
+            triangle = uint3(0, 0, 0); // (degenerate: not drawn)
+        }
+        outTriangles[t] = triangle;
     }
 }
 

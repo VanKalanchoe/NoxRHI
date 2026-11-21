@@ -13,6 +13,7 @@
 // thread 0 only; here every thread calls it with the same count, as tsCull does.
 groupshared PayloadEngine gPayloadEngine;
 groupshared uint gVisibleMask[kEngineTaskGroupSize / 32];
+groupshared uint gSlotOffsets[kEngineTaskGroupSize]; // (compacted offsets, before they are packed into the payload's bytes)
 
 [shader("amplification")]
 [numthreads(kEngineTaskGroupSize, 1, 1)]
@@ -21,7 +22,10 @@ void tsCullEngine(uint3 groupId : SV_GroupID, uint threadIndex : SV_GroupIndex, 
     if (threadIndex < kEngineTaskGroupSize / 32)
         gVisibleMask[threadIndex] = 0;
     if (threadIndex == 0)
+    {
+        gPayloadEngine.drawId = 0;
         gPayloadEngine.baseItem = groupId.x * kEngineTaskGroupSize;
+    }
     GroupMemoryBarrierWithGroupSync();
 
     const View view = pc.view[0];
@@ -42,8 +46,19 @@ void tsCullEngine(uint3 groupId : SV_GroupID, uint threadIndex : SV_GroupIndex, 
     {
         const uint bits = gVisibleMask[word];
         if (visible && word == (threadIndex >> 5))
-            gPayloadEngine.offsets[count + countbits(bits & ((1u << (threadIndex & 31)) - 1u))] = threadIndex;
+            gSlotOffsets[count + countbits(bits & ((1u << (threadIndex & 31)) - 1u))] = threadIndex;
         count += countbits(bits);
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    // The engine stores uint8_t offsets; four per uint here (DXIL has no 8-bit types): thread i packs slots 4i..4i+3.
+    if (threadIndex < kEngineTaskGroupSize / 4)
+    {
+        uint packed = 0;
+        for (uint k = 0; k < 4; ++k)
+            if (threadIndex * 4 + k < count)
+                packed |= (gSlotOffsets[threadIndex * 4 + k] & 0xFF) << (k * 8);
+        gPayloadEngine.packedOffsets[threadIndex] = packed;
     }
     GroupMemoryBarrierWithGroupSync();
 

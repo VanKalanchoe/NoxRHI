@@ -85,6 +85,18 @@ uint AtomicAdd(RWBufferRef<uint> buffer, uint index, uint value)
     return previous;
 }
 
+// Writes `value` at [index] if it holds `compare`; returns what it held (claims a slot once, e.g. the first error report).
+uint AtomicCompareExchange(RWBufferRef<uint> buffer, uint index, uint compare, uint value)
+{
+    uint previous = 0;
+#ifdef NOX_VULKAN
+    InterlockedCompareExchange(((uint*)buffer.handle)[index], compare, value, previous);
+#else
+    RWByteAddressBuffer.Handle(uint2(uint(buffer.handle), 0)).InterlockedCompareExchange(index * 4, compare, value, previous);
+#endif
+    return previous;
+}
+
 // One byte of a buffer of packed bytes (DXIL has no uint8_t: four bytes per word, little-endian, as the CPU wrote them).
 uint LoadByte(BufferRef<uint> words, uint byteIndex)
 {

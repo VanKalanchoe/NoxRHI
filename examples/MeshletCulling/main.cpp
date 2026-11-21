@@ -12,7 +12,10 @@
 //   --no-readback (no counter reset / readback copies), --no-depth (no depth buffer), --groups N (dispatch only N groups),
 //   --task-single (a one-thread task shader: no groupshared counter, atomics or barriers), --task-engine (the Nox engine's task shader
 //   design: 64 meshlets per group, bitmask + prefix compaction, payload = base + offsets), --indirect (draw with drawMeshTasksIndirect
-//   from a GPU argument buffer, as the Nox engine does, instead of a direct drawMeshTasks)
+//   from a GPU argument buffer, as the Nox engine does, instead of a direct drawMeshTasks), --checked (the task path's mesh shaders test
+//   every index before reading through it -- payload entry, meshlet counts and offsets, vertex and triangle indices -- skip what is out
+//   of range and report the first failure on the console: an index that would fault the GPU on Vulkan, where buffers are raw pointers,
+//   while D3D12's bounds-checked buffer reads would return 0)
 
 #include "../Common/ExampleApp.h"
 
@@ -45,11 +48,12 @@ namespace
         nox::Float4 cullPlanes[5];
         nox::Float4 cullPosition;
         uint32_t meshletCount, instanceCount, colorMode, flags;
+        uint32_t vertexTotal, meshletVertexTotal, triangleByteTotal, padding; // (--checked: the mesh shader's bounds)
     };
 
     struct Push
     {
-        uint64_t view, meshlets, meshletVertices, meshletTriangles, vertices, instances, stats;
+        uint64_t view, meshlets, meshletVertices, meshletTriangles, vertices, instances, stats, checks;
     };
 
     constexpr uint32_t kMaxVertices = 64, kMaxTriangles = 64, kTaskGroupSize = 32, kEngineTaskGroupSize = 64; // (the Nox engine's meshlet limits)
@@ -202,6 +206,16 @@ public:
         m_Push.stats = host.Refs(m_Stats, 4, true).write;
         const uint32_t zero = 0;
         m_Zero = host.CreateBuffer(4, NRI_BUFFER_USAGE_STAGING, &zero);
+
+        // --checked: the failure report (failures, first code, its two values), device-local like the counter; read back every frame.
+        const uint32_t noChecks[4] = {};
+        m_Checks = host.CreateBuffer(sizeof(noChecks), NRI_BUFFER_USAGE_STORAGE_STATIC, noChecks);
+        m_Push.checks = host.Refs(m_Checks, sizeof(noChecks), true).write;
+        for (nri::Buffer& readback : m_ChecksReadback)
+            readback = host.device.createBuffer({ .size = sizeof(noChecks), .usage = NRI_BUFFER_USAGE_READBACK });
+        m_VertexTotal = uint32_t(sphere.vertices.size());
+        m_MeshletVertexTotal = uint32_t(meshletVertices.size());
+        m_TriangleByteTotal = uint32_t(meshletTriangles.size());
         for (nri::Buffer& readback : m_Readback)
             readback = host.device.createBuffer({ .size = 4, .usage = NRI_BUFFER_USAGE_READBACK });
 
@@ -235,15 +249,17 @@ public:
             m_IndirectArguments = host.CreateBuffer(sizeof(arguments), NRI_BUFFER_USAGE_INDIRECT_STATIC, arguments);
         }
 
-        std::printf("[MeshletCulling] %s%s%s%s%s%s, %s, groups: %u%s\n",
+        std::printf("[MeshletCulling] %s%s%s%s%s%s%s, %s, groups: %u%s\n",
                     m_MeshOnly ? "mesh shader only (no task shader)" : m_TaskEngine ? "task (engine design, 64 per group) + mesh shaders" : m_TaskSingle ? "task (one thread) + mesh shaders" : "task + mesh shaders",
                     m_Indirect ? ", indirect draw" : ", direct draw", m_NoCull ? ", no culling" : "", m_NoStats ? ", no counter" : "", m_NoReadback ? ", no counter copies" : "",
-                    m_NoDepth ? ", no depth" : "", m_SplitFiles ? "task and mesh shaders from separate files" : "shaders from one file", m_GroupCount, m_Groups ? " (--groups)" : " (all)");
+                    m_NoDepth ? ", no depth" : "", m_Checked ? ", checked" : "", m_SplitFiles ? "task and mesh shaders from separate files" : "shaders from one file", m_GroupCount, m_Groups ? " (--groups)" : " (all)");
         std::printf("[MeshletCulling] %u meshlets per sphere (%zu triangles), %u spheres\n", m_MeshletCount, sphere.indices.size() / 3, m_InstanceCount);
     }
 
     void Render(nox::Host& host, nri::RenderGraph& graph, const nox::FrameInfo& frame) override
     {
+        if (m_Checked && frame.frameNumber >= nox::kFramesInFlight)
+            PrintChecks(frame.frameSlot);
         // The frame that last used this slot has finished (the swapchain waited for it): its count is ready.
         if (frame.frameNumber >= nox::kFramesInFlight && !m_NoReadback)
         {
@@ -275,7 +291,10 @@ public:
         view.meshletCount = m_MeshletCount;
         view.instanceCount = m_InstanceCount;
         view.colorMode = m_ColorMode;
-        view.flags = (m_NoCull ? 1u : 0u) | (m_NoStats ? 2u : 0u);
+        view.flags = (m_NoCull ? 1u : 0u) | (m_NoStats ? 2u : 0u) | (m_Checked ? 4u : 0u);
+        view.vertexTotal = m_VertexTotal;
+        view.meshletVertexTotal = m_MeshletVertexTotal;
+        view.triangleByteTotal = m_TriangleByteTotal;
         Push push = m_Push;
         push.view = m_View.Write(frame.frameSlot, view);
 
@@ -309,6 +328,18 @@ public:
                     nri::drawMeshTasks(cmd, m_GroupCount);
             });
 
+        if (m_Checked)
+        {
+            const nri::RGBuffer checks = graph.ImportBuffer("Checks", m_Checks);
+            const nri::RGBuffer checksReadback = graph.ImportBuffer("ChecksReadback", m_ChecksReadback[frame.frameSlot]);
+            graph.AddPass("ReadChecks", nri::RGPassFlags::None,
+                [&](nri::RGBuilder& b) {
+                    b.Read(checks, nri::RGBufferAccess::CopySource);
+                    b.Write(checksReadback, nri::RGBufferAccess::CopyDestination);
+                },
+                [this, slot = frame.frameSlot](nri::RGPassContext& ctx) { ctx.Cmd().copyBuffer(m_Checks, m_ChecksReadback[slot], nri::BufferCopyRegion{ 0, 0, 16 }); });
+        }
+
         if (m_NoReadback)
             return;
         // (the readback buffer is this pass's output: declared, so the render graph keeps the pass -- a pass that only reads is culled)
@@ -341,6 +372,8 @@ public:
             m_TaskEngine = true;
         else if (!std::strcmp(argv[index], "--indirect"))
             m_Indirect = true;
+        else if (!std::strcmp(argv[index], "--checked"))
+            m_Checked = true;
         else if (!std::strcmp(argv[index], "--groups") && argv[index + 1])
         {
             m_Groups = uint32_t(std::strtoul(argv[index + 1], nullptr, 10));
@@ -365,12 +398,38 @@ public:
     {
         m_Pipeline.reset();
         m_View.Reset();
-        for (nri::Buffer* b : { &m_Meshlets, &m_MeshletVertices, &m_MeshletTriangles, &m_Vertices, &m_Instances, &m_Stats, &m_Zero, &m_IndirectArguments, &m_Readback[0], &m_Readback[1] })
+        for (nri::Buffer* b : { &m_Meshlets, &m_MeshletVertices, &m_MeshletTriangles, &m_Vertices, &m_Instances, &m_Stats, &m_Zero, &m_IndirectArguments, &m_Checks, &m_ChecksReadback[0], &m_ChecksReadback[1], &m_Readback[0], &m_Readback[1] })
             b->reset();
     }
 
 private:
-    nri::Buffer m_Meshlets, m_MeshletVertices, m_MeshletTriangles, m_Vertices, m_Instances, m_Stats, m_Zero, m_IndirectArguments;
+    // --checked: prints the GPU's failure report when it changed (the frame that last used this slot has finished).
+    void PrintChecks(uint32_t slot)
+    {
+        uint32_t report[4] = {};
+        std::memcpy(report, m_ChecksReadback[slot].map(0, sizeof(report)), sizeof(report));
+        m_ChecksReadback[slot].unmap();
+        if (report[0] == m_LastCheckFailures)
+            return;
+        m_LastCheckFailures = report[0];
+        const char* what = "unknown";
+        switch (report[1])
+        {
+        case 1: what = "mesh shader group index is past the payload (more mesh groups than the task shader wrote) -- value: group index"; break;
+        case 2: what = "item read from the task payload is out of range (the payload holds garbage) -- values: item, mesh group index"; break;
+        case 3: what = "meshlet vertexCount > 64 -- values: vertexCount, item"; break;
+        case 4: what = "meshlet triangleCount > 64 -- values: triangleCount, item"; break;
+        case 5: what = "meshlet vertex range runs past meshletVertices -- values: vertexOffset + vertexCount, item"; break;
+        case 6: what = "meshlet triangle bytes run past meshletTriangles -- values: triangleOffset + 3 * triangleCount, item"; break;
+        case 7: what = "vertex index from meshletVertices is past the vertex buffer -- values: vertex index, item"; break;
+        case 8: what = "triangle uses a local vertex index >= the meshlet's vertexCount -- values: largest index, item"; break;
+        }
+        std::printf("[MeshletCulling] CHECK FAILED (%u so far): code %u: %s: %u, %u\n", report[0], report[1], what, report[2], report[3]);
+        std::fflush(stdout);
+    }
+
+    nri::Buffer m_Meshlets, m_MeshletVertices, m_MeshletTriangles, m_Vertices, m_Instances, m_Stats, m_Zero, m_IndirectArguments, m_Checks;
+    nri::Buffer m_ChecksReadback[nox::kFramesInFlight];
     nri::Buffer m_Readback[nox::kFramesInFlight];
     nox::FrameConstants<View> m_View;
     nri::Pipeline m_Pipeline;
@@ -380,7 +439,8 @@ private:
     nox::Float3 m_CullPosition;
     float m_AnimTime = 0.0f;
     bool m_Frozen = false, m_Paused = false;
-    bool m_NoCull = false, m_NoStats = false, m_MeshOnly = false, m_SplitFiles = false, m_NoReadback = false, m_NoDepth = false, m_TaskSingle = false, m_TaskEngine = false, m_Indirect = false;
+    bool m_NoCull = false, m_NoStats = false, m_MeshOnly = false, m_SplitFiles = false, m_NoReadback = false, m_NoDepth = false, m_TaskSingle = false, m_TaskEngine = false, m_Indirect = false, m_Checked = false;
+    uint32_t m_VertexTotal = 0, m_MeshletVertexTotal = 0, m_TriangleByteTotal = 0, m_LastCheckFailures = 0;
     uint32_t m_Groups = 0; // (0: all)
     uint32_t m_GroupCount = 0;
 };
