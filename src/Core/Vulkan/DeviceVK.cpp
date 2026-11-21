@@ -352,9 +352,9 @@ namespace NRI
         m_deviceInitialized = false;
     }
 
-    void* DeviceVK::getStreamlinePresentFn() const
+    const StreamlineVulkanHooks* DeviceVK::getStreamlineVulkanHooks() const
     {
-        return m_streamline ? m_streamline->getVkQueuePresentFn() : nullptr;
+        return m_streamline ? m_streamline->getVulkanHooks() : nullptr;
     }
 
     void DeviceVK::initVulkan(const DeviceInitDesc& desc)
@@ -1091,7 +1091,12 @@ namespace NRI
 
     void DeviceVK::waitIdle()
     {
-        if (*m_device)
+        if (!*m_device)
+            return;
+        // (vkDeviceWaitIdle is one of Streamline's mandatory hooks under manual hooking)
+        if (const StreamlineVulkanHooks* hooks = getStreamlineVulkanHooks())
+            reinterpret_cast<PFN_vkDeviceWaitIdle>(hooks->vkDeviceWaitIdle)(static_cast<VkDevice>(*m_device));
+        else
             m_device.waitIdle();
     }
 }

@@ -144,16 +144,33 @@ namespace NRI
             }
         }
 
+        DXGI_ADAPTER_DESC1 chosenDesc{};
+        m_adapter->GetDesc1(&chosenDesc);
+
+        // Streamline (manual hooking) learns the device before anything it hooks is called: ID3D12Device::CreateCommandQueue is one of its
+        // mandatory hooks, so the queues are created through its proxy device (slUpgradeInterface), as its manual-hooking guide shows.
+        ComPtr<ID3D12Device> queueDevice = m_device;
+        if (m_streamline && m_streamline->isInitialized())
+        {
+            m_streamline->registerD3D12Device(m_device.Get(), reinterpret_cast<const uint8_t*>(&chosenDesc.AdapterLuid), sizeof(chosenDesc.AdapterLuid));
+            ID3D12Device* proxy = m_device.Get();
+            proxy->AddRef(); // (slUpgradeInterface replaces the pointer and takes this reference)
+            if (m_streamline->upgradeD3D12Interface(reinterpret_cast<void**>(&proxy)))
+                queueDevice.Attach(proxy);
+            else
+                proxy->Release();
+        }
+
         D3D12_COMMAND_QUEUE_DESC queueDesc{};
         queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
         queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-        ThrowIfFailed(m_device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&m_directQueue)), "Create Direct CommandQueue");
+        ThrowIfFailed(queueDevice->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&m_directQueue)), "Create Direct CommandQueue");
 
         queueDesc.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
-        m_device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&m_computeQueue));
+        queueDevice->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&m_computeQueue));
 
         queueDesc.Type = D3D12_COMMAND_LIST_TYPE_COPY;
-        m_device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&m_copyQueue));
+        queueDevice->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&m_copyQueue));
 
         ThrowIfFailed(m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_waitIdleFence)), "CreateFence");
         m_waitIdleEvent = CreateEventEx(nullptr, nullptr, 0, EVENT_ALL_ACCESS);
@@ -165,8 +182,6 @@ namespace NRI
 
         m_allocator = std::make_unique<MemoryAllocatorD3D12>(*this);
 
-        DXGI_ADAPTER_DESC1 chosenDesc{};
-        m_adapter->GetDesc1(&chosenDesc);
         char adapterName[256]{};
         WideCharToMultiByte(CP_UTF8, 0, chosenDesc.Description, -1, adapterName, sizeof(adapterName), nullptr, nullptr);
         NRI_LOG_INFO("D3D12 Adapter: {} (VRAM: {} MB)", adapterName, static_cast<uint64_t>(chosenDesc.DedicatedVideoMemory >> 20));
@@ -195,13 +210,6 @@ namespace NRI
         {
             m_meshShaders = opts7.MeshShaderTier != D3D12_MESH_SHADER_TIER_NOT_SUPPORTED;
             NRI_LOG_INFO("Mesh shaders: {}", m_meshShaders ? "Tier 1" : "off");
-        }
-
-        if (m_streamline && m_streamline->isInitialized())
-        {
-            m_streamline->registerD3D12Device(m_device.Get(),
-                                              reinterpret_cast<const uint8_t*>(&chosenDesc.AdapterLuid),
-                                              sizeof(chosenDesc.AdapterLuid));
         }
     }
 

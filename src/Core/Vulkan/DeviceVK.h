@@ -13,6 +13,7 @@
 
 namespace NRI
 {
+    struct StreamlineVulkanHooks;
     class MemoryAllocatorVK;
     class CommandBufferVK;
     class ShaderCompiler;
@@ -27,7 +28,8 @@ namespace NRI
         bool isDeviceInit() const { return m_deviceInitialized; }
         const std::string& getShaderCacheDir() const override { return m_shaderCacheDir; }
         StreamlineContext* getStreamlineContext() const override { return m_streamline.get(); }
-        void* getStreamlinePresentFn() const;
+        // Streamline's proxies for its mandatory Vulkan hooks (present, swapchain, surface, wait idle), or null without Streamline.
+        const StreamlineVulkanHooks* getStreamlineVulkanHooks() const;
 
         MemoryAllocatorVK& getAllocator() { return *m_allocator; }
 

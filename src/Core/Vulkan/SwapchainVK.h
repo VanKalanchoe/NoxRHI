@@ -13,12 +13,12 @@ namespace NRI
     {
     public:
         SwapchainVK(DeviceVK& device, const SwapchainDesc& desc);
-        ~SwapchainVK() = default;
+        ~SwapchainVK() override;
         
         Extent2D getExtent() const override { return { m_swapChainExtent.width, m_swapChainExtent.height }; };
         vk::Image getNativeImage(uint32_t index) const { return m_swapChainImages[index]; }
         vk::ImageView getNativeView(uint32_t index) const { return m_swapChainImageViews[index]; }
-        vk::SwapchainKHR getNativeSwapchain() const { return *m_swapChain; }
+        vk::SwapchainKHR getNativeSwapchain() const { return m_hooks ? vk::SwapchainKHR(m_hookedSwapchain) : *m_swapChain; }
         vk::Format getFormat() const { return m_swapChainSurfaceFormat.format; }
         uint32_t getImageCount() const { return static_cast<uint32_t>(m_swapChainImages.size()); }
         FrameResult acquireNextImage(uint32_t frameIndex, uint32_t& outImageIndex) override;
@@ -40,6 +40,11 @@ namespace NRI
         DeviceVK& m_deviceVK;
         vk::raii::SurfaceKHR m_ownedSurface = nullptr; // Destroyed after m_swapChain
         vk::raii::SwapchainKHR m_swapChain = nullptr;
+        // With Streamline: the surface and swapchain are created, used and destroyed through its proxies (StreamlineVulkanHooks) instead
+        // of the two members above, so its presentCommon() runs every frame (manual hooking's mandatory hooks).
+        const struct StreamlineVulkanHooks* m_hooks = nullptr;
+        VkSurfaceKHR m_hookedSurface = VK_NULL_HANDLE;
+        VkSwapchainKHR m_hookedSwapchain = VK_NULL_HANDLE;
         std::vector<vk::Image> m_swapChainImages;
         vk::SurfaceFormatKHR m_swapChainSurfaceFormat;
         vk::Extent2D m_swapChainExtent;

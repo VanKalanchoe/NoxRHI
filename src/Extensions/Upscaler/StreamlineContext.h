@@ -29,6 +29,22 @@ namespace NRI
         Texture2D* colorBeforeTransparency = nullptr;
     };
 
+    // Streamline's proxies for the Vulkan functions its manual-hooking guide calls mandatory (sl_hooks.h: present, swapchain, surface,
+    // device wait idle). NoxRHI runs Streamline with eUseManualHooking, so these must be called instead of the native functions: going
+    // through them is what runs Streamline's presentCommon() every frame (its per-frame bookkeeping and garbage collection -- without it
+    // Streamline logs "presentCommon() was not observed") and lets it track the swapchain. PFN_* values, as void* (no Vulkan header here).
+    struct StreamlineVulkanHooks
+    {
+        void* vkCreateWin32SurfaceKHR = nullptr;
+        void* vkDestroySurfaceKHR = nullptr;
+        void* vkCreateSwapchainKHR = nullptr;
+        void* vkDestroySwapchainKHR = nullptr;
+        void* vkGetSwapchainImagesKHR = nullptr;
+        void* vkAcquireNextImageKHR = nullptr;
+        void* vkQueuePresentKHR = nullptr;
+        void* vkDeviceWaitIdle = nullptr;
+    };
+
     // Wraps NVIDIA Streamline SDK lifecycle and feature evaluation across Vulkan and D3D12.
     class StreamlineContext
     {
@@ -52,7 +68,11 @@ namespace NRI
 
         bool isInitialized() const { return m_initialized; }
         bool isUpscalerSupported(NriUpscalerType type) const;
-        void* getVkQueuePresentFn() const { return m_vkQueuePresentFn; }
+        // Vulkan: Streamline's proxies for its mandatory hooks, or null when Streamline is off or one of them is missing.
+        const StreamlineVulkanHooks* getVulkanHooks() const { return m_vkHooksComplete ? &m_vkHooks : nullptr; }
+        // D3D12: replaces *iface (an ID3D12Device / IDXGIFactory, with its reference) by Streamline's proxy for it (slUpgradeInterface).
+        // The device's command queues and the swapchain's factory go through it, as the manual-hooking guide asks.
+        bool upgradeD3D12Interface(void** iface) const;
 
         NriResult getOptimalSettings(NriUpscalerType type,
                                      NriUpscalerMode mode,
@@ -69,6 +89,7 @@ namespace NRI
         struct Impl;
         std::unique_ptr<Impl> m_impl;
         bool m_initialized = false;
-        void* m_vkQueuePresentFn = nullptr;
+        StreamlineVulkanHooks m_vkHooks{};
+        bool m_vkHooksComplete = false;
     };
 }

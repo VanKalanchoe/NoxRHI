@@ -1,5 +1,6 @@
 #include "SwapchainD3D12.h"
 #include "DeviceD3D12.h"
+#include "../../Extensions/Upscaler/StreamlineContext.h"
 
 namespace NRI
 {
@@ -43,8 +44,24 @@ namespace NRI
         swapChainDesc.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED;
         swapChainDesc.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
 
+        // With Streamline (manual hooking) the swapchain comes from its proxy factory (slUpgradeInterface): the swapchain is then its proxy,
+        // and Present / GetBuffer / GetCurrentBackBufferIndex -- mandatory hooks -- go through it, which runs its presentCommon() every frame.
+        ComPtr<IDXGIFactory6> factory = m_deviceD3D12.getNativeFactory();
+        if (StreamlineContext* streamline = m_deviceD3D12.getStreamlineContext(); streamline && streamline->isInitialized())
+        {
+            IDXGIFactory6* proxy = factory.Get();
+            proxy->AddRef(); // (slUpgradeInterface replaces the pointer and takes this reference)
+            if (streamline->upgradeD3D12Interface(reinterpret_cast<void**>(&proxy)))
+            {
+                factory.Reset();
+                factory.Attach(proxy);
+            }
+            else
+                proxy->Release();
+        }
+
         ComPtr<IDXGISwapChain1> swapChain1;
-        ThrowIfFailed(m_deviceD3D12.getNativeFactory()->CreateSwapChainForHwnd(
+        ThrowIfFailed(factory->CreateSwapChainForHwnd(
             m_deviceD3D12.getGraphicsQueue(),
             hwnd,
             &swapChainDesc,

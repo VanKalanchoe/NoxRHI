@@ -225,6 +225,8 @@ namespace NRI
         bool dlssSupported = false;
         bool dlssRRSupported = false;
         bool dlssContextEvaluated = false;
+        bool dlssEvaluated = false;   // (DLSS-SR evaluated since the last reset: its resources exist)
+        bool dlssRREvaluated = false; // (DLSS-RR likewise)
         uint32_t frameIndex = 0;
 
 #if defined(NRI_ENABLE_VULKAN)
@@ -391,12 +393,35 @@ namespace NRI
         NRI_LOG_INFO("[Streamline] Vulkan device registered successfully.");
 
 #ifdef _WIN32
+        // The proxies of the manual-hooking guide's mandatory functions (sl_hooks.h), from the interposer's own vkGet*ProcAddr: they return
+        // vulkan-1.dll's functions except for those Streamline intercepts.
+        m_vkHooks = {};
+        m_vkHooksComplete = false;
         if (HMODULE interposer = GetModuleHandleA("sl.interposer.dll"))
         {
-            m_vkQueuePresentFn = reinterpret_cast<void*>(GetProcAddress(interposer, "vkQueuePresentKHR"));
-            if (m_vkQueuePresentFn)
-                NRI_LOG_INFO("[Streamline] Hooked vkQueuePresentKHR from sl.interposer.dll");
+            const auto getDeviceProc = reinterpret_cast<PFN_vkGetDeviceProcAddr>(GetProcAddress(interposer, "vkGetDeviceProcAddr"));
+            const auto getInstanceProc = reinterpret_cast<PFN_vkGetInstanceProcAddr>(GetProcAddress(interposer, "vkGetInstanceProcAddr"));
+            if (getDeviceProc && getInstanceProc)
+            {
+                const VkInstance instance = static_cast<VkInstance>(vkInstance);
+                const VkDevice device = static_cast<VkDevice>(vkDevice);
+                m_vkHooks.vkCreateWin32SurfaceKHR = reinterpret_cast<void*>(getInstanceProc(instance, "vkCreateWin32SurfaceKHR"));
+                m_vkHooks.vkDestroySurfaceKHR = reinterpret_cast<void*>(getInstanceProc(instance, "vkDestroySurfaceKHR"));
+                m_vkHooks.vkCreateSwapchainKHR = reinterpret_cast<void*>(getDeviceProc(device, "vkCreateSwapchainKHR"));
+                m_vkHooks.vkDestroySwapchainKHR = reinterpret_cast<void*>(getDeviceProc(device, "vkDestroySwapchainKHR"));
+                m_vkHooks.vkGetSwapchainImagesKHR = reinterpret_cast<void*>(getDeviceProc(device, "vkGetSwapchainImagesKHR"));
+                m_vkHooks.vkAcquireNextImageKHR = reinterpret_cast<void*>(getDeviceProc(device, "vkAcquireNextImageKHR"));
+                m_vkHooks.vkQueuePresentKHR = reinterpret_cast<void*>(getDeviceProc(device, "vkQueuePresentKHR"));
+                m_vkHooks.vkDeviceWaitIdle = reinterpret_cast<void*>(getDeviceProc(device, "vkDeviceWaitIdle"));
+                m_vkHooksComplete = m_vkHooks.vkCreateWin32SurfaceKHR && m_vkHooks.vkDestroySurfaceKHR && m_vkHooks.vkCreateSwapchainKHR &&
+                                    m_vkHooks.vkDestroySwapchainKHR && m_vkHooks.vkGetSwapchainImagesKHR && m_vkHooks.vkAcquireNextImageKHR &&
+                                    m_vkHooks.vkQueuePresentKHR && m_vkHooks.vkDeviceWaitIdle;
+            }
         }
+        if (m_vkHooksComplete)
+            NRI_LOG_INFO("[Streamline] Vulkan: present, swapchain, surface and device-wait-idle go through Streamline's proxies (manual hooking)");
+        else
+            NRI_LOG_WARN("[Streamline] Vulkan: Streamline's proxies for its mandatory hooks were not all found; presentCommon() will not run");
 #endif
 
         sl::AdapterInfo adapterInfo{};
@@ -470,6 +495,24 @@ namespace NRI
 #endif
     }
 
+    bool StreamlineContext::upgradeD3D12Interface(void** iface) const
+    {
+#if defined(NRI_ENABLE_STREAMLINE) && defined(_WIN32)
+        if (!m_initialized || !iface || !*iface)
+            return false;
+        const sl::Result result = slUpgradeInterface(iface);
+        if (result != sl::Result::eOk)
+        {
+            NRI_LOG_WARN("[Streamline] slUpgradeInterface failed: {}", static_cast<int>(result));
+            return false;
+        }
+        return true;
+#else
+        (void)iface;
+        return false;
+#endif
+    }
+
     void StreamlineContext::shutdown()
     {
 #if defined(NRI_ENABLE_VULKAN)
@@ -488,7 +531,8 @@ namespace NRI
             m_initialized = false;
         }
 #endif
-        m_vkQueuePresentFn = nullptr;
+        m_vkHooks = {};
+        m_vkHooksComplete = false;
     }
 
     bool StreamlineContext::isUpscalerSupported(NriUpscalerType type) const
@@ -564,15 +608,19 @@ namespace NRI
         if (!m_initialized || !m_impl->dlssContextEvaluated)
             return;
         m_impl->dlssContextEvaluated = false;
+        // Only the features that were evaluated have resources to free: freeing DLSS-SR after only DLSS-RR ran returned
+        // eErrorInvalidParameter (25) at shutdown.
         const sl::ViewportHandle viewport{ 0 };
-        if (m_impl->dlssSupported)
-        {
-            const sl::Result res = slFreeResources(sl::kFeatureDLSS, viewport);
+        const auto release = [&](sl::Feature feature, bool& evaluated, const char* name) {
+            if (!evaluated)
+                return;
+            evaluated = false;
+            const sl::Result res = slFreeResources(feature, viewport);
             if (res != sl::Result::eOk)
-                NRI_LOG_WARN("[Streamline] slFreeResources(DLSS) failed: {}", static_cast<int>(res));
-        }
-        if (m_impl->dlssRRSupported)
-            slFreeResources(sl::kFeatureDLSS_RR, viewport);
+                NRI_LOG_WARN("[Streamline] slFreeResources({}) failed: {}", name, static_cast<int>(res));
+        };
+        release(sl::kFeatureDLSS, m_impl->dlssEvaluated, "DLSS");
+        release(sl::kFeatureDLSS_RR, m_impl->dlssRREvaluated, "DLSS-RR");
 #endif
     }
 
@@ -936,6 +984,7 @@ namespace NRI
         }
 
         m_impl->dlssContextEvaluated = true;
+        (useRayReconstruction ? m_impl->dlssRREvaluated : m_impl->dlssEvaluated) = true;
         cmd.executionBarrier();
         return true;
 #else

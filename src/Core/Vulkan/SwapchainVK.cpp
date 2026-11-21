@@ -1,5 +1,6 @@
 #include "SwapchainVK.h"
 #include "DeviceVK.h"
+#include "../../Extensions/Upscaler/StreamlineContext.h"
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -14,9 +15,23 @@ namespace NRI
 {
     SwapchainVK::SwapchainVK(DeviceVK& device, const SwapchainDesc& desc) : m_deviceVK(device)
     {
+        m_hooks = m_deviceVK.getStreamlineVulkanHooks();
         createSwapChain(desc);
         createImageViews();
         createSyncObjects();
+    }
+
+    SwapchainVK::~SwapchainVK()
+    {
+        if (!m_hooks)
+            return; // (the raii members destroy the swapchain, then the surface)
+        // Through Streamline's proxies: the image views first, then the swapchain, then the surface.
+        m_swapChainImageViews.clear();
+        const VkDevice device = static_cast<VkDevice>(*m_deviceVK.getDevice());
+        if (m_hookedSwapchain)
+            reinterpret_cast<PFN_vkDestroySwapchainKHR>(m_hooks->vkDestroySwapchainKHR)(device, m_hookedSwapchain, nullptr);
+        if (m_hookedSurface)
+            reinterpret_cast<PFN_vkDestroySurfaceKHR>(m_hooks->vkDestroySurfaceKHR)(static_cast<VkInstance>(*m_deviceVK.getInstance()), m_hookedSurface, nullptr);
     }
     
     void SwapchainVK::createSwapChain(const SwapchainDesc& desc)
@@ -38,8 +53,19 @@ namespace NRI
                 .hinstance = hinst,
                 .hwnd = static_cast<HWND>(desc.Window.hwnd)
             };
-            m_ownedSurface = m_deviceVK.getInstance().createWin32SurfaceKHR(sci);
-            surface = *m_ownedSurface;
+            if (m_hooks)
+            {
+                const VkResult result = reinterpret_cast<PFN_vkCreateWin32SurfaceKHR>(m_hooks->vkCreateWin32SurfaceKHR)(
+                    static_cast<VkInstance>(*m_deviceVK.getInstance()), reinterpret_cast<const VkWin32SurfaceCreateInfoKHR*>(&sci), nullptr, &m_hookedSurface);
+                if (result != VK_SUCCESS)
+                    throw std::runtime_error("SwapchainVK: vkCreateWin32SurfaceKHR (Streamline proxy) failed");
+                surface = m_hookedSurface;
+            }
+            else
+            {
+                m_ownedSurface = m_deviceVK.getInstance().createWin32SurfaceKHR(sci);
+                surface = *m_ownedSurface;
+            }
 #else
             throw std::runtime_error("Win32 surface creation is only supported on Windows!");
 #endif
@@ -71,8 +97,24 @@ namespace NRI
             .clipped = true
         };
 
-        m_swapChain = vk::raii::SwapchainKHR(device, swapChainCreateInfo);
-        m_swapChainImages = m_swapChain.getImages();
+        if (m_hooks)
+        {
+            const VkDevice vkDevice = static_cast<VkDevice>(*device);
+            if (reinterpret_cast<PFN_vkCreateSwapchainKHR>(m_hooks->vkCreateSwapchainKHR)(
+                    vkDevice, reinterpret_cast<const VkSwapchainCreateInfoKHR*>(&swapChainCreateInfo), nullptr, &m_hookedSwapchain) != VK_SUCCESS)
+                throw std::runtime_error("SwapchainVK: vkCreateSwapchainKHR (Streamline proxy) failed");
+            const auto getImages = reinterpret_cast<PFN_vkGetSwapchainImagesKHR>(m_hooks->vkGetSwapchainImagesKHR);
+            uint32_t count = 0;
+            getImages(vkDevice, m_hookedSwapchain, &count, nullptr);
+            std::vector<VkImage> images(count);
+            getImages(vkDevice, m_hookedSwapchain, &count, images.data());
+            m_swapChainImages.assign(images.begin(), images.end());
+        }
+        else
+        {
+            m_swapChain = vk::raii::SwapchainKHR(device, swapChainCreateInfo);
+            m_swapChainImages = m_swapChain.getImages();
+        }
     }
 
     void SwapchainVK::createImageViews()
@@ -166,7 +208,14 @@ namespace NRI
             throw std::runtime_error("failed to wait for fence!");
         }
 
-        auto [result, imageIndex] = m_swapChain.acquireNextImage(UINT64_MAX, *m_presentCompleteSemaphores[frameIndex], nullptr);
+        vk::Result result = vk::Result::eSuccess;
+        uint32_t imageIndex = 0;
+        if (m_hooks)
+            result = static_cast<vk::Result>(reinterpret_cast<PFN_vkAcquireNextImageKHR>(m_hooks->vkAcquireNextImageKHR)(
+                static_cast<VkDevice>(*device), m_hookedSwapchain, UINT64_MAX, static_cast<VkSemaphore>(*m_presentCompleteSemaphores[frameIndex]),
+                VK_NULL_HANDLE, &imageIndex));
+        else
+            std::tie(result, imageIndex) = m_swapChain.acquireNextImage(UINT64_MAX, *m_presentCompleteSemaphores[frameIndex], nullptr);
 
         if (result == vk::Result::eErrorOutOfDateKHR)
         {
@@ -188,27 +237,22 @@ namespace NRI
     {
         auto& queue = m_deviceVK.getQueue();
 
+        const vk::SwapchainKHR swapchain = getNativeSwapchain();
         const vk::PresentInfoKHR presentInfoKHR
         {
             .waitSemaphoreCount = 1,
             .pWaitSemaphores = &*m_renderFinishedSemaphores[imageIndex],
             .swapchainCount = 1,
-            .pSwapchains = &*m_swapChain,
+            .pSwapchains = &swapchain,
             .pImageIndices = &imageIndex
         };
-        
+
         vk::Result result = vk::Result::eSuccess;
-        if (auto slPresent = (*m_ownedSurface != vk::SurfaceKHR{}) ? nullptr : reinterpret_cast<PFN_vkQueuePresentKHR>(m_deviceVK.getStreamlinePresentFn()))
-        {
-            result = static_cast<vk::Result>(slPresent(
-                static_cast<VkQueue>(*queue),
-                reinterpret_cast<const VkPresentInfoKHR*>(&presentInfoKHR)
-            ));
-        }
+        if (m_hooks) // (Streamline's present: runs its presentCommon())
+            result = static_cast<vk::Result>(reinterpret_cast<PFN_vkQueuePresentKHR>(m_hooks->vkQueuePresentKHR)(
+                static_cast<VkQueue>(*queue), reinterpret_cast<const VkPresentInfoKHR*>(&presentInfoKHR)));
         else
-        {
             result = queue.presentKHR(presentInfoKHR);
-        }
         
         if ((result == vk::Result::eSuboptimalKHR) || (result == vk::Result::eErrorOutOfDateKHR))
         {

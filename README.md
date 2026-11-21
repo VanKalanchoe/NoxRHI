@@ -205,6 +205,25 @@ and NoxRHI's Streamline context binds one before every evaluate (`StreamlineCont
 cannot help DLSS frame generation (DLSS-G has no evaluate call on the application side). NVIDIA's own samples avoid Streamline here: NRI
 calls NGX directly for DLSS-SR / DLSS-RR (`NRIUpscaler.h`) and supports `VK_EXT_descriptor_heap`; an NGX path in NoxRHI would do the same.
 
+**Streamline's mandatory hooks (manual hooking).** NoxRHI runs Streamline with `eUseManualHooking`, and then Streamline's guide
+(`ProgrammingGuideManualHooking.md`) requires the host to call Streamline's proxies for the functions listed in `sl_hooks.h`; going through
+them is what runs its `presentCommon()` every frame -- its per-frame bookkeeping and garbage collection. NoxRHI used to call only the
+Vulkan present proxy, and only when the swapchain had not created its own surface (never, in the examples), so Streamline logged
+`presentCommon() was not observed` on both APIs. Now:
+- **Vulkan:** the surface (`vkCreateWin32SurfaceKHR` / `vkDestroySurfaceKHR`), the swapchain (create, destroy, get images, acquire),
+  `vkQueuePresentKHR` and `vkDeviceWaitIdle` go through the proxies from the interposer's `vkGetDeviceProcAddr` / `vkGetInstanceProcAddr`.
+- **D3D12:** the device is registered with Streamline before the command queues are created through its proxy device, and the swapchain
+  comes from its proxy factory (`slUpgradeInterface`), so `Present`, `GetBuffer` and `GetCurrentBackBufferIndex` go through it.
+- At shutdown only the features that ran are freed (freeing DLSS-SR after only DLSS-RR ran gave `slFreeResources(DLSS) failed: 25`,
+  `eErrorInvalidParameter`).
+
+The examples' log says `[Streamline] Vulkan: present, swapchain, surface and device-wait-idle go through Streamline's proxies` when the
+Vulkan hooks are in place. Without `--dlss-rr` (no Streamline) nothing changes.
+
+NRD and DLSS-RR soften the sun's penumbra differently: both trade blur for noise, each its own way. Compare them with the reference
+(**1**, camera stopped); NRD's REBLUR is tuned through its settings (`NriDenoiserReblurSettings`: accumulated frames, pre-pass blur
+radii), and NRD's SIGMA is the dedicated shadow denoiser when shadows matter (it needs a separate penumbra input).
+
 **After NRD or DLSS, NoxRHI binds its state again.** Both record into NoxRHI's command buffer with their own pipelines and descriptor
 sets (NRD on D3D12 also its own descriptor heaps and root signature), and Streamline runs with manual hooking and no command-list state
 tracking, so it restores nothing (NVIDIA's NRD sample calls `RestoreBindings` for the same reason). The extensions now call

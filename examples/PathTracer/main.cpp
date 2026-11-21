@@ -182,6 +182,7 @@ public:
 
     void Render(nox::Host& host, nri::RenderGraph& graph, const nox::FrameInfo& frame) override
     {
+        ReportSlowFrame();
         if (frame.extent.width != m_Width || frame.extent.height != m_Height)
             CreateTargets(host, frame.extent.width, frame.extent.height);
 
@@ -393,6 +394,7 @@ public:
         {
             m_Mode = uint32_t(key - SDLK_1);
             m_ResetNrd = m_ResetRR = true;
+            m_FramesSinceSwitch = 0;
             m_Guide = 0;
             PrintMode();
         }
@@ -442,6 +444,22 @@ private:
         if (m_Mode == kDlssRR && !m_Upscaler)
             std::printf("[PathTracer]   DLSS-RR is not available (%s): showing the noisy image\n",
                         m_StreamlineWanted ? "Streamline did not load DLSS-RR, or the GPU cannot run it" : "start with --dlss-rr");
+    }
+
+    // A frame that took over 150 ms (CPU, from one Render to the next -- it includes waiting for the GPU) is reported with the mode and
+    // how many frames after the last mode switch it came: to tell a one-off cost of a switch (pipelines or resources created on first use)
+    // from a steady one.
+    void ReportSlowFrame()
+    {
+        const auto now = std::chrono::steady_clock::now();
+        if (m_LastRender.time_since_epoch().count() != 0)
+        {
+            const double ms = std::chrono::duration<double, std::milli>(now - m_LastRender).count();
+            if (ms > 150.0 && m_FramesSinceSwitch < 1000)
+                std::printf("[PathTracer] slow frame: %.0f ms (mode %s, %u frames after the last switch)\n", ms, kModeNames[EffectiveMode()], m_FramesSinceSwitch);
+        }
+        m_LastRender = now;
+        ++m_FramesSinceSwitch;
     }
 
     static void ReportOnce(bool& reported, const char* message)
@@ -637,6 +655,8 @@ private:
     bool m_ResetNrd = true, m_ResetRR = true, m_Paused = false, m_FirstFrame = true;
     uint32_t m_Mode = kReference, m_Guide = 0, m_FrameIndex = 0, m_Accumulated = 0;
     float m_AnimTime = 0.0f, m_Exposure = 1.0f;
+    std::chrono::steady_clock::time_point m_LastRender{};
+    uint32_t m_FramesSinceSwitch = 0;
     nox::Mat4 m_PrevView, m_PrevProj, m_PrevViewProj;
 };
 
