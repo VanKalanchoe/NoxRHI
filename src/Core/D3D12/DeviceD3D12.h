@@ -2,6 +2,8 @@
 #include <array>
 #include <atomic>
 #include <memory>
+#include <mutex>
+#include <unordered_map>
 #include <span>
 #include <string>
 #include <vector>
@@ -72,6 +74,10 @@ namespace NRI
 
         bool supportsMeshShaders() const override { return m_meshShaders; }
 
+        // ExecuteIndirect's command signature for indirect mesh draws: one D3D12_DISPATCH_MESH_ARGUMENTS (three uint32 group counts, the
+        // same bytes as Vulkan's VkDrawMeshTasksIndirectCommandEXT) every `stride` bytes. Created once per stride, kept for the device.
+        ID3D12CommandSignature* getDispatchMeshSignature(uint32_t stride);
+
         // Logs why the device was removed: GetDeviceRemovedReason and, with DRED on, the unfinished command lists' breadcrumbs and any
         // page fault. Once per device.
         void reportDeviceRemoved();
@@ -94,6 +100,8 @@ namespace NRI
         ComPtr<ID3D12CommandQueue> m_copyQueue;
 
         ComPtr<ID3D12RootSignature> m_globalRootSignature;
+        std::mutex m_commandSignatureMutex;
+        std::unordered_map<uint32_t, ComPtr<ID3D12CommandSignature>> m_dispatchMeshSignatures;
         DWORD m_infoQueueCookie = 0;
 
         ComPtr<ID3D12Fence> m_waitIdleFence;

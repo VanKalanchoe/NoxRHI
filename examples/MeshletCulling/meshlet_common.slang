@@ -67,6 +67,18 @@ struct Payload
     uint items[kTaskGroupSize]; // instance * meshletCount + meshlet
 };
 
+// --task-engine: the Nox engine's task shader design (Material_PBR_MeshTask.slang) -- 64 meshlets per task group, the visible ones
+// compacted in meshlet order by a bitmask and a prefix count, the payload a base index plus per-meshlet offsets (the engine's offsets
+// are uint8_t; 32-bit here, since DXIL has no 8-bit types).
+static const uint kEngineTaskGroupSize = 64;
+
+struct PayloadEngine
+{
+    uint baseItem;                        // the group's first item
+    uint offsets[kEngineTaskGroupSize];   // visible items, relative to baseItem
+};
+
+
 bool IsVisible(View view, Meshlet meshlet, Instance instance)
 {
     const float scale = instance.positionScale.w;

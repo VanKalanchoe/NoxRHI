@@ -367,7 +367,35 @@ namespace NRI
             CloseHandle(m_waitIdleEvent);
             m_waitIdleEvent = nullptr;
         }
+        {
+            std::lock_guard lock(m_commandSignatureMutex);
+            m_dispatchMeshSignatures.clear();
+        }
         m_allocator.reset();
+    }
+
+    ID3D12CommandSignature* DeviceD3D12::getDispatchMeshSignature(uint32_t stride)
+    {
+        std::lock_guard lock(m_commandSignatureMutex);
+        ComPtr<ID3D12CommandSignature>& signature = m_dispatchMeshSignatures[stride];
+        if (!signature)
+        {
+            // Only the dispatch argument, no root arguments: no root signature needed (D3D12MeshShaders' indirect sample does the same).
+            D3D12_INDIRECT_ARGUMENT_DESC argument{};
+            argument.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH_MESH;
+            D3D12_COMMAND_SIGNATURE_DESC desc{};
+            desc.ByteStride = stride;
+            desc.NumArgumentDescs = 1;
+            desc.pArgumentDescs = &argument;
+            const HRESULT result = m_device->CreateCommandSignature(&desc, nullptr, IID_PPV_ARGS(&signature));
+            if (FAILED(result))
+            {
+                NRI_LOG_ERROR("DeviceD3D12: CreateCommandSignature (DispatchMesh, stride {}) failed: 0x{:08X}", stride, uint32_t(result));
+                signature.Reset();
+                return nullptr;
+            }
+        }
+        return signature.Get();
     }
 
     void DeviceD3D12::waitIdle()

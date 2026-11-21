@@ -35,7 +35,8 @@ namespace NRI
             if (desc.usage == BufferUsage::Storage ||
                 desc.usage == BufferUsage::StorageStatic ||
                 desc.usage == BufferUsage::AccelerationStructureScratch ||
-                desc.usage == BufferUsage::AccelerationStructure)
+                desc.usage == BufferUsage::AccelerationStructure ||
+                desc.usage == BufferUsage::Indirect || desc.usage == BufferUsage::IndirectStatic) // (draw arguments written by compute, as on Vulkan)
             {
                 flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
             }

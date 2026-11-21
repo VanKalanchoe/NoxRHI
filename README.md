@@ -167,7 +167,14 @@ build\Debug\RayQueryShadows.exe --vk       build\Debug\RayQueryShadows.exe --dx1
 
 `examples/Common` holds what they share: `ExampleApp.h` (window, API choice, device, swapchain, descriptor heaps, render graph, frame loop,
 uploads, buffer references), `ExampleMath.h` (column-major matrices, reverse-Z projection) and **`nox_gpu.slang`**, the one header that hides
-what differs between the two APIs' shaders. CI runs all four on D3D12 (WARP, debug layer on) for 30 frames on every push.
+what differs between the two APIs' shaders. CI runs all four on D3D12 (WARP, debug layer on) for 30 frames on every push, and
+MeshletCulling's other draw paths (`--indirect`, `--task-engine`, `--task-single`).
+
+`MeshletCulling` start-up options, to narrow down a driver problem: `--no-cull`, `--no-stats` (no counter atomic), `--mesh-only` (no task
+shader), `--split-files` (task and mesh shaders compiled from separate files), `--no-readback`, `--no-depth`, `--groups N`,
+`--task-single` (a one-thread task shader), `--task-engine` (the Nox engine's task shader design: 64 meshlets per group, bitmask + prefix
+compaction, payload = base index + offsets) and `--indirect` (draw with `drawMeshTasksIndirect` from a GPU argument buffer, as the engine
+does). The first line it prints names the path it took.
 
 ### Porting Vulkan-only Slang (such as the Nox engine's shaders) to D3D12
 
@@ -206,7 +213,17 @@ already work on both and need nothing.
    GPUs 16 / 32 / 64), so a group that relies on one wave per group must use groupshared memory instead; push data is at most 128 bytes on D3D12
    (32 root constants).
 8. **NoxRHI on D3D12 today:** `fillBuffer` records nothing (copy from a zeroed buffer) and `bindVertexBuffer` has a fixed 36-byte stride (pull
-   vertices from a buffer, as all four examples do).
+   vertices from a buffer, as all four examples do). Indirect mesh draws (`drawMeshTasksIndirect`, `drawMeshTasksIndirectCount`, which the
+   engine's meshlet path uses) run as `ExecuteIndirect` with a DispatchMesh command signature; the argument records are the same 12 bytes as
+   Vulkan's `VkDrawMeshTasksIndirectCommandEXT`. The by-device-address form has no D3D12 equivalent (it logs an error).
+9. **Draw index in indirect draws.** The engine's task shader reads `SV_DrawIndex` (Vulkan's `DrawIndex`). D3D12 has no draw index (dxc rejects `SV_DrawIndex`): the usual
+   way is a root constant per indirect record, set by the command signature next to the dispatch arguments. NoxRHI's signature holds only the
+   dispatch arguments today, so a shader that reads `SV_DrawIndex` needs that added before it runs on D3D12.
+10. **Slang: one payload type per file for task shaders.** In a file with several task shaders whose payloads are of *different* types,
+    Slang (2026.22.1) gives only the first type's payload the task payload storage class; the others become plain groupshared memory, which
+    is invalid SPIR-V (each entry point compiled alone is valid). NoxRHI compiles a whole file into one SPIR-V module on Vulkan, so keep
+    such task shaders in separate files (MeshletCulling's `meshlet_task_engine.slang`). Task shaders sharing one payload type, and mesh
+    shaders reading different payload types, compile correctly.
 
 Struct layout through `BufferRef` is the same on both APIs (C-like / scalar: no `float3` padding, 64-bit members 8-byte aligned);
 ShaderCompat's `csStructLayout` checks it at runtime.

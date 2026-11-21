@@ -104,5 +104,12 @@ jobs:
             $code = $LASTEXITCODE
             if ($code -ne 0) { Write-Host ("$example exit code: {0} (0x{0:X8})" -f $code); $failed = 1 }
           }
+          # MeshletCulling's other draw paths: indirect (ExecuteIndirect with a DispatchMesh signature) and the engine-design task shader.
+          foreach ($options in @('--indirect'), @('--task-engine'), @('--task-engine', '--indirect'), @('--task-single')) {
+            Write-Host "=== MeshletCulling $options ==="
+            & ./MeshletCulling.exe --dx12 --frames 30 @options
+            $code = $LASTEXITCODE
+            if ($code -ne 0) { Write-Host ("MeshletCulling $options exit code: {0} (0x{0:X8})" -f $code); $failed = 1 }
+          }
           Pop-Location
           exit $failed

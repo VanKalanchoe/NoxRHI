@@ -369,17 +369,40 @@ namespace NRI
         m_cmdList->DispatchMesh(groupCountX, groupCountY, groupCountZ);
     }
 
+    // Indirect mesh draws: ExecuteIndirect with a DispatchMesh command signature. The argument records are Vulkan's
+    // VkDrawMeshTasksIndirectCommandEXT bytes (groupCountX/Y/Z), so one buffer serves both APIs. The buffer must be in
+    // INDIRECT_ARGUMENT state (AccessBits::IndirectRead; the render graph's RGBufferAccess::IndirectRead), the count buffer too.
     void CommandBufferD3D12::drawMeshTasksIndirect(Buffer& indirectBuffer, uint64_t offset, uint32_t drawCount, uint32_t stride)
     {
-        // Handled via ExecuteIndirect when command signature is bound
+        if (drawCount == 0)
+            return;
+        ID3D12CommandSignature* signature = m_deviceD3D12.getDispatchMeshSignature(stride ? stride : uint32_t(sizeof(D3D12_DISPATCH_MESH_ARGUMENTS)));
+        if (!signature)
+            return;
+        ensureGraphicsPipelineState();
+        auto& d3dBuffer = static_cast<BufferD3D12&>(indirectBuffer);
+        m_cmdList->ExecuteIndirect(signature, drawCount, d3dBuffer.getNativeBuffer(), offset, nullptr, 0);
     }
 
     void CommandBufferD3D12::drawMeshTasksIndirect(uint64_t indirectBufferDeviceAddress, uint64_t offset, uint32_t drawCount, uint32_t stride)
     {
+        // ExecuteIndirect takes a resource and an offset, not a GPU address: the address form cannot be expressed on D3D12 (Vulkan's
+        // drawMeshTasksIndirect2EXT is untested too). Draw with the Buffer& form.
+        (void)indirectBufferDeviceAddress; (void)offset; (void)drawCount; (void)stride;
+        NRI_LOG_ERROR("CommandBufferD3D12::drawMeshTasksIndirect by device address is not supported on D3D12: use the Buffer form");
     }
 
     void CommandBufferD3D12::drawMeshTasksIndirectCount(Buffer& indirectBuffer, uint64_t offset, Buffer& countBuffer, uint64_t countOffset, uint32_t maxDrawCount, uint32_t stride)
     {
+        if (maxDrawCount == 0)
+            return;
+        ID3D12CommandSignature* signature = m_deviceD3D12.getDispatchMeshSignature(stride ? stride : uint32_t(sizeof(D3D12_DISPATCH_MESH_ARGUMENTS)));
+        if (!signature)
+            return;
+        ensureGraphicsPipelineState();
+        auto& d3dBuffer = static_cast<BufferD3D12&>(indirectBuffer);
+        auto& d3dCount = static_cast<BufferD3D12&>(countBuffer);
+        m_cmdList->ExecuteIndirect(signature, maxDrawCount, d3dBuffer.getNativeBuffer(), offset, d3dCount.getNativeBuffer(), countOffset);
     }
 
     void CommandBufferD3D12::dispatch(uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ)
