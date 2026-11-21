@@ -258,6 +258,12 @@ between NoxRHI's work and NRD's or Streamline's -- is reported as a validation e
 the exit code). It is slow; it is for hunting a hazard, e.g. the PathTracer's NRD mode on Vulkan, whose denoised picture sometimes stops
 updating for about a second while the frames keep running (not seen on D3D12, nor in the modes without NRD, nor with `--vsync`).
 
+**NRD on Vulkan: an empty descriptor set first (being tested).** Before NRD's dispatches NoxRHI binds an empty classic descriptor set
+-- the workaround for NVIDIA's descriptor-heap bug above -- to see whether it ends the PathTracer's NRD freezes (no barrier hazard was
+reported by synchronization validation). `NOXRHI_VK_NRD_DUMMY_SET=0` turns it off, to compare. The Nox engine's NRD integration is the
+same as NoxRHI's (same queues, queued frames, states, heaps rebound after NRD); its path tracer resets NRD's history whenever the camera
+moves, so it never runs NRD's reprojection with a moving camera, which the PathTracer does every frame.
+
 **Stalls.** Every example prints a frame whose host side took over 150 ms with where the time went:
 `[PathTracer] Vulkan: frame 812 stalled 2300 ms -- acquire (frame fence + swapchain image) 2299 ms, record 1 ms, submit 0 ms, present 0 ms`.
 *Acquire* is waiting for the GPU to finish the frame that last used the slot, then for a swapchain image; *record* is the example's passes
