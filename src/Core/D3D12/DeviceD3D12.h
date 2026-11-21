@@ -98,6 +98,8 @@ namespace NRI
         ComPtr<ID3D12Device5> m_device;
 
         ComPtr<ID3D12CommandQueue> m_directQueue;
+        // Streamline's proxies (manual hooking), released before slShutdown -- the queue's first: it keeps a raw pointer to the device's.
+        ComPtr<ID3D12Device> m_deviceProxy;            // (slUpgradeInterface of m_device: the queues are created through it)
         ComPtr<ID3D12CommandQueue> m_directQueueProxy; // (Streamline's proxy of m_directQueue: only to create the swapchain on)
         ComPtr<ID3D12CommandQueue> m_computeQueue;
         ComPtr<ID3D12CommandQueue> m_copyQueue;

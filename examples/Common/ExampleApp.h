@@ -440,7 +440,10 @@ namespace nox
                 FrameInfo frame;
                 frame.frameNumber = m_FrameNumber;
                 frame.frameSlot = uint32_t(m_FrameNumber % kFramesInFlight);
-                if (swapchain.acquireNextImage(frame.frameSlot, frame.imageIndex) == NRI_FRAME_RESULT_RESIZE_REQUIRED)
+                const auto acquireStart = std::chrono::steady_clock::now();
+                const nri::FrameResult acquired = swapchain.acquireNextImage(frame.frameSlot, frame.imageIndex);
+                const auto acquireEnd = std::chrono::steady_clock::now();
+                if (acquired == NRI_FRAME_RESULT_RESIZE_REQUIRED)
                 {
                     m_NeedsResize = true;
                     return SDL_APP_CONTINUE;
@@ -463,6 +466,7 @@ namespace nox
                 if (m_ChecksOn)
                     AddShaderChecksPass(graph, frame.frameSlot);
                 graph.Compile();
+                const auto recordEnd = std::chrono::steady_clock::now();
                 const auto submissions = graph.Execute(frame.frameSlot);
                 for (size_t s = 0; s < submissions.size(); ++s)
                 {
@@ -472,8 +476,10 @@ namespace nox
                     else
                         device.submit(sub.Queue, sub.CommandBuffers, sub.Waits, sub.Signals);
                 }
+                const auto submitEnd = std::chrono::steady_clock::now();
                 if (swapchain.present(frame.frameSlot, frame.imageIndex) == NRI_FRAME_RESULT_RESIZE_REQUIRED)
                     m_NeedsResize = true;
+                ReportStall(acquireStart, acquireEnd, recordEnd, submitEnd, std::chrono::steady_clock::now());
 
                 ++m_FrameNumber;
                 ++m_FramesThisSecond;
@@ -496,6 +502,23 @@ namespace nox
                 return SDL_APP_FAILURE;
             }
             return SDL_APP_CONTINUE;
+        }
+
+        // A frame whose host side took over 150 ms is printed with where the time went: the acquire (waiting for the frame slot's fence --
+        // the GPU finishing the frame that last used it -- and for a swapchain image), recording the passes, submitting, and the present.
+        // A freeze then names the call it is stuck in; one where nothing is printed while the window title's frame rate keeps counting is
+        // not the host waiting: the frames run, only the image does not change.
+        using Clock = std::chrono::steady_clock;
+        void ReportStall(Clock::time_point acquireStart, Clock::time_point acquireEnd, Clock::time_point recordEnd, Clock::time_point submitEnd,
+                         Clock::time_point presentEnd)
+        {
+            const auto ms = [](Clock::time_point a, Clock::time_point b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
+            if (ms(acquireStart, presentEnd) <= 150.0)
+                return;
+            std::printf("[%s] %s: frame %llu stalled %.0f ms -- acquire (frame fence + swapchain image) %.0f ms, record %.0f ms, submit %.0f ms, "
+                        "present %.0f ms\n",
+                        m_Example->Name(), ApiName(), static_cast<unsigned long long>(m_FrameNumber), ms(acquireStart, presentEnd),
+                        ms(acquireStart, acquireEnd), ms(acquireEnd, recordEnd), ms(recordEnd, submitEnd), ms(submitEnd, presentEnd));
         }
 
         void Quit(SDL_AppResult result)

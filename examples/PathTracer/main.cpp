@@ -455,7 +455,7 @@ private:
         if (m_LastRender.time_since_epoch().count() != 0)
         {
             const double ms = std::chrono::duration<double, std::milli>(now - m_LastRender).count();
-            if (ms > 150.0 && m_FramesSinceSwitch < 1000)
+            if (ms > 150.0)
                 std::printf("[PathTracer] slow frame: %.0f ms (mode %s, %u frames after the last switch)\n", ms, kModeNames[EffectiveMode()], m_FramesSinceSwitch);
         }
         m_LastRender = now;

@@ -47,17 +47,16 @@ namespace NRI
         // With Streamline (manual hooking) the swapchain comes from its proxy factory (slUpgradeInterface): the swapchain is then its proxy,
         // and Present / GetBuffer / GetCurrentBackBufferIndex -- mandatory hooks -- go through it, which runs its presentCommon() every frame.
         ComPtr<IDXGIFactory6> factory = m_deviceD3D12.getNativeFactory();
+        // (The factory proxy takes its own reference on the native factory and starts at one reference -- ours, so no AddRef first; it is
+        // released after the swapchain's creation, which keeps nothing of it.)
         if (StreamlineContext* streamline = m_deviceD3D12.getStreamlineContext(); streamline && streamline->isInitialized())
         {
-            IDXGIFactory6* proxy = factory.Get();
-            proxy->AddRef(); // (slUpgradeInterface replaces the pointer and takes this reference)
-            if (streamline->upgradeD3D12Interface(reinterpret_cast<void**>(&proxy)))
+            void* proxy = factory.Get();
+            if (streamline->upgradeD3D12Interface(&proxy) && proxy != factory.Get())
             {
                 factory.Reset();
-                factory.Attach(proxy);
+                factory.Attach(static_cast<IDXGIFactory6*>(proxy));
             }
-            else
-                proxy->Release();
         }
 
         ComPtr<IDXGISwapChain1> swapChain1;

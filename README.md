@@ -216,8 +216,14 @@ Vulkan present proxy, and only when the swapchain had not created its own surfac
   comes from its proxy factory (`slUpgradeInterface`), so `Present`, `GetBuffer` and `GetCurrentBackBufferIndex` go through it.
 - **D3D12 queues stay native.** Through the proxy device a queue comes back as Streamline's queue *proxy*; NoxRHI takes the native queue
   behind it (`slGetNativeInterface`) for everything -- "use native interfaces everywhere except the hooked calls" -- and keeps the
-  direct queue's proxy only to create the swapchain on (Streamline's factory looks for it), released before `slShutdown`. Using the
-  proxy everywhere crashed (`0xC0000005`) with `--dlss-rr`.
+  direct queue's proxy only to create the swapchain on (Streamline's factory looks for it), released before `slShutdown`.
+- **D3D12 proxy lifetimes** (read from Streamline's source, `sl.interposer/d3d12` and `dxgi`): `slUpgradeInterface` swaps the pointer for a
+  new proxy that takes its *own* reference on the native object and starts at one reference -- the caller's (so no `AddRef` before the
+  call; NoxRHI did one and leaked a reference to the device and the factory). A queue proxy keeps a raw, unreferenced pointer to the proxy
+  device, which creating the swapchain reads (`cmdQueueSL->m_device->m_base`), and the proxy device's last `Release` also clears the device
+  Streamline's plugins use. NoxRHI kept the proxy device in a local that was released at the end of device creation: the swapchain's
+  creation then read freed memory -- the `0xC0000005` at start-up with `--dlss-rr`. The proxy device now lives as long as the device and is
+  released in shutdown after the queue proxy, before `slShutdown`.
 - **A frame token every frame.** The device's `beginFrame(frameNumber)` takes the frame's token (`slGetNewFrameToken` with that index),
   as the guide's frame loop does; NoxRHI used to take one only when DLSS was evaluated, numbered by its own counter, while Streamline's
   present hook counts every frame.
@@ -229,7 +235,15 @@ builds copy the **production** DLLs (`bin/x64`) and NRD's / NRI's Release DLLs. 
 development Streamline adds logging and checks.
 
 The examples' log says `[Streamline] Vulkan: present, swapchain, surface and device-wait-idle go through Streamline's proxies` when the
-Vulkan hooks are in place. Without `--dlss-rr` (no Streamline) nothing changes.
+Vulkan hooks are in place. Without `--dlss-rr` (no Streamline) nothing changes. On Vulkan these proxies only pass the call on: the one
+plugin that hooks acquire / create-swapchain is DLSS-G (frame generation), which the examples do not load, and the common plugin's present
+hook runs `presentCommon()` (bookkeeping, nothing that waits).
+
+**Stalls.** Every example prints a frame whose host side took over 150 ms with where the time went:
+`[PathTracer] Vulkan: frame 812 stalled 2300 ms -- acquire (frame fence + swapchain image) 2299 ms, record 1 ms, submit 0 ms, present 0 ms`.
+*Acquire* is waiting for the GPU to finish the frame that last used the slot, then for a swapchain image; *record* is the example's passes
+(pipelines or resources created on first use show here); *present* is the swapchain's present. A freeze with nothing printed while the
+window title's frame rate keeps counting is not the host waiting: the frames run and only the picture does not change.
 
 NRD and DLSS-RR soften the sun's penumbra differently: both trade blur for noise, each its own way. Compare them with the reference
 (**1**, camera stopped); NRD's REBLUR is tuned through its settings (`NriDenoiserReblurSettings`: accumulated frames, pre-pass blur

@@ -149,23 +149,26 @@ namespace NRI
 
         // Streamline (manual hooking) learns the device before anything it hooks is called: ID3D12Device::CreateCommandQueue is one of its
         // mandatory hooks, so the queues are created through its proxy device (slUpgradeInterface), as its manual-hooking guide shows.
-        ComPtr<ID3D12Device> queueDevice = m_device;
+        //
+        // Lifetime (sl.interposer's d3d12Device.cpp / d3d12CommandQueue.cpp): slUpgradeInterface replaces the pointer by a new proxy that
+        // takes its own reference on the device and starts at one reference -- ours. A queue proxy keeps a raw, unreferenced pointer to the
+        // proxy device, which the swapchain's creation reads (setupSwapchainProxy: cmdQueueSL->m_device->m_base), and the proxy device's
+        // last Release also clears the device Streamline's plugins use (setD3D12Device(nullptr)). So the proxy device lives as long as
+        // the device: released in shutdown, after the queue proxy and before slShutdown. (It was a local released at the end of this
+        // function: the swapchain's creation then read freed memory -- the 0xC0000005 at start-up with --dlss-rr.)
         if (m_streamline && m_streamline->isInitialized())
         {
             m_streamline->registerD3D12Device(m_device.Get(), reinterpret_cast<const uint8_t*>(&chosenDesc.AdapterLuid), sizeof(chosenDesc.AdapterLuid));
-            ID3D12Device* proxy = m_device.Get();
-            proxy->AddRef(); // (slUpgradeInterface replaces the pointer and takes this reference)
-            if (m_streamline->upgradeD3D12Interface(reinterpret_cast<void**>(&proxy)))
-                queueDevice.Attach(proxy);
-            else
-                proxy->Release();
+            void* proxy = static_cast<ID3D12Device*>(m_device.Get());
+            if (m_streamline->upgradeD3D12Interface(&proxy) && proxy != static_cast<ID3D12Device*>(m_device.Get()))
+                m_deviceProxy.Attach(static_cast<ID3D12Device*>(proxy)); // (no AddRef: the proxy's one reference is ours)
         }
+        ID3D12Device* const queueDevice = m_deviceProxy ? m_deviceProxy.Get() : static_cast<ID3D12Device*>(m_device.Get());
 
         // Through the proxy device a queue comes back as Streamline's D3D12CommandQueue proxy: NoxRHI (and NRD, which gets the queues)
-        // uses the native queue behind it (slGetNativeInterface), as the guide asks -- the proxy expects Streamline's own command list
-        // proxies and, released after slShutdown, crashed (0xC0000005). The direct queue's proxy is kept for one call: the swapchain is
-        // created on it (Streamline's factory looks for its queue proxy there); it is released before slShutdown.
-        const bool proxied = queueDevice.Get() != m_device.Get();
+        // uses the native queue behind it (slGetNativeInterface), as the guide asks ("native interfaces everywhere except the hooked
+        // calls"). The direct queue's proxy is kept for the swapchain's creation (Streamline's factory looks for its queue proxy there).
+        const bool proxied = m_deviceProxy != nullptr;
         const auto createQueue = [&](D3D12_COMMAND_LIST_TYPE type, ComPtr<ID3D12CommandQueue>& native, ComPtr<ID3D12CommandQueue>* keepProxy) -> HRESULT {
             D3D12_COMMAND_QUEUE_DESC queueDesc{};
             queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
@@ -375,7 +378,8 @@ namespace NRI
         waitIdle();
         m_shuttingDown = true;
         drainDeferredDeletions();
-        m_directQueueProxy.Reset(); // (a Streamline object: released while Streamline is still up)
+        m_directQueueProxy.Reset(); // (Streamline objects: released while Streamline is still up, the queue's before the device's)
+        m_deviceProxy.Reset();
         if (m_streamline)
         {
             m_streamline->shutdown();
