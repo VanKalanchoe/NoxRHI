@@ -421,6 +421,19 @@ namespace NRI
         m_cmdList->ExecuteIndirect(signature, maxDrawCount, d3dBuffer.getNativeBuffer(), offset, d3dCount.getNativeBuffer(), countOffset);
     }
 
+    void CommandBufferD3D12::drawMeshTasksIndirectCountWithDrawId(Buffer& indirectBuffer, uint64_t offset, Buffer& countBuffer, uint64_t countOffset, uint32_t maxDrawCount, uint32_t stride)
+    {
+        if (maxDrawCount == 0)
+            return;
+        ID3D12CommandSignature* signature = m_deviceD3D12.getDispatchMeshWithDrawIdSignature(stride ? stride : 16u);
+        if (!signature)
+            return;
+        ensureGraphicsPipelineState();
+        auto& d3dBuffer = static_cast<BufferD3D12&>(indirectBuffer);
+        auto& d3dCount = static_cast<BufferD3D12&>(countBuffer);
+        m_cmdList->ExecuteIndirect(signature, maxDrawCount, d3dBuffer.getNativeBuffer(), offset, d3dCount.getNativeBuffer(), countOffset);
+    }
+
     void CommandBufferD3D12::dispatch(uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ)
     {
         m_cmdList->Dispatch(groupCountX, groupCountY, groupCountZ);
@@ -465,7 +478,46 @@ namespace NRI
 
     void CommandBufferD3D12::fillBuffer(Buffer& buffer, uint64_t offset, uint64_t size, uint32_t value)
     {
-        // In D3D12, buffer filling can be recorded as a UAV clear or staging copy
+        if (m_allocator.getCommandListType() == D3D12_COMMAND_LIST_TYPE_COPY)
+        {
+            NRI_LOG_WARN("CommandBufferD3D12::fillBuffer is not supported on a COPY command list");
+            return;
+        }
+        const uint64_t bufSize = buffer.getSize();
+        if (offset >= bufSize)
+            return;
+        const uint64_t effectiveSize = (size == ~0ull || offset + size > bufSize) ? (bufSize - offset) : size;
+        const uint64_t totalDwords = effectiveSize / 4;
+        if (totalDwords == 0)
+            return;
+
+        ID3D12RootSignature* rootSig = nullptr;
+        ID3D12PipelineState* pso = nullptr;
+        if (!m_deviceD3D12.getFillBufferPipeline(rootSig, pso))
+            return;
+
+        auto& bufD3D12 = static_cast<BufferD3D12&>(buffer);
+        transitionBufferState(bufD3D12, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+        m_cmdList->SetComputeRootSignature(rootSig);
+        m_cmdList->SetPipelineState(pso);
+        m_cmdList->SetComputeRootUnorderedAccessView(1, bufD3D12.getDeviceAddress());
+
+        constexpr uint32_t kMaxChunkDwords = 65535u * 64u;
+        uint64_t curDword = offset / 4;
+        uint64_t remaining = totalDwords;
+        while (remaining > 0)
+        {
+            const uint32_t chunk = static_cast<uint32_t>(std::min<uint64_t>(remaining, kMaxChunkDwords));
+            const uint32_t constants[3] = { static_cast<uint32_t>(curDword), chunk, value };
+            m_cmdList->SetComputeRoot32BitConstants(0, 3, constants, 0);
+            m_cmdList->Dispatch((chunk + 63u) / 64u, 1, 1);
+            curDword += chunk;
+            remaining -= chunk;
+        }
+
+        // Restore NoxRHI's global root signature, descriptor heaps, and invalidate cached PSO.
+        restoreBindingsAfterExternalWork();
     }
 
     void CommandBufferD3D12::copyBuffer(Buffer& srcBuffer, Buffer& dstBuffer, std::span<const BufferCopyRegion> regions)

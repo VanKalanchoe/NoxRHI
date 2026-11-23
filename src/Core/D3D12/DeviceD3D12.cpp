@@ -1,4 +1,5 @@
 #include "DeviceD3D12.h"
+#include <d3dcompiler.h>
 #include "SwapchainD3D12.h"
 #include "PipelineD3D12.h"
 #include "CommandAllocatorD3D12.h"
@@ -235,17 +236,26 @@ namespace NRI
 
     void DeviceD3D12::createGlobalRootSignature()
     {
-        D3D12_ROOT_PARAMETER1 rootParam{};
-        rootParam.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        rootParam.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-        rootParam.Constants.ShaderRegister = 0;
-        rootParam.Constants.RegisterSpace = 0;
-        rootParam.Constants.Num32BitValues = 32;
+        // Root param 0: push constants at b0, space0 (60 DWORDs = 240 bytes).
+        // Root param 1: hardware drawID at b1, space0 (1 DWORD), populated by ExecuteIndirect for indirect mesh draws.
+        // Total = 61 DWORDs <= D3D12's 64-DWORD root signature limit (zero spill).
+        D3D12_ROOT_PARAMETER1 rootParams[2]{};
+        rootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        rootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        rootParams[0].Constants.ShaderRegister = 0;
+        rootParams[0].Constants.RegisterSpace = 0;
+        rootParams[0].Constants.Num32BitValues = 60;
+
+        rootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        rootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        rootParams[1].Constants.ShaderRegister = 1;
+        rootParams[1].Constants.RegisterSpace = 0;
+        rootParams[1].Constants.Num32BitValues = 1;
 
         D3D12_VERSIONED_ROOT_SIGNATURE_DESC rootSigDesc{};
         rootSigDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
-        rootSigDesc.Desc_1_1.NumParameters = 1;
-        rootSigDesc.Desc_1_1.pParameters = &rootParam;
+        rootSigDesc.Desc_1_1.NumParameters = 2;
+        rootSigDesc.Desc_1_1.pParameters = rootParams;
         rootSigDesc.Desc_1_1.NumStaticSamplers = 0;
         rootSigDesc.Desc_1_1.pStaticSamplers = nullptr;
         rootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED |
@@ -400,6 +410,12 @@ namespace NRI
         {
             std::lock_guard lock(m_commandSignatureMutex);
             m_dispatchMeshSignatures.clear();
+            m_dispatchMeshWithDrawIdSignatures.clear();
+        }
+        {
+            std::lock_guard lock(m_fillBufferMutex);
+            m_fillBufferPso.Reset();
+            m_fillBufferRootSignature.Reset();
         }
         m_allocator.reset();
     }
@@ -426,6 +442,97 @@ namespace NRI
             }
         }
         return signature.Get();
+    }
+
+    ID3D12CommandSignature* DeviceD3D12::getDispatchMeshWithDrawIdSignature(uint32_t stride)
+    {
+        std::lock_guard lock(m_commandSignatureMutex);
+        ComPtr<ID3D12CommandSignature>& signature = m_dispatchMeshWithDrawIdSignatures[stride];
+        if (!signature)
+        {
+            D3D12_INDIRECT_ARGUMENT_DESC args[2]{};
+            args[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
+            args[0].Constant.RootParameterIndex = 1;
+            args[0].Constant.DestOffsetIn32BitValues = 0;
+            args[0].Constant.Num32BitValuesToSet = 1;
+            args[1].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH_MESH;
+
+            D3D12_COMMAND_SIGNATURE_DESC desc{};
+            desc.ByteStride = stride;
+            desc.NumArgumentDescs = 2;
+            desc.pArgumentDescs = args;
+            const HRESULT result = m_device->CreateCommandSignature(&desc, m_globalRootSignature.Get(), IID_PPV_ARGS(&signature));
+            if (FAILED(result))
+            {
+                NRI_LOG_ERROR("DeviceD3D12: CreateCommandSignature (DispatchMesh+DrawId, stride {}) failed: 0x{:08X}", stride, uint32_t(result));
+                signature.Reset();
+                return nullptr;
+            }
+        }
+        return signature.Get();
+    }
+
+    bool DeviceD3D12::getFillBufferPipeline(ID3D12RootSignature*& outRootSig, ID3D12PipelineState*& outPso)
+    {
+        std::lock_guard lock(m_fillBufferMutex);
+        if (!m_fillBufferPso)
+        {
+            D3D12_ROOT_PARAMETER1 params[2]{};
+            params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+            params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+            params[0].Constants.ShaderRegister = 0;
+            params[0].Constants.RegisterSpace = 0;
+            params[0].Constants.Num32BitValues = 3;
+
+            params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+            params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+            params[1].Descriptor.ShaderRegister = 0;
+            params[1].Descriptor.RegisterSpace = 0;
+
+            D3D12_VERSIONED_ROOT_SIGNATURE_DESC rootDesc{};
+            rootDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+            rootDesc.Desc_1_1.NumParameters = 2;
+            rootDesc.Desc_1_1.pParameters = params;
+
+            ComPtr<ID3DBlob> sigBlob, errBlob;
+            if (FAILED(D3D12SerializeVersionedRootSignature(&rootDesc, &sigBlob, &errBlob)) ||
+                FAILED(m_device->CreateRootSignature(0, sigBlob->GetBufferPointer(), sigBlob->GetBufferSize(),
+                                                     IID_PPV_ARGS(&m_fillBufferRootSignature))))
+            {
+                NRI_LOG_ERROR("DeviceD3D12: failed to create fillBuffer root signature");
+                return false;
+            }
+
+            static constexpr const char kFillHlsl[] = R"HLSL(
+cbuffer FillParams : register(b0) { uint dwordOffset; uint dwordCount; uint fillValue; };
+RWByteAddressBuffer dst : register(u0);
+[numthreads(64, 1, 1)]
+void main(uint3 tid : SV_DispatchThreadID) {
+    if (tid.x < dwordCount)
+        dst.Store((dwordOffset + tid.x) * 4u, fillValue);
+}
+)HLSL";
+            ComPtr<ID3DBlob> csBlob, csErr;
+            if (FAILED(D3DCompile(kFillHlsl, sizeof(kFillHlsl) - 1, "NoxFillBuffer.hlsl", nullptr, nullptr,
+                                  "main", "cs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &csBlob, &csErr)))
+            {
+                NRI_LOG_ERROR("DeviceD3D12: failed to compile fillBuffer shader: {}",
+                              csErr ? static_cast<const char*>(csErr->GetBufferPointer()) : "unknown");
+                return false;
+            }
+
+            D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc{};
+            psoDesc.pRootSignature = m_fillBufferRootSignature.Get();
+            psoDesc.CS = { csBlob->GetBufferPointer(), csBlob->GetBufferSize() };
+            if (FAILED(m_device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(&m_fillBufferPso))))
+            {
+                NRI_LOG_ERROR("DeviceD3D12: failed to create fillBuffer PSO");
+                return false;
+            }
+        }
+        outRootSig = m_fillBufferRootSignature.Get();
+        outPso = m_fillBufferPso.Get();
+        return outRootSig != nullptr && outPso != nullptr;
     }
 
     void DeviceD3D12::waitIdle()

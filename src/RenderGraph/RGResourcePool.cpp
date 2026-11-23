@@ -235,7 +235,8 @@ namespace nri
         buffer->Key = key;
         buffer->Handle = m_Device->createBuffer(BufferDesc{ .size = key.Size, .usage = key.Usage });
 
-        if (key.Usage == NRI_BUFFER_USAGE_STORAGE)
+        const bool isD3D12 = m_Device->getAPI() == NRI_GRAPHICS_API_D3D12;
+        if (key.Usage == NRI_BUFFER_USAGE_STORAGE && !isD3D12)
         {
             void* mapped = buffer->Handle.map(0, key.Size);
             if (mapped)
@@ -243,6 +244,22 @@ namespace nri
                 std::memset(mapped, 0, key.Size);
                 buffer->Handle.unmap();
             }
+        }
+
+        if (isD3D12 && m_ResourceHeap && key.Size > 0)
+        {
+            const bool canSrv = key.Usage != NRI_BUFFER_USAGE_READBACK &&
+                                key.Usage != NRI_BUFFER_USAGE_ACCELERATION_STRUCTURE &&
+                                key.Usage != NRI_BUFFER_USAGE_DESCRIPTOR_HEAP;
+            const bool canUav = key.Usage == NRI_BUFFER_USAGE_STORAGE ||
+                                key.Usage == NRI_BUFFER_USAGE_STORAGE_STATIC ||
+                                key.Usage == NRI_BUFFER_USAGE_INDIRECT ||
+                                key.Usage == NRI_BUFFER_USAGE_INDIRECT_STATIC ||
+                                key.Usage == NRI_BUFFER_USAGE_ACCELERATION_STRUCTURE_SCRATCH;
+            if (canSrv)
+                buffer->ReadSlot = m_ResourceHeap->registerBuffer(buffer->Handle, key.Size);
+            if (canUav)
+                buffer->WriteSlot = m_ResourceHeap->registerStorageBuffer(buffer->Handle, key.Size);
         }
 
         m_BufferMemory += key.Size;
@@ -268,6 +285,14 @@ namespace nri
     {
         if (!buffer)
             return;
+
+        if (m_ResourceHeap)
+        {
+            if (buffer->ReadSlot != ~0u)
+                m_ResourceHeap->unregisterBuffer(buffer->ReadSlot);
+            if (buffer->WriteSlot != ~0u)
+                m_ResourceHeap->unregisterBuffer(buffer->WriteSlot);
+        }
 
         m_BufferMemory -= buffer->Key.Size;
         buffer.reset();

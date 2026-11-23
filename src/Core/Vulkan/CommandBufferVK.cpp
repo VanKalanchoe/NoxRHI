@@ -581,6 +581,15 @@ namespace NRI
         m_commandBuffers[m_currentFrameIndex].drawMeshTasksIndirectCountEXT(vkBuffer.getNativeBuffer(), offset, vkCountBuffer.getNativeBuffer(), countOffset, maxDrawCount, stride);
     }
 
+    void CommandBufferVK::drawMeshTasksIndirectCountWithDrawId(Buffer& indirectBuffer, uint64_t offset, Buffer& countBuffer, uint64_t countOffset, uint32_t maxDrawCount, uint32_t stride)
+    {
+        auto& vkBuffer = dynamic_cast<BufferVK&>(indirectBuffer);
+        auto& vkCountBuffer = dynamic_cast<BufferVK&>(countBuffer);
+        const uint32_t effectiveStride = stride ? stride : 16u;
+        // Skip the leading uint32_t drawID in each record; Vulkan shaders use hardware SV_DrawIndex.
+        m_commandBuffers[m_currentFrameIndex].drawMeshTasksIndirectCountEXT(vkBuffer.getNativeBuffer(), offset + sizeof(uint32_t), vkCountBuffer.getNativeBuffer(), countOffset, maxDrawCount, effectiveStride);
+    }
+
     void CommandBufferVK::dispatch(uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ)
     {
         m_commandBuffers[m_currentFrameIndex].dispatch(groupCountX, groupCountY, groupCountZ);

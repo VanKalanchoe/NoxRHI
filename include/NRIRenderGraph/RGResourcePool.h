@@ -46,6 +46,8 @@ namespace nri
         {
             RGBufferKey Key;
             Buffer Handle;
+            uint32_t ReadSlot = ~0u;
+            uint32_t WriteSlot = ~0u;
             uint64_t LastUsedFrame = 0;
             uint64_t BusyFrame = ~0ull;
             uint32_t BusyUntilPass = 0;

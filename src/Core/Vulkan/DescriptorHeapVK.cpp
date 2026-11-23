@@ -322,6 +322,9 @@ namespace NRI
 
     void DescriptorHeapVK::unregisterBuffer(uint32_t slot)
     {
+        if (slot == ~0u)
+            return;
+
         vk::DeviceAddressRangeEXT nullAddressRange{.address = 0, .size = 0};
 
         vk::ResourceDescriptorInfoEXT info{};

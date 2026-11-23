@@ -32,6 +32,9 @@ namespace nri
         CommandBuffer& Cmd() const { return m_Cmd; }
         NriTexture Texture(RGTexture texture) const;
         NriBuffer Buffer(RGBuffer buffer) const;
+        // Cross-API shader buffer reference: device address on Vulkan, raw SRV/UAV descriptor slot on D3D12.
+        uint64_t BufferReadRef(RGBuffer buffer) const;
+        uint64_t BufferWriteRef(RGBuffer buffer) const;
         uint32_t Slot(RGTexture texture) const;
         uint32_t SlotOr(RGTexture texture, uint32_t fallback) const;
         uint32_t StorageSlot(RGTexture texture, uint32_t mip = 0) const;
@@ -127,8 +130,10 @@ namespace nri
         RGBufferHistory GetHistoryBuffer(const char* key, const RGBufferDesc& desc, uint32_t count);
         RGTexture ImportTexture(const char* name, const Texture& texture, RGImportAccess access = RGImportAccess::ReadWrite);
         RGTexture ImportTexture(const char* name, NriTexture texture, RGImportAccess access = RGImportAccess::ReadWrite);
-        RGBuffer ImportBuffer(const char* name, const Buffer& buffer, RGImportAccess access = RGImportAccess::ReadWrite);
-        RGBuffer ImportBuffer(const char* name, NriBuffer buffer, RGImportAccess access = RGImportAccess::ReadWrite);
+        RGBuffer ImportBuffer(const char* name, const Buffer& buffer, RGImportAccess access = RGImportAccess::ReadWrite,
+                              uint32_t readSlot = ~0u, uint32_t writeSlot = ~0u);
+        RGBuffer ImportBuffer(const char* name, NriBuffer buffer, RGImportAccess access = RGImportAccess::ReadWrite,
+                              uint32_t readSlot = ~0u, uint32_t writeSlot = ~0u);
 
         void ResetHistory(const char* key);
         void ResetAllHistory();
@@ -228,6 +233,8 @@ namespace nri
             bool ReadOnly = false;
             RGBufferKey Key;
             NriBuffer Buffer = nullptr;
+            uint32_t ReadSlot = ~0u;
+            uint32_t WriteSlot = ~0u;
             uint32_t FirstPass = RGInvalidIndex;
             uint32_t LastPass = 0;
         };

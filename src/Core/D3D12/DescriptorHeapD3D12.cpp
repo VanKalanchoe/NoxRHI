@@ -254,6 +254,12 @@ namespace NRI
         return slot;
     }
 
+    void DescriptorHeapD3D12::unregisterBuffer(uint32_t slot)
+    {
+        if (slot != ~0u)
+            freeSlot(slot);
+    }
+
     uint32_t DescriptorHeapD3D12::registerAccelerationStructure(AccelerationStructure& as, uint32_t slot)
     {
         auto& asD3D12 = static_cast<AccelerationStructureD3D12&>(as);

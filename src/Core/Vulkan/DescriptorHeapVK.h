@@ -26,7 +26,7 @@ namespace NRI
         void unregisterTexture(uint32_t slot) override;
         uint64_t getBufferDeviceAddress(vk::raii::Buffer& buffer) const;
         uint32_t registerBuffer(Buffer& buffer, uint64_t size) override;
-        void unregisterBuffer(uint32_t slot);
+        void unregisterBuffer(uint32_t slot) override;
         uint32_t registerAccelerationStructure(class AccelerationStructure& as, uint32_t slot = ~0u) override;
 
         uint32_t getImageHeapIndexOffset() const override { return m_imageHeapIndexOffset; }

@@ -242,6 +242,7 @@ namespace NRI
         virtual void drawMeshTasksIndirect(uint64_t indirectBufferDeviceAddress, uint64_t offset, uint32_t drawCount, uint32_t stride) = 0;
         // Draw count read from countBuffer at countOffset (uint32_t, GPU-written), at most maxDrawCount.
         virtual void drawMeshTasksIndirectCount(Buffer& indirectBuffer, uint64_t offset, Buffer& countBuffer, uint64_t countOffset, uint32_t maxDrawCount, uint32_t stride) = 0;
+        virtual void drawMeshTasksIndirectCountWithDrawId(Buffer& indirectBuffer, uint64_t offset, Buffer& countBuffer, uint64_t countOffset, uint32_t maxDrawCount, uint32_t stride) = 0;
         virtual void dispatch(uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ) = 0;
         virtual void traceRays(const StridedDeviceAddressRegion& rayGen, const StridedDeviceAddressRegion& miss, const StridedDeviceAddressRegion& hitGroup, const StridedDeviceAddressRegion& callable, uint32_t width, uint32_t height, uint32_t depth = 1) = 0;
         

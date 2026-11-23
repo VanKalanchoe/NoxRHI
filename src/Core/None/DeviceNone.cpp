@@ -163,6 +163,8 @@ namespace NRI
                 return m_nextBufferSlot.fetch_add(1, std::memory_order_relaxed);
             }
 
+            void unregisterBuffer(uint32_t) override {}
+
             uint32_t registerAccelerationStructure(AccelerationStructure&, uint32_t slot) override
             {
                 return slot != ~0u ? slot : m_nextBufferSlot.fetch_add(1, std::memory_order_relaxed);
@@ -318,6 +320,7 @@ namespace NRI
             void drawMeshTasksIndirect(Buffer&, uint64_t, uint32_t, uint32_t) override {}
             void drawMeshTasksIndirect(uint64_t, uint64_t, uint32_t, uint32_t) override {}
             void drawMeshTasksIndirectCount(Buffer&, uint64_t, Buffer&, uint64_t, uint32_t, uint32_t) override {}
+            void drawMeshTasksIndirectCountWithDrawId(Buffer&, uint64_t, Buffer&, uint64_t, uint32_t, uint32_t) override {}
             void dispatch(uint32_t, uint32_t, uint32_t) override {}
             void traceRays(const StridedDeviceAddressRegion&, const StridedDeviceAddressRegion&,
                            const StridedDeviceAddressRegion&, const StridedDeviceAddressRegion&,

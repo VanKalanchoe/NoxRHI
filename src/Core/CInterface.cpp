@@ -940,6 +940,12 @@ void NRI_CALL nriCmdDrawMeshTasksIndirectCount(NriCommandBuffer cmd, NriBuffer i
         cmd->impl->drawMeshTasksIndirectCount(*indirectBuffer->impl, offset, *countBuffer->impl, countOffset, maxDrawCount, stride);
 }
 
+void NRI_CALL nriCmdDrawMeshTasksIndirectCountWithDrawId(NriCommandBuffer cmd, NriBuffer indirectBuffer, uint64_t offset, NriBuffer countBuffer, uint64_t countOffset, uint32_t maxDrawCount, uint32_t stride)
+{
+    if (cmd && cmd->impl && indirectBuffer && indirectBuffer->impl && countBuffer && countBuffer->impl)
+        cmd->impl->drawMeshTasksIndirectCountWithDrawId(*indirectBuffer->impl, offset, *countBuffer->impl, countOffset, maxDrawCount, stride);
+}
+
 void NRI_CALL nriCmdCopyBuffer(NriCommandBuffer cmd, NriBuffer srcBuffer, NriBuffer dstBuffer, const NriBufferCopyRegion* region)
 {
     if (!cmd || !cmd->impl || !srcBuffer || !srcBuffer->impl || !dstBuffer || !dstBuffer->impl)
@@ -1318,6 +1324,11 @@ uint32_t NRI_CALL nriRegisterStorageBuffer(NriDescriptorHeap heap, NriBuffer buf
     return (heap && heap->impl && buffer && buffer->impl)
         ? heap->impl->registerStorageBuffer(*buffer->impl, size)
         : ~0u;
+}
+
+void NRI_CALL nriUnregisterBuffer(NriDescriptorHeap heap, uint32_t slot)
+{
+    if (heap && heap->impl) heap->impl->unregisterBuffer(slot);
 }
 
 uint32_t NRI_CALL nriGetDescriptorHeapImageIndexOffset(NriDescriptorHeap heap)

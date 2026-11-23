@@ -80,6 +80,7 @@ namespace NRI
         void drawMeshTasksIndirect(Buffer& indirectBuffer, uint64_t offset, uint32_t drawCount, uint32_t stride) override;
         void drawMeshTasksIndirect(uint64_t indirectBufferDeviceAddress, uint64_t offset, uint32_t drawCount, uint32_t stride) override;
         void drawMeshTasksIndirectCount(Buffer& indirectBuffer, uint64_t offset, Buffer& countBuffer, uint64_t countOffset, uint32_t maxDrawCount, uint32_t stride) override;
+        void drawMeshTasksIndirectCountWithDrawId(Buffer& indirectBuffer, uint64_t offset, Buffer& countBuffer, uint64_t countOffset, uint32_t maxDrawCount, uint32_t stride) override;
         void dispatch(uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ) override;
         void traceRays(const StridedDeviceAddressRegion& rayGen, const StridedDeviceAddressRegion& miss,
                        const StridedDeviceAddressRegion& hitGroup, const StridedDeviceAddressRegion& callable,

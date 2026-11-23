@@ -87,6 +87,30 @@ namespace nri
         return m_Graph.m_Buffers[buffer.Index].Buffer;
     }
 
+    uint64_t RGPassContext::BufferReadRef(RGBuffer buffer) const
+    {
+        NriBuffer handle = Buffer(buffer);
+        if (m_Graph.m_Device && m_Graph.m_Device->getAPI() == NRI_GRAPHICS_API_D3D12)
+        {
+            const uint32_t slot = m_Graph.m_Buffers[buffer.Index].ReadSlot;
+            RGAssertCheck(slot != ~0u, "RGPassContext::BufferReadRef: buffer has no D3D12 SRV slot");
+            return static_cast<uint64_t>(slot);
+        }
+        return nriGetBufferDeviceAddress(handle);
+    }
+
+    uint64_t RGPassContext::BufferWriteRef(RGBuffer buffer) const
+    {
+        NriBuffer handle = Buffer(buffer);
+        if (m_Graph.m_Device && m_Graph.m_Device->getAPI() == NRI_GRAPHICS_API_D3D12)
+        {
+            const uint32_t slot = m_Graph.m_Buffers[buffer.Index].WriteSlot;
+            RGAssertCheck(slot != ~0u, "RGPassContext::BufferWriteRef: buffer has no D3D12 UAV slot");
+            return static_cast<uint64_t>(slot);
+        }
+        return nriGetBufferDeviceAddress(handle);
+    }
+
     uint32_t RGPassContext::Slot(RGTexture texture) const
     {
         return nriGetTextureDescriptorSlot(Texture(texture));
@@ -466,6 +490,8 @@ namespace nri
             entry.Kind = RGResourceKind::History;
             entry.Key = history.Key;
             entry.Buffer = history.Buffers[i]->Handle.handle();
+            entry.ReadSlot = history.Buffers[i]->ReadSlot;
+            entry.WriteSlot = history.Buffers[i]->WriteSlot;
             m_Buffers.push_back(entry);
             result.Buffers[i] = { static_cast<uint32_t>(m_Buffers.size() - 1), m_FrameId };
         }
@@ -495,12 +521,12 @@ namespace nri
         return { found->second, m_FrameId };
     }
 
-    RGBuffer RenderGraph::ImportBuffer(const char* name, const Buffer& buffer, RGImportAccess access)
+    RGBuffer RenderGraph::ImportBuffer(const char* name, const Buffer& buffer, RGImportAccess access, uint32_t readSlot, uint32_t writeSlot)
     {
-        return ImportBuffer(name, buffer.handle(), access);
+        return ImportBuffer(name, buffer.handle(), access, readSlot, writeSlot);
     }
 
-    RGBuffer RenderGraph::ImportBuffer(const char* name, NriBuffer buffer, RGImportAccess access)
+    RGBuffer RenderGraph::ImportBuffer(const char* name, NriBuffer buffer, RGImportAccess access, uint32_t readSlot, uint32_t writeSlot)
     {
         RGAssertCheck(buffer != nullptr, "RenderGraph::ImportBuffer: null buffer");
         auto [found, inserted] = m_ImportedBuffers.try_emplace(buffer, static_cast<uint32_t>(m_Buffers.size()));
@@ -511,7 +537,17 @@ namespace nri
             entry.Kind = RGResourceKind::Imported;
             entry.ReadOnly = access == RGImportAccess::ReadOnly;
             entry.Buffer = buffer;
+            entry.ReadSlot = readSlot;
+            entry.WriteSlot = writeSlot;
             m_Buffers.push_back(entry);
+        }
+        else
+        {
+            BufferEntry& entry = m_Buffers[found->second];
+            if (readSlot != ~0u)
+                entry.ReadSlot = readSlot;
+            if (writeSlot != ~0u)
+                entry.WriteSlot = writeSlot;
         }
         return { found->second, m_FrameId };
     }
@@ -1039,7 +1075,10 @@ namespace nri
         for (uint32_t index : order)
         {
             BufferEntry& entry = m_Buffers[index];
-            entry.Buffer = m_Pool.AcquireTransientBuffer(entry.Key, entry.FirstPass, entry.LastPass).Handle.handle();
+            RGResourcePool::BufferEntry& buffer = m_Pool.AcquireTransientBuffer(entry.Key, entry.FirstPass, entry.LastPass);
+            entry.Buffer = buffer.Handle.handle();
+            entry.ReadSlot = buffer.ReadSlot;
+            entry.WriteSlot = buffer.WriteSlot;
         }
     }
 

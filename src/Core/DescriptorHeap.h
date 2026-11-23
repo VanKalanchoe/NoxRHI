@@ -33,6 +33,7 @@ namespace NRI
         // A buffer shaders may write (RWByteAddressBuffer). Vulkan's storage-buffer descriptor is read-write already; D3D12 needs a
         // raw UAV instead of registerBuffer's read-only raw SRV.
         virtual uint32_t registerStorageBuffer(class Buffer& buffer, uint64_t size) { return registerBuffer(buffer, size); }
+        virtual void unregisterBuffer(uint32_t slot) = 0;
         virtual uint32_t registerAccelerationStructure(class AccelerationStructure& as, uint32_t slot = ~0u) = 0;
         
         // Expose your uniform offset calculation seamlessly to the Renderer

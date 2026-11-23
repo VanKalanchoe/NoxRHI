@@ -79,6 +79,11 @@ namespace NRI
         // ExecuteIndirect's command signature for indirect mesh draws: one D3D12_DISPATCH_MESH_ARGUMENTS (three uint32 group counts, the
         // same bytes as Vulkan's VkDrawMeshTasksIndirectCommandEXT) every `stride` bytes. Created once per stride, kept for the device.
         ID3D12CommandSignature* getDispatchMeshSignature(uint32_t stride);
+        // Same as above, but each record begins with a uint32_t drawID written into root parameter 1 (b1, space0) before DispatchMesh.
+        ID3D12CommandSignature* getDispatchMeshWithDrawIdSignature(uint32_t stride);
+
+        // Internal compute pipeline used by CommandBufferD3D12::fillBuffer (root constants + root UAV, no descriptor heap required).
+        bool getFillBufferPipeline(ID3D12RootSignature*& outRootSig, ID3D12PipelineState*& outPso);
 
         // Logs why the device was removed: GetDeviceRemovedReason and, with DRED on, the unfinished command lists' breadcrumbs and any
         // page fault. Once per device.
@@ -107,6 +112,10 @@ namespace NRI
         ComPtr<ID3D12RootSignature> m_globalRootSignature;
         std::mutex m_commandSignatureMutex;
         std::unordered_map<uint32_t, ComPtr<ID3D12CommandSignature>> m_dispatchMeshSignatures;
+        std::unordered_map<uint32_t, ComPtr<ID3D12CommandSignature>> m_dispatchMeshWithDrawIdSignatures;
+        std::mutex m_fillBufferMutex;
+        ComPtr<ID3D12RootSignature> m_fillBufferRootSignature;
+        ComPtr<ID3D12PipelineState> m_fillBufferPso;
         DWORD m_infoQueueCookie = 0;
 
         ComPtr<ID3D12Fence> m_waitIdleFence;

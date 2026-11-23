@@ -379,6 +379,16 @@ namespace nri
     {
         nriCmdDrawMeshTasksIndirectCount(cmd.handle(), indirectBuffer.handle(), offset, countBuffer.handle(), countOffset, maxDrawCount, stride);
     }
+    inline void drawMeshTasksIndirectCountWithDrawId(const CommandBuffer& cmd, const Buffer& indirectBuffer, uint64_t offset,
+                                                     const Buffer& countBuffer, uint64_t countOffset, uint32_t maxDrawCount, uint32_t stride)
+    {
+        nriCmdDrawMeshTasksIndirectCountWithDrawId(cmd.handle(), indirectBuffer.handle(), offset, countBuffer.handle(), countOffset, maxDrawCount, stride);
+    }
+    inline void drawMeshTasksIndirectCountWithDrawId(const CommandBuffer& cmd, NriBuffer indirectBuffer, uint64_t offset,
+                                                     NriBuffer countBuffer, uint64_t countOffset, uint32_t maxDrawCount, uint32_t stride)
+    {
+        nriCmdDrawMeshTasksIndirectCountWithDrawId(cmd.handle(), indirectBuffer, offset, countBuffer, countOffset, maxDrawCount, stride);
+    }
 
     // ImGui extension
     using ImguiVertex = NriImguiVertex;

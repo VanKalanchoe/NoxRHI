@@ -132,7 +132,7 @@ endif()
 
 if(WIN32 AND NRI_ENABLE_D3D12)
     target_compile_definitions(NoxRHI PRIVATE NRI_ENABLE_D3D12=1)
-    target_link_libraries(NoxRHI PRIVATE d3d12 dxgi dxguid)
+    target_link_libraries(NoxRHI PRIVATE d3d12 dxgi dxguid d3dcompiler)
     if(TARGET D3D12MemoryAllocator)
         target_link_libraries(NoxRHI PRIVATE D3D12MemoryAllocator)
     endif()
