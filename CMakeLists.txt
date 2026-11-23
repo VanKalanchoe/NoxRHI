@@ -58,6 +58,12 @@ if(NRI_ENABLE_VULKAN)
     list(APPEND NOXRHI_CORE_SOURCES ${NOXRHI_VK_SOURCES})
 endif()
 
+set(NOXRHI_VMA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendors/VulkanMemoryAllocator-Hpp" CACHE PATH "Path to VulkanMemoryAllocator-Hpp")
+set(NOXRHI_D3D12MA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendors/D3D12MemoryAllocator" CACHE PATH "Path to D3D12MemoryAllocator")
+set(NOXRHI_SLANG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendors/slang" CACHE PATH "Path to Slang SDK")
+set(NOXRHI_STREAMLINE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendors/Streamline" CACHE PATH "Path to NVIDIA Streamline SDK")
+set(NOXRHI_NRD_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendors/NRD" CACHE PATH "Path to NVIDIA NRD SDK")
+
 if(WIN32 AND NRI_ENABLE_D3D12)
     file(GLOB NOXRHI_D3D12_SOURCES CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/src/Core/D3D12/*.cpp"
@@ -65,12 +71,12 @@ if(WIN32 AND NRI_ENABLE_D3D12)
     )
     list(APPEND NOXRHI_CORE_SOURCES ${NOXRHI_D3D12_SOURCES})
 
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/vendors/D3D12MemoryAllocator/src/D3D12MemAlloc.cpp")
+    if(NOT TARGET D3D12MemoryAllocator AND EXISTS "${NOXRHI_D3D12MA_DIR}/src/D3D12MemAlloc.cpp")
         add_library(D3D12MemoryAllocator STATIC
-            "${CMAKE_CURRENT_SOURCE_DIR}/vendors/D3D12MemoryAllocator/src/D3D12MemAlloc.cpp"
+            "${NOXRHI_D3D12MA_DIR}/src/D3D12MemAlloc.cpp"
         )
         target_include_directories(D3D12MemoryAllocator SYSTEM PUBLIC
-            "${CMAKE_CURRENT_SOURCE_DIR}/vendors/D3D12MemoryAllocator/include"
+            "${NOXRHI_D3D12MA_DIR}/include"
         )
         target_link_libraries(D3D12MemoryAllocator PUBLIC d3d12 dxgi)
     endif()
@@ -118,8 +124,8 @@ if(NRI_ENABLE_VULKAN)
         VULKAN_HPP_HANDLE_ERROR_OUT_OF_DATE_AS_SUCCESS
     )
     target_include_directories(NoxRHI SYSTEM PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/vendors/VulkanMemoryAllocator-Hpp/include"
-        "${CMAKE_CURRENT_SOURCE_DIR}/vendors/VulkanMemoryAllocator-Hpp/VulkanMemoryAllocator/include"
+        "${NOXRHI_VMA_DIR}/include"
+        "${NOXRHI_VMA_DIR}/VulkanMemoryAllocator/include"
     )
     target_link_libraries(NoxRHI PRIVATE Vulkan::Vulkan)
 endif()
@@ -136,20 +142,13 @@ if(NRI_ENABLE_NONE)
     target_compile_definitions(NoxRHI PRIVATE NRI_ENABLE_NONE=1)
 endif()
 
-if(NRI_ENABLE_NONE)
-    list(APPEND NOXRHI_CORE_SOURCES
-        src/Core/None/DeviceNone.cpp
-        src/Core/None/DeviceNone.h
-    )
-endif()
-
 if(NRI_ENABLE_SLANG)
     target_compile_definitions(NoxRHI PRIVATE NRI_ENABLE_SLANG=1)
     target_include_directories(NoxRHI SYSTEM PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/vendors/slang/include"
+        "${NOXRHI_SLANG_DIR}/include"
     )
     if(WIN32)
-        target_link_libraries(NoxRHI PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/vendors/slang/lib/slang.lib")
+        target_link_libraries(NoxRHI PRIVATE "${NOXRHI_SLANG_DIR}/lib/slang.lib")
         if(MSVC)
             if(NRI_STATIC_LIBRARY)
                 target_link_options(NoxRHI INTERFACE "/DELAYLOAD:slang.dll")
@@ -161,16 +160,15 @@ if(NRI_ENABLE_SLANG)
         endif()
     else()
         # Linux / macOS: the prebuilt Slang release's shared library (libslang-compiler since 2026.x, libslang before).
-        find_library(NOXRHI_SLANG_LIBRARY NAMES slang-compiler slang PATHS "${CMAKE_CURRENT_SOURCE_DIR}/vendors/slang/lib" NO_DEFAULT_PATH)
+        find_library(NOXRHI_SLANG_LIBRARY NAMES slang-compiler slang PATHS "${NOXRHI_SLANG_DIR}/lib" NO_DEFAULT_PATH)
         if(NOT NOXRHI_SLANG_LIBRARY)
-            message(FATAL_ERROR "NRI_ENABLE_SLANG: no libslang-compiler / libslang in vendors/slang/lib")
+            message(FATAL_ERROR "NRI_ENABLE_SLANG: no libslang-compiler / libslang in ${NOXRHI_SLANG_DIR}/lib")
         endif()
         target_link_libraries(NoxRHI PRIVATE "${NOXRHI_SLANG_LIBRARY}")
-        set_target_properties(NoxRHI PROPERTIES BUILD_RPATH "${CMAKE_CURRENT_SOURCE_DIR}/vendors/slang/lib")
+        set_target_properties(NoxRHI PROPERTIES BUILD_RPATH "${NOXRHI_SLANG_DIR}/lib")
     endif()
 endif()
 
-set(NOXRHI_STREAMLINE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendors/Streamline")
 set(NOXRHI_HAS_STREAMLINE OFF)
 if(NRI_ENABLE_STREAMLINE AND EXISTS "${NOXRHI_STREAMLINE_DIR}/include/sl.h" AND EXISTS "${NOXRHI_STREAMLINE_DIR}/lib/x64/sl.interposer.lib")
     set(NOXRHI_HAS_STREAMLINE ON)
@@ -190,7 +188,6 @@ if(NRI_ENABLE_STREAMLINE AND EXISTS "${NOXRHI_STREAMLINE_DIR}/include/sl.h" AND 
     endif()
 endif()
 
-set(NOXRHI_NRD_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendors/NRD")
 set(NOXRHI_HAS_NRD OFF)
 if(NRI_ENABLE_NRD AND EXISTS "${NOXRHI_NRD_DIR}/Include/NRD.h" AND EXISTS "${NOXRHI_NRD_DIR}/Integration/NRDIntegration.hpp")
     set(NOXRHI_HAS_NRD ON)
