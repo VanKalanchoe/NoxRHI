@@ -176,7 +176,7 @@ namespace NRI
         // binaries the build compiled)
         // ("entry-point code": Vulkan SPIR-V holds one entry point each since compileEntryPoints -- binaries of whole-file modules are not
         // served again)
-        static const uint64_t compilerHash = Hash::compute(std::string("slang " SLANG_TAG_VERSION " entry-point code"));
+        static const uint64_t compilerHash = Hash::compute(std::string("slang " SLANG_TAG_VERSION " single-entry-point code"));
         uint64_t hash = Hash::compute(&compilerHash, sizeof(compilerHash), sourceHash);
         // The defines are part of the key too: a binary compiled with NOX_SHADER_CHECKS is not served without it, and the other way round.
         std::string defines;
@@ -437,8 +437,8 @@ namespace NRI
         Slang::ComPtr<slang::ISession> session;
         Slang::ComPtr<slang::IModule> slangModule = loadModule(path, globalSession.get(), session);
 
-        // The module and all of its entry points, linked once; then each entry point's code on its own (getEntryPointCode emits that
-        // entry point and only what it uses).
+        // The module and all of its entry points: on Vulkan, linked once; on D3D12, each entry point is linked on its own so its uniform
+        // push-constant parameter always receives register(b0, space0) instead of b0, b2, b3, ... across sibling entry points.
         const SlangInt32 count = slangModule->getDefinedEntryPointCount();
         std::vector<Slang::ComPtr<slang::IEntryPoint>> entryPoints(size_t(std::max<SlangInt32>(count, 0)));
         std::vector<slang::IComponentType*> components{ slangModule.get() };
@@ -449,6 +449,51 @@ namespace NRI
                 throw std::runtime_error("Slang could not read entry point " + std::to_string(i) + " of: " + path);
             components.push_back(entryPoints[size_t(i)].get());
         }
+
+        std::vector<std::pair<std::string, std::vector<char>>> codes;
+        codes.reserve(size_t(std::max<SlangInt32>(count, 0)));
+
+        if (m_targetAPI == GraphicsAPI::D3D12)
+        {
+            for (SlangInt32 i = 0; i < count; ++i)
+            {
+                slang::IComponentType* single[] = { slangModule.get(), entryPoints[size_t(i)].get() };
+                Slang::ComPtr<slang::IComponentType> singleComposed, singleLinked;
+                Slang::ComPtr<slang::IBlob> diagnostics;
+                SlangResult result = session->createCompositeComponentType(single, 2, singleComposed.writeRef(), diagnostics.writeRef());
+                if (SLANG_FAILED(result) || !singleComposed)
+                    throw std::runtime_error("Slang failed to compose entry point " + std::to_string(i) + " of: " + path +
+                                             (diagnostics ? "\n" + std::string(static_cast<const char*>(diagnostics->getBufferPointer())) : std::string()));
+                diagnostics = nullptr;
+                result = singleComposed->link(singleLinked.writeRef(), diagnostics.writeRef());
+                if (SLANG_FAILED(result) || !singleLinked)
+                    throw std::runtime_error("Slang failed to link entry point " + std::to_string(i) + " of: " + path +
+                                             (diagnostics ? "\n" + std::string(static_cast<const char*>(diagnostics->getBufferPointer())) : std::string()));
+                if (diagnostics)
+                    NRI_LOG_WARN("Slang link diagnostics ({}): {}", path, static_cast<const char*>(diagnostics->getBufferPointer()));
+
+                slang::ProgramLayout* layout = singleLinked->getLayout(0);
+                slang::EntryPointReflection* reflection = layout ? layout->getEntryPointByIndex(0) : nullptr;
+                const std::string name = reflection && reflection->getName() ? reflection->getName() : std::string();
+
+                if (const std::string difference = CheckPushLayoutMatchesScalar(singleLinked.get()); !difference.empty())
+                    NRI_LOG_ERROR("Push data of '{}' ({}) differs between the APIs: {}. Keep structs out of push data (a uint64_t reference "
+                                  "with a property, see nox_gpu.slang) and keep vectors inside 16-byte rows.", name, path, difference);
+
+                Slang::ComPtr<slang::IBlob> code;
+                diagnostics = nullptr;
+                result = singleLinked->getEntryPointCode(0, 0, code.writeRef(), diagnostics.writeRef());
+                if (SLANG_FAILED(result) || !code)
+                    throw std::runtime_error("Slang failed to generate code for entry point '" + name + "' of: " + path +
+                                             (diagnostics ? "\n" + std::string(static_cast<const char*>(diagnostics->getBufferPointer())) : std::string()));
+                if (diagnostics)
+                    NRI_LOG_WARN("Slang target-code diagnostics ({}:{}): {}", path, name, static_cast<const char*>(diagnostics->getBufferPointer()));
+                const char* bytes = static_cast<const char*>(code->getBufferPointer());
+                codes.emplace_back(name, std::vector<char>(bytes, bytes + code->getBufferSize()));
+            }
+            return codes;
+        }
+
         Slang::ComPtr<slang::IComponentType> composed;
         Slang::ComPtr<slang::IBlob> diagnostics;
         SlangResult result = session->createCompositeComponentType(components.data(), SlangInt(components.size()), composed.writeRef(), diagnostics.writeRef());
@@ -465,23 +510,10 @@ namespace NRI
             NRI_LOG_WARN("Slang link diagnostics ({}): {}", path, static_cast<const char*>(diagnostics->getBufferPointer()));
 
         slang::ProgramLayout* layout = linked->getLayout(0);
-        std::vector<std::pair<std::string, std::vector<char>>> codes;
-        codes.reserve(size_t(std::max<SlangInt32>(count, 0)));
         for (SlangInt32 i = 0; i < count; ++i)
         {
             slang::EntryPointReflection* reflection = layout ? layout->getEntryPointByIndex(SlangUInt(i)) : nullptr;
             const std::string name = reflection && reflection->getName() ? reflection->getName() : std::string();
-            if (m_targetAPI == GraphicsAPI::D3D12)
-            {
-                // (the same push data check as compile(): this entry point alone)
-                slang::IComponentType* single[] = { slangModule.get(), entryPoints[size_t(i)].get() };
-                Slang::ComPtr<slang::IComponentType> singleComposed, singleLinked;
-                if (SLANG_SUCCEEDED(session->createCompositeComponentType(single, 2, singleComposed.writeRef(), nullptr)) && singleComposed &&
-                    SLANG_SUCCEEDED(singleComposed->link(singleLinked.writeRef(), nullptr)) && singleLinked)
-                    if (const std::string difference = CheckPushLayoutMatchesScalar(singleLinked.get()); !difference.empty())
-                        NRI_LOG_ERROR("Push data of '{}' ({}) differs between the APIs: {}. Keep structs out of push data (a uint64_t reference "
-                                      "with a property, see nox_gpu.slang) and keep vectors inside 16-byte rows.", name, path, difference);
-            }
             Slang::ComPtr<slang::IBlob> code;
             diagnostics = nullptr;
             result = linked->getEntryPointCode(i, 0, code.writeRef(), diagnostics.writeRef());

@@ -18,6 +18,7 @@ namespace NRI
 
         ID3D12QueryHeap* getNativeHeap() const { return m_queryHeap.Get(); }
         ID3D12Resource* getReadbackBuffer() const { return m_readbackBuffer.Get(); }
+        ID3D12Resource* getUavBuffer() const { return m_uavBuffer.Get(); }
 
     private:
         DeviceD3D12& m_deviceD3D12;
@@ -25,5 +26,6 @@ namespace NRI
         QueryType m_type;
         ComPtr<ID3D12QueryHeap> m_queryHeap;
         ComPtr<ID3D12Resource> m_readbackBuffer;
+        ComPtr<ID3D12Resource> m_uavBuffer;
     };
 }

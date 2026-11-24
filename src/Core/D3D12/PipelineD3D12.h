@@ -1,5 +1,7 @@
 #pragma once
+#include <array>
 #include <mutex>
+#include <string>
 #include <unordered_map>
 #include <vector>
 #include "D3D12Common.h"
@@ -25,10 +27,14 @@ namespace NRI
                                                      CullMode cullMode,
                                                      FrontFace frontFace,
                                                      PolygonMode polygonMode,
-                                                     bool colorBlendEnable = false,
-                                                     const ColorBlendEquation& colorBlendEquation = {},
-                                                     uint32_t colorWriteMask = ColorComponent::All,
-                                                     uint32_t sampleCount = 1);
+                                                     const std::array<bool, 8>& colorBlendEnable = {},
+                                                     const std::array<ColorBlendEquation, 8>& colorBlendEquation = {},
+                                                     const std::array<uint32_t, 8>& colorWriteMask = {
+                                                         ColorComponent::All, ColorComponent::All, ColorComponent::All, ColorComponent::All,
+                                                         ColorComponent::All, ColorComponent::All, ColorComponent::All, ColorComponent::All
+                                                     },
+                                                     uint32_t sampleCount = 1,
+                                                     bool depthClampEnable = false);
         ID3D12StateObject* getNativeStateObject() const { return m_stateObject.Get(); }
         PipelineType getType() const { return m_type; }
 
@@ -51,14 +57,16 @@ namespace NRI
                                                          CullMode cullMode,
                                                          FrontFace frontFace,
                                                          PolygonMode polygonMode,
-                                                         bool colorBlendEnable,
-                                                         const ColorBlendEquation& colorBlendEquation,
-                                                         uint32_t colorWriteMask,
-                                                                    uint32_t sampleCount);
+                                                         const std::array<bool, 8>& colorBlendEnable,
+                                                         const std::array<ColorBlendEquation, 8>& colorBlendEquation,
+                                                         const std::array<uint32_t, 8>& colorWriteMask,
+                                                         uint32_t sampleCount,
+                                                         bool depthClampEnable);
 
     private:
         DeviceD3D12& m_deviceD3D12;
         PipelineType m_type;
+        std::string m_debugName;
         ComPtr<ID3D12PipelineState> m_pipeline;
         ComPtr<ID3D12StateObject> m_stateObject;
 

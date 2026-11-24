@@ -941,22 +941,26 @@ namespace NRI
             auto& cmdD3D12 = static_cast<CommandBufferD3D12&>(cmd);
             slCmd = reinterpret_cast<sl::CommandBuffer*>(cmdD3D12.getNativeCommandList());
 
-            auto wrapD3D12 = [](TextureD3D12* t) -> sl::Resource
+            auto wrapD3D12 = [&cmdD3D12](TextureD3D12* t, bool isOutput = false) -> sl::Resource
             {
+                const D3D12_RESOURCE_STATES expectedState = isOutput
+                    ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS
+                    : (D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+                cmdD3D12.transitionTextureState(*t, expectedState);
                 sl::Resource r{};
                 r.type = sl::ResourceType::eTex2d;
                 r.native = t->getNativeResource();
                 r.nativeFormat = static_cast<uint32_t>(t->getDxgiFormat());
                 r.width = t->GetWidth();
                 r.height = t->GetHeight();
-                r.state = static_cast<uint32_t>(t->getCurrentState());
+                r.state = static_cast<uint32_t>(cmdD3D12.getTrackedTextureState(*t));
                 r.mipLevels = t->getMipLevels();
                 r.arrayLayers = t->getArrayLayers();
                 return r;
             };
 
-            colorIn = wrapD3D12(static_cast<TextureD3D12*>(inputTex));
-            colorOut = wrapD3D12(static_cast<TextureD3D12*>(outputTex));
+            colorIn = wrapD3D12(static_cast<TextureD3D12*>(inputTex), false);
+            colorOut = wrapD3D12(static_cast<TextureD3D12*>(outputTex), true);
             depthRes = wrapD3D12(static_cast<TextureD3D12*>(depthTex));
             mvecRes = wrapD3D12(static_cast<TextureD3D12*>(mvecTex));
 

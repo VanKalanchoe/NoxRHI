@@ -157,8 +157,19 @@ namespace NRI
         {
             D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc{};
             uavDesc.Format = texD3D12.getDxgiFormat();
-            uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-            uavDesc.Texture2D.MipSlice = 0;
+            const uint32_t totalSlices = texD3D12.getDesc().isCubeMap ? 6u * texD3D12.getArrayLayers() : texD3D12.getArrayLayers();
+            if (totalSlices > 1)
+            {
+                uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
+                uavDesc.Texture2DArray.MipSlice = 0;
+                uavDesc.Texture2DArray.FirstArraySlice = 0;
+                uavDesc.Texture2DArray.ArraySize = totalSlices;
+            }
+            else
+            {
+                uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+                uavDesc.Texture2D.MipSlice = 0;
+            }
             m_deviceD3D12.getNativeDevice()->CreateUnorderedAccessView(texD3D12.getNativeResource(), nullptr, &uavDesc, cpuHandle);
         }
         else
@@ -205,8 +216,19 @@ namespace NRI
         D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = getCpuHandle(slot);
         D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc{};
         uavDesc.Format = texD3D12.getDxgiFormat();
-        uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-        uavDesc.Texture2D.MipSlice = mipLevel;
+        const uint32_t totalSlices = texD3D12.getDesc().isCubeMap ? 6u * texD3D12.getArrayLayers() : texD3D12.getArrayLayers();
+        if (totalSlices > 1)
+        {
+            uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
+            uavDesc.Texture2DArray.MipSlice = mipLevel;
+            uavDesc.Texture2DArray.FirstArraySlice = 0;
+            uavDesc.Texture2DArray.ArraySize = totalSlices;
+        }
+        else
+        {
+            uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+            uavDesc.Texture2D.MipSlice = mipLevel;
+        }
 
         m_deviceD3D12.getNativeDevice()->CreateUnorderedAccessView(texD3D12.getNativeResource(), nullptr, &uavDesc, cpuHandle);
         return slot;

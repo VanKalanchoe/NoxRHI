@@ -8,6 +8,13 @@
 #include <NRIHPP/NRI.hpp>
 #include <NRIHPP/NRIExtensions.hpp>
 
+#if defined(_WIN32)
+extern "C" {
+    __declspec(dllexport) extern const uint32_t D3D12SDKVersion = 619;
+    __declspec(dllexport) extern const char* D3D12SDKPath = ".\\AgilitySDK\\";
+}
+#endif
+
 static int g_validationErrors = 0;
 
 static void NRI_CALL onNriLog(NriLogLevel level, const char* message, void* userData)

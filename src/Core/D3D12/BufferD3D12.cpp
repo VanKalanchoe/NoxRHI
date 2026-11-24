@@ -31,15 +31,9 @@ namespace NRI
         {
             heapType = D3D12_HEAP_TYPE_DEFAULT;
             m_initialState = D3D12_RESOURCE_STATE_COMMON;
-
-            if (desc.usage == BufferUsage::Storage ||
-                desc.usage == BufferUsage::StorageStatic ||
-                desc.usage == BufferUsage::AccelerationStructureScratch ||
-                desc.usage == BufferUsage::AccelerationStructure ||
-                desc.usage == BufferUsage::Indirect || desc.usage == BufferUsage::IndirectStatic) // (draw arguments written by compute, as on Vulkan)
-            {
-                flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-            }
+            // All default-heap buffers allow UAV access (matching Vulkan's STORAGE_BUFFER_BIT on GPU buffers,
+            // e.g. compute decompression writing into Index/Vertex streams via bufferWriteRef).
+            flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 
             if (desc.usage == BufferUsage::AccelerationStructure)
             {
@@ -52,6 +46,14 @@ namespace NRI
         m_isUploadHeap = isUpload;
         m_isReadbackHeap = isReadback;
         m_currentState = m_initialState;
+#ifndef NDEBUG
+        if (m_buffer.resource)
+        {
+            const std::wstring debugName = L"Buf_" + std::to_wstring(desc.size) +
+                L"_use" + std::to_wstring(static_cast<uint32_t>(desc.usage));
+            m_buffer.resource->SetName(debugName.c_str());
+        }
+#endif
     }
 
     BufferD3D12::~BufferD3D12()

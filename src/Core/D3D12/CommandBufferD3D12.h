@@ -1,4 +1,8 @@
 #pragma once
+#include <array>
+#include <memory>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <span>
 #include "D3D12Common.h"
@@ -10,6 +14,7 @@ namespace NRI
     class DeviceD3D12;
     class CommandAllocatorD3D12;
     class PipelineD3D12;
+    class BufferD3D12;
 
     class CommandBufferD3D12 final : public CommandBuffer
     {
@@ -18,6 +23,7 @@ namespace NRI
         ~CommandBufferD3D12() override = default;
 
         ID3D12GraphicsCommandList6* getNativeCommandList() const { return m_cmdList.Get(); }
+        D3D12_COMMAND_LIST_TYPE getCommandListType() const;
 
         void begin(uint32_t index = 0, bool oneTimeSubmit = false) override;
         void end(uint32_t index = 0) override;
@@ -41,7 +47,7 @@ namespace NRI
         // D3D12 keeps depth bias in the pipeline's rasterizer state (ID3D12GraphicsCommandList9::RSSetDepthBias is the dynamic form);
         // like setDepthBiasEnable above, not wired yet: the shadow map passes draw without the raster slope bias here.
         void setDepthBias(float constantFactor, float clamp, float slopeFactor) override {}
-        void setDepthClampEnable(bool enable) override {}
+        void setDepthClampEnable(bool enable) override { m_depthClampEnable = enable; }
         void setLineWidth(float lineWidth) override {}
         void setRasterizationSamples(uint32_t sampleCount) override { m_rasterizationSamples = sampleCount > 0 ? sampleCount : 1; }
         void setSampleMask(uint32_t sampleCount, uint32_t sampleMask) override {}
@@ -54,18 +60,18 @@ namespace NRI
         void setStencilTestEnable(bool enable) override {}
         void setColorBlendEnable(uint32_t firstAttachment, bool enable) override
         {
-            (void)firstAttachment;
-            m_colorBlendEnable = enable;
+            if (firstAttachment < m_colorBlendEnable.size())
+                m_colorBlendEnable[firstAttachment] = enable;
         }
         void setColorBlendEquation(uint32_t firstAttachment, const ColorBlendEquation& blendEquation) override
         {
-            (void)firstAttachment;
-            m_colorBlendEquation = blendEquation;
+            if (firstAttachment < m_colorBlendEquation.size())
+                m_colorBlendEquation[firstAttachment] = blendEquation;
         }
         void setColorWriteMask(uint32_t firstAttachment, uint32_t colorWriteMask) override
         {
-            (void)firstAttachment;
-            m_colorWriteMask = colorWriteMask;
+            if (firstAttachment < m_colorWriteMask.size())
+                m_colorWriteMask[firstAttachment] = colorWriteMask;
         }
         void setLogicOpEnable(bool enable) override {}
 
@@ -111,13 +117,22 @@ namespace NRI
         void beginDebugLabel(const char* label) override;
         void endDebugLabel() override;
 
+        void setDeferredStateTracking(bool enable) override { m_deferredStateTracking = enable; }
+        bool resolveDeferredBarriers(CommandBuffer& fixupCmd) override;
+
         // Discards a render-target / depth texture in placed memory before its first use (see TextureD3D12::needsInitialDiscard);
         // nothing for any other texture. Recording marks it initialized.
         void initializeTarget(class TextureD3D12& texture);
+        void transitionTextureState(class TextureD3D12& texture, D3D12_RESOURCE_STATES afterState, bool uavBarrierIfSame = false);
+        D3D12_RESOURCE_STATES getTrackedTextureState(const class TextureD3D12& texture) const;
+
+        // Keeps temporary staging buffers created during recording alive until this command list is submitted and retired.
+        void retainTempBuffer(std::shared_ptr<BufferD3D12> buffer) { m_tempBuffers.push_back(std::move(buffer)); }
+        std::vector<std::shared_ptr<BufferD3D12>> takeTempBuffers() { return std::move(m_tempBuffers); }
 
     private:
         void ensureGraphicsPipelineState();
-        void transitionBufferState(class BufferD3D12& buffer, D3D12_RESOURCE_STATES afterState);
+        void transitionBufferState(class BufferD3D12& buffer, D3D12_RESOURCE_STATES afterState, bool uavBarrierIfSame = false);
 
     private:
         DeviceD3D12& m_deviceD3D12;
@@ -134,21 +149,44 @@ namespace NRI
         bool m_hasDepthAttachment = false;
         bool m_depthTestEnable = false;
         bool m_depthWriteEnable = false;
+        bool m_depthClampEnable = false;
         CompareOp m_depthCompareOp = CompareOp::GreaterOrEqual;
         CullMode m_cullMode = CullMode::Back;
         FrontFace m_frontFace = FrontFace::CounterClockWise;
         PolygonMode m_polygonMode = PolygonMode::Fill;
-        bool m_colorBlendEnable = false;
-        ColorBlendEquation m_colorBlendEquation{
-            BlendFactor::SrcAlpha, BlendFactor::OneMinusSrcAlpha, BlendOp::Add,
-            BlendFactor::One, BlendFactor::Zero, BlendOp::Add
+        std::array<bool, 8> m_colorBlendEnable{};
+        std::array<ColorBlendEquation, 8> m_colorBlendEquation{ {
+            { BlendFactor::SrcAlpha, BlendFactor::OneMinusSrcAlpha, BlendOp::Add, BlendFactor::One, BlendFactor::Zero, BlendOp::Add },
+            { BlendFactor::SrcAlpha, BlendFactor::OneMinusSrcAlpha, BlendOp::Add, BlendFactor::One, BlendFactor::Zero, BlendOp::Add },
+            { BlendFactor::SrcAlpha, BlendFactor::OneMinusSrcAlpha, BlendOp::Add, BlendFactor::One, BlendFactor::Zero, BlendOp::Add },
+            { BlendFactor::SrcAlpha, BlendFactor::OneMinusSrcAlpha, BlendOp::Add, BlendFactor::One, BlendFactor::Zero, BlendOp::Add },
+            { BlendFactor::SrcAlpha, BlendFactor::OneMinusSrcAlpha, BlendOp::Add, BlendFactor::One, BlendFactor::Zero, BlendOp::Add },
+            { BlendFactor::SrcAlpha, BlendFactor::OneMinusSrcAlpha, BlendOp::Add, BlendFactor::One, BlendFactor::Zero, BlendOp::Add },
+            { BlendFactor::SrcAlpha, BlendFactor::OneMinusSrcAlpha, BlendOp::Add, BlendFactor::One, BlendFactor::Zero, BlendOp::Add },
+            { BlendFactor::SrcAlpha, BlendFactor::OneMinusSrcAlpha, BlendOp::Add, BlendFactor::One, BlendFactor::Zero, BlendOp::Add }
+        } };
+        std::array<uint32_t, 8> m_colorWriteMask{
+            ColorComponent::All, ColorComponent::All, ColorComponent::All, ColorComponent::All,
+            ColorComponent::All, ColorComponent::All, ColorComponent::All, ColorComponent::All
         };
-        uint32_t m_colorWriteMask = ColorComponent::All;
 
         // Temporary RTV/DSV descriptor storage for dynamic rendering
         ComPtr<ID3D12DescriptorHeap> m_rtvHeap;
         ComPtr<ID3D12DescriptorHeap> m_dsvHeap;
         uint32_t m_rtvDescriptorSize = 0;
         uint32_t m_dsvDescriptorSize = 0;
+
+        std::vector<std::shared_ptr<BufferD3D12>> m_tempBuffers;
+        std::string m_debugPassList;
+
+        // Parallel recording deferred state tracking (resolved sequentially on the main thread before ExecuteCommandLists).
+        bool m_deferredStateTracking = false;
+        std::unordered_map<class TextureD3D12*, D3D12_RESOURCE_STATES> m_localTexStates;
+        std::vector<std::pair<class TextureD3D12*, D3D12_RESOURCE_STATES>> m_firstTexStates;
+        std::unordered_map<BufferD3D12*, D3D12_RESOURCE_STATES> m_localBufStates;
+        std::vector<std::pair<BufferD3D12*, D3D12_RESOURCE_STATES>> m_firstBufStates;
+        std::vector<class TextureD3D12*> m_pendingDiscardTextures;
+        std::unordered_set<class TextureD3D12*> m_discardSeen;
+        std::vector<class TextureD3D12*> m_markInitializedTextures;
     };
 }

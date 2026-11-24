@@ -29,6 +29,17 @@ namespace NRI
         ThrowIfFailed(m_deviceD3D12.getNativeDevice()->CreateCommittedResource(
             &heapProps, D3D12_HEAP_FLAG_NONE, &resDesc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
             IID_PPV_ARGS(&m_readbackBuffer)), "QueryPool Readback Buffer");
+
+        if (m_type == QueryType::AccelerationStructureCompactedSize)
+        {
+            D3D12_HEAP_PROPERTIES defaultHeap{};
+            defaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
+            D3D12_RESOURCE_DESC uavDesc = resDesc;
+            uavDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+            ThrowIfFailed(m_deviceD3D12.getNativeDevice()->CreateCommittedResource(
+                &defaultHeap, D3D12_HEAP_FLAG_NONE, &uavDesc, D3D12_RESOURCE_STATE_COMMON, nullptr,
+                IID_PPV_ARGS(&m_uavBuffer)), "QueryPool AS Postbuild UAV Buffer");
+        }
     }
 
     bool QueryPoolD3D12::getResults(uint32_t first, std::span<uint64_t> out) const

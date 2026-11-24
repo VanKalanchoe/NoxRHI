@@ -38,6 +38,9 @@ namespace NRI
             ThrowIfFailed(device.getNativeDevice()->CreateCommittedResource(
                 &heapProps, D3D12_HEAP_FLAG_NONE, &resDesc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
                 IID_PPV_ARGS(&slot.readback)), "Profiler Readback Buffer");
+            ThrowIfFailed(device.getNativeDevice()->CreateCommittedResource(
+                &heapProps, D3D12_HEAP_FLAG_NONE, &resDesc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                IID_PPV_ARGS(&slot.computeReadback)), "Profiler Compute Readback Buffer");
 
             slot.timestamps.resize(QueriesPerFrame);
         }
@@ -64,19 +67,25 @@ namespace NRI
         if (count > 0)
         {
             D3D12_RANGE readRange{ 0, count * sizeof(uint64_t) };
-            void* mappedData = nullptr;
-            if (SUCCEEDED(slot.readback->Map(0, &readRange, &mappedData)))
+            void* mappedDirect = nullptr;
+            void* mappedCompute = nullptr;
+            const bool hasDirect = SUCCEEDED(slot.readback->Map(0, &readRange, &mappedDirect));
+            const bool hasCompute = SUCCEEDED(slot.computeReadback->Map(0, &readRange, &mappedCompute));
+            if (hasDirect || hasCompute)
             {
-                const auto* ticks = static_cast<const uint64_t*>(mappedData);
+                const auto* directTicks = static_cast<const uint64_t*>(mappedDirect);
+                const auto* computeTicks = static_cast<const uint64_t*>(mappedCompute);
                 m_readback.resize(count);
                 for (uint32_t i = 0; i < count; ++i)
                 {
                     m_readback[i].queryId = i;
-                    m_readback[i].ticks = ticks[i];
+                    m_readback[i].ticks = (slot.isComputeQuery[i] && computeTicks) ? computeTicks[i]
+                                        : (directTicks ? directTicks[i] : 0ull);
                 }
-                D3D12_RANGE writeRange{ 0, 0 };
-                slot.readback->Unmap(0, &writeRange);
             }
+            D3D12_RANGE writeRange{ 0, 0 };
+            if (hasDirect) slot.readback->Unmap(0, &writeRange);
+            if (hasCompute) slot.computeReadback->Unmap(0, &writeRange);
         }
         slot.allocatedQueries.store(0);
     }
@@ -103,11 +112,14 @@ namespace NRI
         if (!cmdD3D12) return;
 
         auto& slot = m_slots[m_activeSlot];
+        const bool isCompute = (cmdD3D12->getCommandListType() == D3D12_COMMAND_LIST_TYPE_COMPUTE);
+        slot.isComputeQuery[queryId] = isCompute ? 1u : 0u;
         cmdD3D12->getNativeCommandList()->EndQuery(slot.heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, queryId);
 
-        // Resolve query to readback buffer
+        // Resolve query into queue-specific readback buffer so DIRECT and COMPUTE queues never write the same resource concurrently.
+        ID3D12Resource* targetReadback = isCompute ? slot.computeReadback.Get() : slot.readback.Get();
         cmdD3D12->getNativeCommandList()->ResolveQueryData(
             slot.heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, queryId, 1,
-            slot.readback.Get(), queryId * sizeof(uint64_t));
+            targetReadback, queryId * sizeof(uint64_t));
     }
 }

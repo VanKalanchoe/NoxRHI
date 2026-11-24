@@ -697,6 +697,8 @@ namespace nri
 
         void beginDebugLabel(const char* label) { nriCmdBeginDebugLabel(m_handle, label); }
         void endDebugLabel() { nriCmdEndDebugLabel(m_handle); }
+        void setDeferredStateTracking(bool enable) { nriCmdSetDeferredStateTracking(m_handle, enable); }
+        bool resolveDeferredBarriers(CommandBuffer& fixupCmd) { return nriCmdResolveDeferredBarriers(m_handle, fixupCmd.handle()); }
 
     private:
         NriCommandBuffer m_handle = nullptr;

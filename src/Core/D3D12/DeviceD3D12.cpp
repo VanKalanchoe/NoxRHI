@@ -1,5 +1,7 @@
 #include "DeviceD3D12.h"
+#include <atomic>
 #include <d3dcompiler.h>
+#include <filesystem>
 #include "SwapchainD3D12.h"
 #include "PipelineD3D12.h"
 #include "CommandAllocatorD3D12.h"
@@ -12,6 +14,7 @@
 #include "GpuProfilerD3D12.h"
 #include "TimelineSemaphoreD3D12.h"
 #include "MemoryAllocatorD3D12.h"
+#include "../../Extensions/ShaderCompiler/ShaderCompiler.h"
 #include "../../Extensions/Upscaler/StreamlineContext.h"
 
 namespace NRI
@@ -22,12 +25,28 @@ namespace NRI
     {
         void CALLBACK onD3D12ValidationMessage(D3D12_MESSAGE_CATEGORY,
                                                D3D12_MESSAGE_SEVERITY severity,
-                                               D3D12_MESSAGE_ID,
+                                               D3D12_MESSAGE_ID messageId,
                                                LPCSTR pDescription,
                                                void*)
         {
             if (!pDescription)
                 return;
+            if (messageId == D3D12_MESSAGE_ID_CLEARRENDERTARGETVIEW_MISMATCHINGCLEARVALUE)
+            {
+                static std::atomic<bool> loggedOnce{false};
+                if (loggedOnce.exchange(true))
+                    return;
+                NRI_LOG_WARN("D3D12 validation (logged once, further occurrences suppressed): {}", pDescription);
+                return;
+            }
+            if (messageId == D3D12_MESSAGE_ID_CLEARDEPTHSTENCILVIEW_MISMATCHINGCLEARVALUE)
+            {
+                static std::atomic<bool> loggedOnce{false};
+                if (loggedOnce.exchange(true))
+                    return;
+                NRI_LOG_WARN("D3D12 validation (logged once, further occurrences suppressed): {}", pDescription);
+                return;
+            }
             if (severity <= D3D12_MESSAGE_SEVERITY_ERROR)
                 NRI_LOG_ERROR("D3D12 validation: {}", pDescription);
             else if (severity == D3D12_MESSAGE_SEVERITY_WARNING)
@@ -236,15 +255,15 @@ namespace NRI
 
     void DeviceD3D12::createGlobalRootSignature()
     {
-        // Root param 0: push constants at b0, space0 (60 DWORDs = 240 bytes).
+        // Root param 0: push constants at b0, space0 (63 DWORDs = 252 bytes).
         // Root param 1: hardware drawID at b1, space0 (1 DWORD), populated by ExecuteIndirect for indirect mesh draws.
-        // Total = 61 DWORDs <= D3D12's 64-DWORD root signature limit (zero spill).
+        // Total = 64 DWORDs == D3D12's 64-DWORD root signature limit (zero spill).
         D3D12_ROOT_PARAMETER1 rootParams[2]{};
         rootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
         rootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
         rootParams[0].Constants.ShaderRegister = 0;
         rootParams[0].Constants.RegisterSpace = 0;
-        rootParams[0].Constants.Num32BitValues = 60;
+        rootParams[0].Constants.Num32BitValues = 63;
 
         rootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
         rootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
@@ -342,23 +361,65 @@ namespace NRI
         if (FAILED(m_device.As(&dred)))
             return;
 
-        D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT breadcrumbs{};
-        if (SUCCEEDED(dred->GetAutoBreadcrumbsOutput(&breadcrumbs)))
+        ComPtr<ID3D12DeviceRemovedExtendedData1> dred1;
+        D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT1 breadcrumbs1{};
+        if (SUCCEEDED(m_device.As(&dred1)) && SUCCEEDED(dred1->GetAutoBreadcrumbsOutput1(&breadcrumbs1)))
         {
-            for (const D3D12_AUTO_BREADCRUMB_NODE* node = breadcrumbs.pHeadAutoBreadcrumbNode; node; node = node->pNext)
+            for (const D3D12_AUTO_BREADCRUMB_NODE1* node = breadcrumbs1.pHeadAutoBreadcrumbNode; node; node = node->pNext)
             {
                 const UINT completed = node->pLastBreadcrumbValue ? *node->pLastBreadcrumbValue : 0;
                 if (completed >= node->BreadcrumbCount)
                     continue; // (this command list finished)
                 const std::string list = node->pCommandListDebugNameA ? node->pCommandListDebugNameA : Narrow(node->pCommandListDebugNameW);
-                NRI_LOG_ERROR("D3D12 DRED: command list '{}': {} of {} operations completed; around where the GPU stopped:",
-                              list.empty() ? "(unnamed)" : list, completed, node->BreadcrumbCount);
-                const UINT first = completed > 4 ? completed - 4 : 0, last = std::min(node->BreadcrumbCount, completed + 4);
+                auto contextAt = [&](UINT idx) -> std::string
+                {
+                    for (UINT c = 0; c < node->BreadcrumbContextsCount; ++c)
+                    {
+                        if (node->pBreadcrumbContexts[c].BreadcrumbIndex == idx && node->pBreadcrumbContexts[c].pContextString)
+                            return Narrow(node->pBreadcrumbContexts[c].pContextString);
+                    }
+                    return {};
+                };
+                // Find the most recent BeginEvent / context string at or before the failing op.
+                std::string lastPass;
+                for (UINT c = 0; c < node->BreadcrumbContextsCount; ++c)
+                {
+                    if (node->pBreadcrumbContexts[c].BreadcrumbIndex <= completed && node->pBreadcrumbContexts[c].pContextString)
+                        lastPass = Narrow(node->pBreadcrumbContexts[c].pContextString);
+                }
+                NRI_LOG_ERROR("D3D12 DRED: command list '{}': {} of {} operations completed (last pass: '{}'); around where the GPU stopped:",
+                              list.empty() ? "(unnamed)" : list, completed, node->BreadcrumbCount, lastPass.empty() ? "(none)" : lastPass);
+                const UINT first = completed > 6 ? completed - 6 : 0, last = std::min(node->BreadcrumbCount, completed + 4);
                 for (UINT i = first; i < last; ++i)
                 {
                     const char* name = BreadcrumbOpName(node->pCommandHistory[i]);
-                    NRI_LOG_ERROR("D3D12 DRED:   {} [{}] {}{}", i < completed ? "done   " : (i == completed ? "FAILED?" : "pending"), i,
-                                  name ? name : "op", name ? "" : std::to_string(static_cast<int>(node->pCommandHistory[i])));
+                    const std::string ctx = contextAt(i);
+                    NRI_LOG_ERROR("D3D12 DRED:   {} [{}] {}{}{}{}", i < completed ? "done   " : (i == completed ? "FAILED?" : "pending"), i,
+                                  name ? name : "op", name ? "" : std::to_string(static_cast<int>(node->pCommandHistory[i])),
+                                  ctx.empty() ? "" : " -- ", ctx);
+                }
+            }
+        }
+        else
+        {
+            D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT breadcrumbs{};
+            if (SUCCEEDED(dred->GetAutoBreadcrumbsOutput(&breadcrumbs)))
+            {
+                for (const D3D12_AUTO_BREADCRUMB_NODE* node = breadcrumbs.pHeadAutoBreadcrumbNode; node; node = node->pNext)
+                {
+                    const UINT completed = node->pLastBreadcrumbValue ? *node->pLastBreadcrumbValue : 0;
+                    if (completed >= node->BreadcrumbCount)
+                        continue; // (this command list finished)
+                    const std::string list = node->pCommandListDebugNameA ? node->pCommandListDebugNameA : Narrow(node->pCommandListDebugNameW);
+                    NRI_LOG_ERROR("D3D12 DRED: command list '{}': {} of {} operations completed; around where the GPU stopped:",
+                                  list.empty() ? "(unnamed)" : list, completed, node->BreadcrumbCount);
+                    const UINT first = completed > 4 ? completed - 4 : 0, last = std::min(node->BreadcrumbCount, completed + 4);
+                    for (UINT i = first; i < last; ++i)
+                    {
+                        const char* name = BreadcrumbOpName(node->pCommandHistory[i]);
+                        NRI_LOG_ERROR("D3D12 DRED:   {} [{}] {}{}", i < completed ? "done   " : (i == completed ? "FAILED?" : "pending"), i,
+                                      name ? name : "op", name ? "" : std::to_string(static_cast<int>(node->pCommandHistory[i])));
+                    }
                 }
             }
         }
@@ -604,6 +665,8 @@ void main(uint3 tid : SV_DispatchThreadID) {
         ID3D12CommandList* lists[] = { cmdD3D12->getNativeCommandList() };
         m_directQueue->ExecuteCommandLists(1, lists);
         signalRetirementFence(QueueType::Graphics);
+        if (auto temps = cmdD3D12->takeTempBuffers(); !temps.empty())
+            enqueueDeferredDeletion([temps = std::move(temps)]() mutable { temps.clear(); });
         waitIdle();
         collectDeferredDeletions();
     }
@@ -631,6 +694,14 @@ void main(uint3 tid : SV_DispatchThreadID) {
         }
         static_cast<SwapchainD3D12&>(swapchain).signalFrame(m_directQueue.Get(), frameIndex);
         signalRetirementFence(QueueType::Graphics);
+        for (auto* cb : cmdBuffers)
+        {
+            if (auto* cmdD3D12 = dynamic_cast<CommandBufferD3D12*>(cb))
+            {
+                if (auto temps = cmdD3D12->takeTempBuffers(); !temps.empty())
+                    enqueueDeferredDeletion([temps = std::move(temps)]() mutable { temps.clear(); });
+            }
+        }
     }
 
     void DeviceD3D12::submit(QueueType queue, std::span<CommandBuffer* const> cmdBuffers,
@@ -672,6 +743,14 @@ void main(uint3 tid : SV_DispatchThreadID) {
         }
 
         signalRetirementFence(effectiveQueue);
+        for (auto* cb : cmdBuffers)
+        {
+            if (auto* cmdD3D12 = dynamic_cast<CommandBufferD3D12*>(cb))
+            {
+                if (auto temps = cmdD3D12->takeTempBuffers(); !temps.empty())
+                    enqueueDeferredDeletion([temps = std::move(temps)]() mutable { temps.clear(); });
+            }
+        }
     }
 
     std::unique_ptr<Swapchain> DeviceD3D12::createSwapchain(const SwapchainDesc& desc)
@@ -681,7 +760,10 @@ void main(uint3 tid : SV_DispatchThreadID) {
 
     std::unique_ptr<Pipeline> DeviceD3D12::createPipeline(const PipelineDesc& desc, ShaderCompiler& compiler)
     {
-        return std::make_unique<PipelineD3D12>(*this, desc, compiler);
+        auto pipeline = std::make_unique<PipelineD3D12>(*this, desc, compiler);
+        if (ShaderProgress* progress = GetShaderProgress(); progress && progress->OnPipelineCreated)
+            progress->OnPipelineCreated();
+        return pipeline;
     }
 
     std::unique_ptr<CommandAllocator> DeviceD3D12::createCommandAllocator(CommandBufferReset resetMode, QueueType queue)

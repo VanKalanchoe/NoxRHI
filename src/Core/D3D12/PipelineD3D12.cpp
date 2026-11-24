@@ -4,8 +4,11 @@
 #include "../../Extensions/ShaderCompiler/ShaderCompiler.h"
 
 #include <chrono>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
+#include <unordered_map>
 
 namespace NRI
 {
@@ -60,50 +63,104 @@ namespace NRI
             }
         }
 
-        D3D12_BLEND_DESC buildBlendDesc(bool colorBlendEnable,
-                                        const ColorBlendEquation& eq,
-                                        uint32_t colorWriteMask)
+        bool isIntegerDxgiFormat(DXGI_FORMAT fmt)
+        {
+            switch (fmt)
+            {
+            case DXGI_FORMAT_R8_UINT:
+            case DXGI_FORMAT_R8_SINT:
+            case DXGI_FORMAT_R8G8_UINT:
+            case DXGI_FORMAT_R8G8_SINT:
+            case DXGI_FORMAT_R8G8B8A8_UINT:
+            case DXGI_FORMAT_R8G8B8A8_SINT:
+            case DXGI_FORMAT_R16_UINT:
+            case DXGI_FORMAT_R16_SINT:
+            case DXGI_FORMAT_R16G16_UINT:
+            case DXGI_FORMAT_R16G16_SINT:
+            case DXGI_FORMAT_R16G16B16A16_UINT:
+            case DXGI_FORMAT_R16G16B16A16_SINT:
+            case DXGI_FORMAT_R32_UINT:
+            case DXGI_FORMAT_R32_SINT:
+            case DXGI_FORMAT_R32G32_UINT:
+            case DXGI_FORMAT_R32G32_SINT:
+            case DXGI_FORMAT_R32G32B32_UINT:
+            case DXGI_FORMAT_R32G32B32_SINT:
+            case DXGI_FORMAT_R32G32B32A32_UINT:
+            case DXGI_FORMAT_R32G32B32A32_SINT:
+            case DXGI_FORMAT_R10G10B10A2_UINT:
+                return true;
+            default:
+                return false;
+            }
+        }
+
+        D3D12_BLEND_DESC buildBlendDesc(const std::vector<DXGI_FORMAT>& rtvFormats,
+                                        const std::array<bool, 8>& colorBlendEnable,
+                                        const std::array<ColorBlendEquation, 8>& eq,
+                                        const std::array<uint32_t, 8>& colorWriteMask)
         {
             D3D12_BLEND_DESC blend{};
-            D3D12_RENDER_TARGET_BLEND_DESC& rt = blend.RenderTarget[0];
-            rt.BlendEnable = colorBlendEnable ? TRUE : FALSE;
-            rt.SrcBlend = translateBlendFactor(eq.srcColorBlendFactor, false);
-            rt.DestBlend = translateBlendFactor(eq.dstColorBlendFactor, false);
-            rt.BlendOp = translateBlendOp(eq.colorBlendOp);
-            rt.SrcBlendAlpha = translateBlendFactor(eq.srcAlphaBlendFactor, true);
-            rt.DestBlendAlpha = translateBlendFactor(eq.dstAlphaBlendFactor, true);
-            rt.BlendOpAlpha = translateBlendOp(eq.alphaBlendOp);
-            rt.RenderTargetWriteMask = static_cast<UINT8>(colorWriteMask & 0xFu);
+            const size_t count = std::min<size_t>(std::max<size_t>(rtvFormats.size(), 1), 8);
+            blend.IndependentBlendEnable = (rtvFormats.size() > 1) ? TRUE : FALSE;
+            for (size_t i = 0; i < count; ++i)
+            {
+                D3D12_RENDER_TARGET_BLEND_DESC& rt = blend.RenderTarget[i];
+                const bool isInt = (i < rtvFormats.size()) && isIntegerDxgiFormat(rtvFormats[i]);
+                // D3D12 forbids BlendEnable = TRUE on integer (_UINT / _SINT) render target formats.
+                rt.BlendEnable = (colorBlendEnable[i] && !isInt) ? TRUE : FALSE;
+                rt.SrcBlend = translateBlendFactor(eq[i].srcColorBlendFactor, false);
+                rt.DestBlend = translateBlendFactor(eq[i].dstColorBlendFactor, false);
+                rt.BlendOp = translateBlendOp(eq[i].colorBlendOp);
+                rt.SrcBlendAlpha = translateBlendFactor(eq[i].srcAlphaBlendFactor, true);
+                rt.DestBlendAlpha = translateBlendFactor(eq[i].dstAlphaBlendFactor, true);
+                rt.BlendOpAlpha = translateBlendOp(eq[i].alphaBlendOp);
+                rt.RenderTargetWriteMask = static_cast<UINT8>(colorWriteMask[i] & 0xFu);
+            }
             return blend;
         }
 
-        uint64_t makeGraphicsVariantKey(bool hasDepth, bool depthTestEnable, bool depthWriteEnable,
+        uint64_t makeGraphicsVariantKey(size_t attachmentCount,
+                                        bool hasDepth, bool depthTestEnable, bool depthWriteEnable,
                                         CompareOp depthCompareOp, CullMode cullMode,
                                         FrontFace frontFace, PolygonMode polygonMode,
-                                        bool colorBlendEnable, const ColorBlendEquation& colorBlendEquation,
-                                        uint32_t colorWriteMask, uint32_t sampleCount)
+                                        const std::array<bool, 8>& colorBlendEnable,
+                                        const std::array<ColorBlendEquation, 8>& colorBlendEquation,
+                                        const std::array<uint32_t, 8>& colorWriteMask,
+                                        uint32_t sampleCount,
+                                        bool depthClampEnable)
         {
-            uint64_t key = 0;
-            key |= (hasDepth ? 1ull : 0ull) << 0;
-            key |= (depthTestEnable ? 1ull : 0ull) << 1;
-            key |= (depthWriteEnable ? 1ull : 0ull) << 2;
-            key |= (static_cast<uint64_t>(depthCompareOp) & 0xFu) << 3;
-            key |= (static_cast<uint64_t>(cullMode) & 0x3u) << 7;
-            key |= (static_cast<uint64_t>(frontFace) & 0x3u) << 9;
-            key |= (static_cast<uint64_t>(polygonMode) & 0x3u) << 11;
-            key |= (colorBlendEnable ? 1ull : 0ull) << 13;
-            if (colorBlendEnable)
+            uint64_t hash = 14695981039346656037ull;
+            auto mix = [&](uint64_t v)
             {
-                key |= (static_cast<uint64_t>(colorBlendEquation.srcColorBlendFactor) & 0xFu) << 14;
-                key |= (static_cast<uint64_t>(colorBlendEquation.dstColorBlendFactor) & 0xFu) << 18;
-                key |= (static_cast<uint64_t>(colorBlendEquation.colorBlendOp) & 0x3u) << 22;
-                key |= (static_cast<uint64_t>(colorBlendEquation.srcAlphaBlendFactor) & 0xFu) << 24;
-                key |= (static_cast<uint64_t>(colorBlendEquation.dstAlphaBlendFactor) & 0xFu) << 28;
-                key |= (static_cast<uint64_t>(colorBlendEquation.alphaBlendOp) & 0x3u) << 32;
+                hash ^= v;
+                hash *= 1099511628211ull;
+            };
+            mix((hasDepth ? 1ull : 0ull) |
+                ((depthTestEnable ? 1ull : 0ull) << 1) |
+                ((depthWriteEnable ? 1ull : 0ull) << 2) |
+                ((static_cast<uint64_t>(depthCompareOp) & 0xFu) << 3) |
+                ((static_cast<uint64_t>(cullMode) & 0x3u) << 7) |
+                ((static_cast<uint64_t>(frontFace) & 0x3u) << 9) |
+                ((static_cast<uint64_t>(polygonMode) & 0x3u) << 11) |
+                ((static_cast<uint64_t>(sampleCount) & 0x7Fu) << 13) |
+                ((depthClampEnable ? 1ull : 0ull) << 20));
+            const size_t count = std::min<size_t>(std::max<size_t>(attachmentCount, 1), 8);
+            for (size_t i = 0; i < count; ++i)
+            {
+                uint64_t att = (colorBlendEnable[i] ? 1ull : 0ull) |
+                               ((static_cast<uint64_t>(colorWriteMask[i]) & 0xFu) << 1);
+                if (colorBlendEnable[i])
+                {
+                    att |= (static_cast<uint64_t>(colorBlendEquation[i].srcColorBlendFactor) & 0xFu) << 5;
+                    att |= (static_cast<uint64_t>(colorBlendEquation[i].dstColorBlendFactor) & 0xFu) << 9;
+                    att |= (static_cast<uint64_t>(colorBlendEquation[i].colorBlendOp) & 0x3u) << 13;
+                    att |= (static_cast<uint64_t>(colorBlendEquation[i].srcAlphaBlendFactor) & 0xFu) << 15;
+                    att |= (static_cast<uint64_t>(colorBlendEquation[i].dstAlphaBlendFactor) & 0xFu) << 19;
+                    att |= (static_cast<uint64_t>(colorBlendEquation[i].alphaBlendOp) & 0x3u) << 23;
+                }
+                mix(att);
             }
-            key |= (static_cast<uint64_t>(colorWriteMask) & 0xFu) << 34;
-            key |= (static_cast<uint64_t>(sampleCount) & 0x7Fu) << 38; // (1..64: the render target's samples)
-            return key;
+            return hash;
         }
 
         const char* stageShortName(ShaderStage stage)
@@ -123,6 +180,84 @@ namespace NRI
             case ShaderStage::Callable:     return "rcall";
             default:                        return "unknown";
             }
+        }
+
+        struct ModuleCompile
+        {
+            std::mutex Mutex;
+            std::condition_variable Done;
+            bool Finished = false;
+            std::vector<std::pair<std::string, std::vector<char>>> EntryPoints;
+            std::exception_ptr Error;
+        };
+        std::mutex s_modulesMutex;
+        std::unordered_map<std::string, std::shared_ptr<ModuleCompile>> s_modules;
+
+        std::shared_ptr<ModuleCompile> compileModuleOnce(const std::string& sourcePath, ShaderCompiler& compiler)
+        {
+            const std::string key = sourcePath + "|" + std::to_string(compiler.sourceHash(sourcePath));
+            std::shared_ptr<ModuleCompile> entry;
+            bool compileHere = false;
+            {
+                std::lock_guard lock(s_modulesMutex);
+                std::shared_ptr<ModuleCompile>& slot = s_modules[key];
+                if (!slot || (slot->Finished && slot->Error))
+                {
+                    slot = std::make_shared<ModuleCompile>();
+                    compileHere = true;
+                }
+                entry = slot;
+            }
+            if (compileHere)
+            {
+                std::vector<std::pair<std::string, std::vector<char>>> entryPoints;
+                std::exception_ptr error;
+                const auto started = std::chrono::steady_clock::now();
+                try
+                {
+                    entryPoints = compiler.compileEntryPoints(sourcePath);
+                }
+                catch (...)
+                {
+                    error = std::current_exception();
+                }
+                if (!error)
+                    NRI_LOG_INFO("Shader compiled: {} ({:.0f} ms)", sourcePath,
+                                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
+                {
+                    std::lock_guard lock(entry->Mutex);
+                    entry->EntryPoints = std::move(entryPoints);
+                    entry->Error = error;
+                    entry->Finished = true;
+                }
+                entry->Done.notify_all();
+            }
+            std::unique_lock lock(entry->Mutex);
+            entry->Done.wait(lock, [&] { return entry->Finished; });
+            if (entry->Error)
+                std::rethrow_exception(entry->Error);
+            return entry;
+        }
+
+        std::vector<char> compileEntryPointOnce(const std::string& sourcePath, const std::string& entryPoint, ShaderCompiler& compiler)
+        {
+            const std::shared_ptr<ModuleCompile> module = compileModuleOnce(sourcePath, compiler);
+            {
+                std::unique_lock lock(module->Mutex);
+                if (module->EntryPoints.empty())
+                {
+                    lock.unlock();
+                    return compiler.compile(sourcePath, entryPoint);
+                }
+            }
+            std::lock_guard lock(module->Mutex);
+            for (const auto& [name, dxil] : module->EntryPoints)
+                if (name == entryPoint)
+                    return dxil;
+            std::string names;
+            for (const auto& [name, dxil] : module->EntryPoints)
+                names += (names.empty() ? "" : ", ") + name;
+            throw std::runtime_error("Shader entry point '" + entryPoint + "' not found in " + sourcePath + " (it has: " + names + ")");
         }
 
         std::vector<char> loadOrCompileDxil(const ShaderStageDesc& shaderDesc,
@@ -155,11 +290,15 @@ namespace NRI
                 }
             }
 
+            if (forceCompile)
+            {
+                const std::string key = shaderDesc.sourcePath + "|" + std::to_string(sourceHash);
+                std::lock_guard lock(s_modulesMutex);
+                s_modules.erase(key);
+            }
+
             NRI_LOG_INFO("PipelineD3D12 compiling shader: {} ({})", shaderDesc.sourcePath, shaderDesc.entryPoint);
-            const auto started = std::chrono::steady_clock::now();
-            std::vector<char> bytecode = compiler.compile(shaderDesc.sourcePath, shaderDesc.entryPoint);
-            const double elapsedMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
-            NRI_LOG_INFO("Shader compiled: {} ({:.0f} ms)", shaderDesc.sourcePath, elapsedMs);
+            std::vector<char> bytecode = compileEntryPointOnce(shaderDesc.sourcePath, shaderDesc.entryPoint, compiler);
 
             if (!bytecode.empty())
             {
@@ -192,6 +331,9 @@ namespace NRI
         m_hasMeshShaders = false;
         for (const auto& s : desc.shaders)
         {
+            if (!m_debugName.empty())
+                m_debugName += " + ";
+            m_debugName += s.sourcePath + ":" + s.entryPoint;
             auto code = loadOrCompileDxil(s, compiler, m_deviceD3D12.getShaderCacheDir(), desc.forceCompile);
             if (s.stage == ShaderStage::Vertex) m_vsBytecode = std::move(code);
             else if (s.stage == ShaderStage::Fragment) m_psBytecode = std::move(code);
@@ -219,10 +361,11 @@ namespace NRI
                                                                     CullMode cullMode,
                                                                     FrontFace frontFace,
                                                                     PolygonMode polygonMode,
-                                                                    bool colorBlendEnable,
-                                                                    const ColorBlendEquation& colorBlendEquation,
-                                                                    uint32_t colorWriteMask,
-                                                                    uint32_t sampleCount)
+                                                                    const std::array<bool, 8>& colorBlendEnable,
+                                                                    const std::array<ColorBlendEquation, 8>& colorBlendEquation,
+                                                                    const std::array<uint32_t, 8>& colorWriteMask,
+                                                                    uint32_t sampleCount,
+                                                                    bool depthClampEnable)
     {
         const BOOL effDepthEnable = (hasDepth && depthTestEnable) ? TRUE : FALSE;
         const D3D12_DEPTH_WRITE_MASK effDepthWrite = (hasDepth && depthWriteEnable)
@@ -230,7 +373,7 @@ namespace NRI
             : D3D12_DEPTH_WRITE_MASK_ZERO;
         const DXGI_FORMAT effDsvFormat = hasDepth ? DXGI_FORMAT_D32_FLOAT : DXGI_FORMAT_UNKNOWN;
         const BOOL frontCCW = (frontFace == FrontFace::CounterClockWise) ? TRUE : FALSE;
-        const D3D12_BLEND_DESC blendDesc = buildBlendDesc(colorBlendEnable, colorBlendEquation, colorWriteMask);
+        const D3D12_BLEND_DESC blendDesc = buildBlendDesc(m_rtvFormats, colorBlendEnable, colorBlendEquation, colorWriteMask);
 
         ComPtr<ID3D12PipelineState> pso;
         if (m_hasMeshShaders)
@@ -260,7 +403,7 @@ namespace NRI
             stream.Rasterizer.desc.FillMode = translatePolygonMode(polygonMode);
             stream.Rasterizer.desc.CullMode = translateCullMode(cullMode);
             stream.Rasterizer.desc.FrontCounterClockwise = frontCCW;
-            stream.Rasterizer.desc.DepthClipEnable = TRUE;
+            stream.Rasterizer.desc.DepthClipEnable = depthClampEnable ? FALSE : TRUE;
 
             stream.DepthStencil.desc.DepthEnable = effDepthEnable;
             stream.DepthStencil.desc.DepthWriteMask = effDepthWrite;
@@ -276,7 +419,8 @@ namespace NRI
             ComPtr<ID3D12Device2> dev2;
             if (SUCCEEDED(m_deviceD3D12.getNativeDevice()->QueryInterface(IID_PPV_ARGS(&dev2))))
             {
-                ThrowIfFailed(dev2->CreatePipelineState(&streamDesc, IID_PPV_ARGS(&pso)), "CreatePipelineState (Mesh)");
+                const std::string contextMsg = "CreatePipelineState (Mesh: " + m_debugName + ")";
+                ThrowIfFailed(dev2->CreatePipelineState(&streamDesc, IID_PPV_ARGS(&pso)), contextMsg.c_str());
             }
         }
         else
@@ -291,7 +435,7 @@ namespace NRI
             psoDesc.RasterizerState.FillMode = translatePolygonMode(polygonMode);
             psoDesc.RasterizerState.CullMode = translateCullMode(cullMode);
             psoDesc.RasterizerState.FrontCounterClockwise = frontCCW;
-            psoDesc.RasterizerState.DepthClipEnable = TRUE;
+            psoDesc.RasterizerState.DepthClipEnable = depthClampEnable ? FALSE : TRUE;
 
             psoDesc.DepthStencilState.DepthEnable = effDepthEnable;
             psoDesc.DepthStencilState.DepthWriteMask = effDepthWrite;
@@ -319,14 +463,17 @@ namespace NRI
                                                                 CullMode cullMode,
                                                                 FrontFace frontFace,
                                                                 PolygonMode polygonMode,
-                                                                bool colorBlendEnable,
-                                                                const ColorBlendEquation& colorBlendEquation,
-                                                                uint32_t colorWriteMask,
-                                                                uint32_t sampleCount)
+                                                                const std::array<bool, 8>& colorBlendEnable,
+                                                                const std::array<ColorBlendEquation, 8>& colorBlendEquation,
+                                                                const std::array<uint32_t, 8>& colorWriteMask,
+                                                                uint32_t sampleCount,
+                                                                bool depthClampEnable)
     {
-        const uint64_t key = makeGraphicsVariantKey(hasDepth, depthTestEnable, depthWriteEnable,
+        const uint64_t key = makeGraphicsVariantKey(m_rtvFormats.size(),
+                                                    hasDepth, depthTestEnable, depthWriteEnable,
                                                     depthCompareOp, cullMode, frontFace, polygonMode,
-                                                    colorBlendEnable, colorBlendEquation, colorWriteMask, sampleCount);
+                                                    colorBlendEnable, colorBlendEquation, colorWriteMask, sampleCount,
+                                                    depthClampEnable);
         std::scoped_lock lock(m_variantMutex);
         auto it = m_graphicsVariants.find(key);
         if (it != m_graphicsVariants.end())
@@ -334,7 +481,7 @@ namespace NRI
 
         ComPtr<ID3D12PipelineState> built = buildGraphicsVariant(
             hasDepth, depthTestEnable, depthWriteEnable, depthCompareOp, cullMode, frontFace, polygonMode,
-            colorBlendEnable, colorBlendEquation, colorWriteMask, sampleCount);
+            colorBlendEnable, colorBlendEquation, colorWriteMask, sampleCount, depthClampEnable);
         ID3D12PipelineState* raw = built.Get();
         m_graphicsVariants.emplace(key, std::move(built));
         if (!m_pipeline)

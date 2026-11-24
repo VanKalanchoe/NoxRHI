@@ -284,6 +284,10 @@ namespace nri
             uint32_t TextureBarrierCount = 0;
             uint32_t FirstBufferBarrier = 0;
             uint32_t BufferBarrierCount = 0;
+            uint32_t FirstPostTextureBarrier = 0;
+            uint32_t PostTextureBarrierCount = 0;
+            uint32_t FirstPostBufferBarrier = 0;
+            uint32_t PostBufferBarrierCount = 0;
         };
 
         struct Chunk
@@ -299,6 +303,8 @@ namespace nri
         {
             CommandAllocator Allocator;
             CommandBuffer CmdBuffer;
+            CommandAllocator FixupAllocator;
+            CommandBuffer FixupCmdBuffer;
             QueueType Queue = NRI_QUEUE_GRAPHICS;
         };
 

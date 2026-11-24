@@ -1057,6 +1057,18 @@ void NRI_CALL nriCmdEndDebugLabel(NriCommandBuffer cmd)
     if (cmd && cmd->impl) cmd->impl->endDebugLabel();
 }
 
+void NRI_CALL nriCmdSetDeferredStateTracking(NriCommandBuffer cmd, bool enable)
+{
+    if (cmd && cmd->impl) cmd->impl->setDeferredStateTracking(enable);
+}
+
+bool NRI_CALL nriCmdResolveDeferredBarriers(NriCommandBuffer cmd, NriCommandBuffer fixupCmd)
+{
+    if (!cmd || !cmd->impl || !fixupCmd || !fixupCmd->impl)
+        return false;
+    return cmd->impl->resolveDeferredBarriers(*fixupCmd->impl);
+}
+
 // -----------------------------------------------------------------------------
 // Buffer
 // -----------------------------------------------------------------------------

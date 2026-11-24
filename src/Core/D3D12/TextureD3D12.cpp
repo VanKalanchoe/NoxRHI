@@ -96,6 +96,13 @@ namespace NRI
         if (m_desc.usage == TextureUsage::ColorAttachment || m_desc.usage == TextureUsage::ColorResolveAttachment)
         {
             resDesc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+            // Match TextureVK: single-sampled non-sRGB color attachments also support UAV/storage writes (DLSS, TAA, PostEffects, etc.).
+            const bool isSrgb = (m_dxgiFormat == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB ||
+                                 m_dxgiFormat == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB);
+            if (m_desc.usage == TextureUsage::ColorAttachment && m_desc.format != ImageFormat::Surface && !isSrgb && m_desc.sampleCount <= 1)
+            {
+                resDesc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+            }
             clearValue.Color[0] = 0.0f;
             clearValue.Color[1] = 0.0f;
             clearValue.Color[2] = 0.0f;
@@ -117,6 +124,15 @@ namespace NRI
         m_image = m_deviceD3D12.getAllocator()->createImage(resDesc, initialState, pClearValue);
         m_resource = m_image.resource;
         m_needsInitialDiscard = (resDesc.Flags & (D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)) != 0;
+#ifndef NDEBUG
+        if (m_resource)
+        {
+            const std::wstring debugName = L"Tex_" + std::to_wstring(m_desc.width) + L"x" + std::to_wstring(m_desc.height) +
+                L"_fmt" + std::to_wstring(static_cast<uint32_t>(m_desc.format)) +
+                L"_use" + std::to_wstring(static_cast<uint32_t>(m_desc.usage));
+            m_resource->SetName(debugName.c_str());
+        }
+#endif
     }
 
     void TextureD3D12::uploadFromBuffer(CommandBuffer& cmdBuffer, Buffer& stagingBuffer, uint32_t width, uint32_t height,
@@ -133,8 +149,9 @@ namespace NRI
         if (!cmdD3D12 || !bufferD3D12) return;
 
         auto* list = cmdD3D12->getNativeCommandList();
+        const bool isCopyQueue = cmdD3D12->getCommandListType() == D3D12_COMMAND_LIST_TYPE_COPY;
 
-        if (m_currentState != D3D12_RESOURCE_STATE_COPY_DEST)
+        if (!isCopyQueue && m_currentState != D3D12_RESOURCE_STATE_COPY_DEST)
         {
             D3D12_RESOURCE_BARRIER barrier{};
             barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -179,7 +196,7 @@ namespace NRI
 
                 srcResource = tmpBuf->getNativeBuffer();
                 srcOffset = 0;
-                m_deviceD3D12.enqueueDeferredDeletion([tmpBuf]() mutable { tmpBuf.reset(); });
+                cmdD3D12->retainTempBuffer(std::move(tmpBuf));
             }
 
             D3D12_TEXTURE_COPY_LOCATION src{};
@@ -203,15 +220,23 @@ namespace NRI
             curHeight = std::max(1u, curHeight / 2);
         }
 
-        const D3D12_RESOURCE_STATES srvState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-        D3D12_RESOURCE_BARRIER postBarrier{};
-        postBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        postBarrier.Transition.pResource = m_resource.Get();
-        postBarrier.Transition.StateBefore = m_currentState;
-        postBarrier.Transition.StateAfter = srvState;
-        postBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        list->ResourceBarrier(1, &postBarrier);
-        m_currentState = srvState;
+        if (!isCopyQueue)
+        {
+            const D3D12_RESOURCE_STATES srvState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+            D3D12_RESOURCE_BARRIER postBarrier{};
+            postBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            postBarrier.Transition.pResource = m_resource.Get();
+            postBarrier.Transition.StateBefore = m_currentState;
+            postBarrier.Transition.StateAfter = srvState;
+            postBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            list->ResourceBarrier(1, &postBarrier);
+            m_currentState = srvState;
+        }
+        else
+        {
+            // Resources copied on a D3D12_COMMAND_LIST_TYPE_COPY list implicitly promote from COMMON to COPY_DEST and decay back to COMMON.
+            m_currentState = D3D12_RESOURCE_STATE_COMMON;
+        }
     }
 
     void TextureD3D12::recordInitialLayout(CommandBuffer& cmdBuffer)
@@ -226,10 +251,11 @@ namespace NRI
         if (!cmdD3D12 || !bufferD3D12) return;
 
         auto* list = cmdD3D12->getNativeCommandList();
+        const bool isCopyQueue = cmdD3D12->getCommandListType() == D3D12_COMMAND_LIST_TYPE_COPY;
 
-        // The copy destination state, recorded (as recordUpload does): a texture in COMMON is promoted to COPY_DEST by the copy
-        // itself, and the next barrier must start from the state it is really in.
-        if (m_currentState != D3D12_RESOURCE_STATE_COPY_DEST)
+        // The copy destination state, recorded (as recordUpload does) on graphics/compute lists; on a COPY command list,
+        // textures stay in COMMON and use D3D12's implicit promotion/decay.
+        if (!isCopyQueue && m_currentState != D3D12_RESOURCE_STATE_COPY_DEST)
         {
             D3D12_RESOURCE_BARRIER barrier{};
             barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -276,18 +302,7 @@ namespace NRI
 
         auto* list = cmdD3D12->getNativeCommandList();
         cmdD3D12->initializeTarget(*this);
-
-        if (m_currentState != D3D12_RESOURCE_STATE_COPY_SOURCE)
-        {
-            D3D12_RESOURCE_BARRIER barrier{};
-            barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-            barrier.Transition.pResource = m_resource.Get();
-            barrier.Transition.StateBefore = m_currentState;
-            barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
-            barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-            list->ResourceBarrier(1, &barrier);
-            m_currentState = D3D12_RESOURCE_STATE_COPY_SOURCE;
-        }
+        cmdD3D12->transitionTextureState(*this, D3D12_RESOURCE_STATE_COPY_SOURCE);
 
         D3D12_BOX srcBox{ x, y, 0, x + width, y + height, 1 };
 
@@ -298,10 +313,17 @@ namespace NRI
 
         uint32_t blockBytes = 4, blockSize = 1;
         imageFormatBlock(m_desc.format, blockBytes, blockSize);
-        uint32_t rowPitch = (width * blockBytes + 255) & ~255u;
+        const uint32_t blocksX = (width + blockSize - 1) / blockSize;
+        const uint32_t blocksY = (height + blockSize - 1) / blockSize;
+        const uint32_t rawPitch = blocksX * blockBytes;
+        const uint32_t rowPitch = (rawPitch + 255u) & ~255u;
+
+        // D3D12 requires a 256-byte RowPitch for CopyTextureRegion into a buffer, whereas NoxRHI callers
+        // expect tightly packed rows (matching Vulkan). When multiple unaligned rows are copied, copy into
+        // a temporary GPU buffer with 256-byte row pitch and strip the row padding into dstBuffer.
+        const bool needsRepack = (blocksY > 1) && (rawPitch != rowPitch);
 
         D3D12_TEXTURE_COPY_LOCATION dst{};
-        dst.pResource = bufferD3D12->getNativeBuffer();
         dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
         dst.PlacedFootprint.Offset = 0;
         // (depth: the footprint of the typeless resource's 32-bit texels)
@@ -311,7 +333,47 @@ namespace NRI
         dst.PlacedFootprint.Footprint.Depth = 1;
         dst.PlacedFootprint.Footprint.RowPitch = rowPitch;
 
+        if (!needsRepack)
+        {
+            dst.pResource = bufferD3D12->getNativeBuffer();
+            list->CopyTextureRegion(&dst, 0, 0, 0, &src, &srcBox);
+            return;
+        }
+
+        const uint64_t paddedSize = static_cast<uint64_t>(blocksY - 1) * rowPitch + rawPitch;
+        BufferDesc tmpDesc{};
+        tmpDesc.size = paddedSize;
+        tmpDesc.usage = BufferUsage::Vertex; // default-heap GPU buffer
+        auto tmpBuf = std::make_shared<BufferD3D12>(m_deviceD3D12, tmpDesc);
+
+        D3D12_RESOURCE_BARRIER toDst{};
+        toDst.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        toDst.Transition.pResource = tmpBuf->getNativeBuffer();
+        toDst.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+        toDst.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+        toDst.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        list->ResourceBarrier(1, &toDst);
+
+        dst.pResource = tmpBuf->getNativeBuffer();
         list->CopyTextureRegion(&dst, 0, 0, 0, &src, &srcBox);
+
+        D3D12_RESOURCE_BARRIER toSrc{};
+        toSrc.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        toSrc.Transition.pResource = tmpBuf->getNativeBuffer();
+        toSrc.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+        toSrc.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        toSrc.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        list->ResourceBarrier(1, &toSrc);
+
+        for (uint32_t row = 0; row < blocksY; ++row)
+        {
+            list->CopyBufferRegion(
+                bufferD3D12->getNativeBuffer(), static_cast<uint64_t>(row) * rawPitch,
+                tmpBuf->getNativeBuffer(), static_cast<uint64_t>(row) * rowPitch,
+                rawPitch);
+        }
+
+        cmdD3D12->retainTempBuffer(std::move(tmpBuf));
     }
 
     void TextureD3D12::blitTo(CommandBuffer& commandBuffer, Texture2D& dst)

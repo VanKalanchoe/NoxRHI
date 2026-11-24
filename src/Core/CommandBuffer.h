@@ -281,5 +281,9 @@ namespace NRI
         // Named regions for capture tools (RenderDoc, Nsight) and validation messages; no-op without debug utils.
         virtual void beginDebugLabel(const char* label) = 0;
         virtual void endDebugLabel() = 0;
+
+        // Parallel recording deferred state tracking (D3D12 resolves initial transitions into a pre-chunk fixup list; no-op on Vulkan).
+        virtual void setDeferredStateTracking(bool enable) { (void)enable; }
+        virtual bool resolveDeferredBarriers(CommandBuffer& fixupCmd) { (void)fixupCmd; return false; }
     };
 }

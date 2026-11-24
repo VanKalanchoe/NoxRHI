@@ -290,6 +290,16 @@ if(NRI_BUILD_EXAMPLES)
                         "$<IF:$<CONFIG:Debug>,${NOXRHI_NRD_DIR}/Lib/Debug/NRI.dll,${NOXRHI_NRD_DIR}/Lib/Release/NRI.dll>"
                         $<TARGET_FILE_DIR:${target_name}>
                 )
+                if(EXISTS "${NOXRHI_NRD_DIR}/AgilitySDK/D3D12Core.dll")
+                    add_custom_command(TARGET ${target_name} POST_BUILD
+                        COMMAND ${CMAKE_COMMAND} -E make_directory
+                            "$<TARGET_FILE_DIR:${target_name}>/AgilitySDK"
+                        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                            "${NOXRHI_NRD_DIR}/AgilitySDK/D3D12Core.dll"
+                            "${NOXRHI_NRD_DIR}/AgilitySDK/d3d12SDKLayers.dll"
+                            "$<TARGET_FILE_DIR:${target_name}>/AgilitySDK"
+                    )
+                endif()
             endif()
         endif()
     endfunction()

@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <atomic>
 #include <vector>
 #include "D3D12Common.h"
@@ -40,6 +41,8 @@ namespace NRI
         {
             ComPtr<ID3D12QueryHeap> heap;
             ComPtr<ID3D12Resource> readback;
+            ComPtr<ID3D12Resource> computeReadback;
+            std::array<uint8_t, QueriesPerFrame> isComputeQuery{};
             std::atomic<uint32_t> allocatedQueries = 0;
             std::vector<GpuTimestamp> timestamps;
         };

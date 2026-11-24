@@ -30,33 +30,46 @@ namespace NRI
             }
         }
 
-        D3D12_RESOURCE_STATES TranslateResourceStateToD3D12(const ResourceState& state)
+        D3D12_RESOURCE_STATES TranslateResourceStateToD3D12(const ResourceState& state, bool isComputeList = false)
         {
             if (state.access == AccessBits::None)
                 return D3D12_RESOURCE_STATE_COMMON;
-            if (state.access & AccessBits::ShaderWrite)
+            if (state.access & (AccessBits::ShaderWrite | AccessBits::AccelerationStructureWrite))
                 return D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-            if (state.access & AccessBits::AccelerationStructureWrite) // (a build's scratch buffer: D3D12 writes it as a UAV)
-                return D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-            if (state.access & AccessBits::ColorAttachmentWrite)
-                return D3D12_RESOURCE_STATE_RENDER_TARGET;
-            if (state.access & AccessBits::ColorAttachmentRead)
+            if (state.access & (AccessBits::ColorAttachmentWrite | AccessBits::ColorAttachmentRead))
                 return D3D12_RESOURCE_STATE_RENDER_TARGET;
             if (state.access & AccessBits::DepthStencilWrite)
                 return D3D12_RESOURCE_STATE_DEPTH_WRITE;
-            if (state.access & AccessBits::DepthStencilRead)
-                return D3D12_RESOURCE_STATE_DEPTH_READ;
-            if (state.access & AccessBits::ShaderRead)
-                return D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-            if (state.access & AccessBits::AccelerationStructureRead) // (a build's vertex / index / instance inputs)
-                return D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
             if (state.access & AccessBits::TransferWrite)
                 return D3D12_RESOURCE_STATE_COPY_DEST;
+
+            // Read-only states are combinable bitflags in D3D12 (e.g. a buffer read both by shaders and ExecuteIndirect).
+            D3D12_RESOURCE_STATES readStates = D3D12_RESOURCE_STATE_COMMON;
+            if (!isComputeList && (state.access & AccessBits::DepthStencilRead))
+                readStates |= D3D12_RESOURCE_STATE_DEPTH_READ;
+            if (state.access & AccessBits::ShaderRead)
+            {
+                const bool nonPixelOnlyStages = (state.stages != StageBits::None) &&
+                                                ((state.stages & StageBits::Fragment) == 0);
+                readStates |= (isComputeList || nonPixelOnlyStages)
+                    ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE
+                    : (D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            }
+            if (state.access & AccessBits::AccelerationStructureRead)
+                readStates |= D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
             if (state.access & AccessBits::TransferRead)
-                return D3D12_RESOURCE_STATE_COPY_SOURCE;
+                readStates |= D3D12_RESOURCE_STATE_COPY_SOURCE;
             if (state.access & AccessBits::IndirectRead)
-                return D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
-            return D3D12_RESOURCE_STATE_COMMON;
+                readStates |= D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+            return readStates;
+        }
+
+        bool isReadOnlySubset(D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after)
+        {
+            return before != D3D12_RESOURCE_STATE_COMMON &&
+                   after != D3D12_RESOURCE_STATE_COMMON &&
+                   (before & ~D3D12_RESOURCE_STATE_GENERIC_READ) == 0 &&
+                   (before & after) == after;
         }
     }
 
@@ -88,6 +101,14 @@ namespace NRI
         (void)oneTimeSubmit;
         ThrowIfFailed(m_cmdList->Reset(m_allocator.getNativeAllocator(), nullptr), "CommandList Reset");
         m_isRecording = true;
+        m_debugPassList.clear();
+        m_localTexStates.clear();
+        m_firstTexStates.clear();
+        m_localBufStates.clear();
+        m_firstBufStates.clear();
+        m_pendingDiscardTextures.clear();
+        m_discardSeen.clear();
+        m_markInitializedTextures.clear();
         m_currentPipeline = nullptr;
         m_boundPso = nullptr;
         m_boundResourceHeap = m_boundSamplerHeap = nullptr;
@@ -97,6 +118,7 @@ namespace NRI
         m_hasDepthAttachment = false;
         m_depthTestEnable = false;
         m_depthWriteEnable = false;
+        m_depthClampEnable = false;
         m_depthCompareOp = CompareOp::GreaterOrEqual;
         m_cullMode = CullMode::Back;
         m_frontFace = FrontFace::CounterClockWise;
@@ -105,6 +127,14 @@ namespace NRI
 
     void CommandBufferD3D12::end(uint32_t index)
     {
+        if (!m_debugPassList.empty())
+        {
+            std::wstring wname;
+            wname.reserve(m_debugPassList.size());
+            for (char c : m_debugPassList)
+                wname.push_back(static_cast<wchar_t>(static_cast<unsigned char>(c)));
+            m_cmdList->SetName(wname.c_str());
+        }
         ThrowIfFailed(m_cmdList->Close(), "CommandList Close");
         m_isRecording = false;
     }
@@ -126,17 +156,7 @@ namespace NRI
             if (tex)
             {
                 initializeTarget(*tex);
-                if (tex->getCurrentState() != D3D12_RESOURCE_STATE_RENDER_TARGET)
-                {
-                    D3D12_RESOURCE_BARRIER barrier{};
-                    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                    barrier.Transition.pResource = tex->getNativeResource();
-                    barrier.Transition.StateBefore = tex->getCurrentState();
-                    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-                    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-                    m_cmdList->ResourceBarrier(1, &barrier);
-                    tex->setCurrentState(D3D12_RESOURCE_STATE_RENDER_TARGET);
-                }
+                transitionTextureState(*tex, D3D12_RESOURCE_STATE_RENDER_TARGET);
 
                 D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = rtvStart;
                 rtvHandle.ptr += i * m_rtvDescriptorSize;
@@ -163,17 +183,7 @@ namespace NRI
         {
             auto* depthTex = dynamic_cast<TextureD3D12*>(desc.depthAttachment.attachment);
             initializeTarget(*depthTex);
-            if (depthTex->getCurrentState() != D3D12_RESOURCE_STATE_DEPTH_WRITE)
-            {
-                D3D12_RESOURCE_BARRIER barrier{};
-                barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                barrier.Transition.pResource = depthTex->getNativeResource();
-                barrier.Transition.StateBefore = depthTex->getCurrentState();
-                barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_DEPTH_WRITE;
-                barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-                m_cmdList->ResourceBarrier(1, &barrier);
-                depthTex->setCurrentState(D3D12_RESOURCE_STATE_DEPTH_WRITE);
-            }
+            transitionTextureState(*depthTex, D3D12_RESOURCE_STATE_DEPTH_WRITE);
             dsvHandle = m_dsvHeap->GetCPUDescriptorHandleForHeapStart();
             // (an explicit view: the resource is typeless -- TextureD3D12 -- and may be multisampled)
             D3D12_DEPTH_STENCIL_VIEW_DESC dsvViewDesc{};
@@ -208,6 +218,11 @@ namespace NRI
         m_hasDepthAttachment = false;
     }
 
+    D3D12_COMMAND_LIST_TYPE CommandBufferD3D12::getCommandListType() const
+    {
+        return m_allocator.getCommandListType();
+    }
+
     void CommandBufferD3D12::ensureGraphicsPipelineState()
     {
         if (!m_currentPipeline || m_currentBindPoint != PipelineBindPoint::Graphics)
@@ -223,7 +238,8 @@ namespace NRI
             m_colorBlendEnable,
             m_colorBlendEquation,
             m_colorWriteMask,
-            m_rasterizationSamples);
+            m_rasterizationSamples,
+            m_depthClampEnable);
         if (desired && desired != m_boundPso)
         {
             m_cmdList->SetPipelineState(desired);
@@ -238,7 +254,9 @@ namespace NRI
         m_currentPipeline = &pipeD3D12;
         if (bindPoint == PipelineBindPoint::Graphics)
         {
-            ensureGraphicsPipelineState();
+            // Dynamic states (cull mode, depth test/write, blend enable/equation/write mask) are often set after bindPipeline
+            // and before draw*; resolve the D3D12 PSO variant lazily in ensureGraphicsPipelineState() at draw time.
+            m_boundPso = nullptr;
         }
         else if (pipeD3D12.getNativePipeline())
         {
@@ -336,10 +354,12 @@ namespace NRI
     void CommandBufferD3D12::pushData(const void* data, uint32_t size)
     {
         UINT numValues = size / 4;
-        if (m_allocator.getCommandListType() == D3D12_COMMAND_LIST_TYPE_DIRECT &&
-            m_currentBindPoint == PipelineBindPoint::Graphics)
+        // Vulkan shares one push-constant block across graphics & compute (so callers like drawMeshletBucket may call
+        // pushData before bindPipeline). Mirror that on DIRECT lists by updating both graphics & compute root constants.
+        if (m_allocator.getCommandListType() == D3D12_COMMAND_LIST_TYPE_DIRECT)
         {
             m_cmdList->SetGraphicsRoot32BitConstants(0, numValues, data, 0);
+            m_cmdList->SetComputeRoot32BitConstants(0, numValues, data, 0);
         }
         else
         {
@@ -418,6 +438,8 @@ namespace NRI
         ensureGraphicsPipelineState();
         auto& d3dBuffer = static_cast<BufferD3D12&>(indirectBuffer);
         auto& d3dCount = static_cast<BufferD3D12&>(countBuffer);
+        transitionBufferState(d3dBuffer, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
+        transitionBufferState(d3dCount, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
         m_cmdList->ExecuteIndirect(signature, maxDrawCount, d3dBuffer.getNativeBuffer(), offset, d3dCount.getNativeBuffer(), countOffset);
     }
 
@@ -431,6 +453,8 @@ namespace NRI
         ensureGraphicsPipelineState();
         auto& d3dBuffer = static_cast<BufferD3D12&>(indirectBuffer);
         auto& d3dCount = static_cast<BufferD3D12&>(countBuffer);
+        transitionBufferState(d3dBuffer, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
+        transitionBufferState(d3dCount, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
         m_cmdList->ExecuteIndirect(signature, maxDrawCount, d3dBuffer.getNativeBuffer(), offset, d3dCount.getNativeBuffer(), countOffset);
     }
 
@@ -536,20 +560,7 @@ namespace NRI
     {
         (void)oldLayout;
         auto* texD3D12 = static_cast<TextureD3D12*>(&texture);
-        const D3D12_RESOURCE_STATES stateBefore = texD3D12->getCurrentState();
-        const D3D12_RESOURCE_STATES stateAfter = TranslateTextureLayoutToD3D12(newLayout);
-
-        if (stateBefore != stateAfter)
-        {
-            D3D12_RESOURCE_BARRIER barrier{};
-            barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-            barrier.Transition.pResource = texD3D12->getNativeResource();
-            barrier.Transition.StateBefore = stateBefore;
-            barrier.Transition.StateAfter = stateAfter;
-            barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-            m_cmdList->ResourceBarrier(1, &barrier);
-            texD3D12->setCurrentState(stateAfter);
-        }
+        transitionTextureState(*texD3D12, TranslateTextureLayoutToD3D12(newLayout));
     }
 
     void CommandBufferD3D12::transitionSwapchainLayout(Swapchain& swapchain, uint32_t imageIndex, TextureLayout oldLayout, TextureLayout newLayout)
@@ -568,26 +579,8 @@ namespace NRI
         auto* dstD3D12 = static_cast<TextureD3D12*>(&dstTexture);
         initializeTarget(*srcD3D12);
         initializeTarget(*dstD3D12); // (a resolve is not one of the operations that initialize a target)
-        // ResolveSubresource needs RESOLVE_SOURCE / RESOLVE_DEST, which no ResourceState maps to: transitioned here, the tracked states
-        // updated, so the next barrier starts from them.
-        D3D12_RESOURCE_BARRIER barriers[2]{};
-        UINT barrierCount = 0;
-        const auto transition = [&](TextureD3D12& texture, D3D12_RESOURCE_STATES after)
-        {
-            if (texture.getCurrentState() == after)
-                return;
-            D3D12_RESOURCE_BARRIER& b = barriers[barrierCount++];
-            b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-            b.Transition.pResource = texture.getNativeResource();
-            b.Transition.StateBefore = texture.getCurrentState();
-            b.Transition.StateAfter = after;
-            b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-            texture.setCurrentState(after);
-        };
-        transition(*srcD3D12, D3D12_RESOURCE_STATE_RESOLVE_SOURCE);
-        transition(*dstD3D12, D3D12_RESOURCE_STATE_RESOLVE_DEST);
-        if (barrierCount > 0)
-            m_cmdList->ResourceBarrier(barrierCount, barriers);
+        transitionTextureState(*srcD3D12, D3D12_RESOURCE_STATE_RESOLVE_SOURCE);
+        transitionTextureState(*dstD3D12, D3D12_RESOURCE_STATE_RESOLVE_DEST);
         m_cmdList->ResolveSubresource(
             dstD3D12->getNativeResource(), 0,
             srcD3D12->getNativeResource(), 0,
@@ -599,7 +592,13 @@ namespace NRI
         auto* srcD3D12 = static_cast<TextureD3D12*>(&srcTexture);
         auto* dstD3D12 = static_cast<TextureD3D12*>(&dstTexture);
         initializeTarget(*srcD3D12);
-        dstD3D12->markContentsInitialized(); // (a copy initializes its destination)
+        if (m_deferredStateTracking)
+            m_markInitializedTextures.push_back(dstD3D12);
+        else
+            dstD3D12->markContentsInitialized(); // (a copy initializes its destination)
+
+        transitionTextureState(*srcD3D12, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        transitionTextureState(*dstD3D12, D3D12_RESOURCE_STATE_COPY_DEST);
 
         D3D12_TEXTURE_COPY_LOCATION dstLoc{};
         dstLoc.pResource = dstD3D12->getNativeResource();
@@ -620,7 +619,16 @@ namespace NRI
         auto* srcD3D12 = static_cast<TextureD3D12*>(&srcTexture);
         auto* dstD3D12 = static_cast<TextureD3D12*>(&dstTexture);
         initializeTarget(*srcD3D12);
-        dstD3D12->markContentsInitialized();
+        if (m_deferredStateTracking)
+            m_markInitializedTextures.push_back(dstD3D12);
+        else
+            dstD3D12->markContentsInitialized();
+
+        if (m_allocator.getCommandListType() != D3D12_COMMAND_LIST_TYPE_COPY)
+        {
+            transitionTextureState(*srcD3D12, D3D12_RESOURCE_STATE_COPY_SOURCE);
+            transitionTextureState(*dstD3D12, D3D12_RESOURCE_STATE_COPY_DEST);
+        }
 
         for (uint32_t i = 0; i < mipCount; ++i)
         {
@@ -637,11 +645,9 @@ namespace NRI
             srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
             srcLoc.SubresourceIndex = srcMip;
 
-            uint32_t mipW = std::max(1u, srcTexture.GetWidth() >> srcMip);
-            uint32_t mipH = std::max(1u, srcTexture.GetHeight() >> srcMip);
-            D3D12_BOX box{ 0, 0, 0, mipW, mipH, 1 };
-
-            m_cmdList->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, &box);
+            // Pass nullptr for pSrcBox to copy the entire mip subresource cleanly (including BC-compressed 2x2 and 1x1 mips,
+            // where an explicit non-multiple-of-4 D3D12_BOX fails D3D12 validation).
+            m_cmdList->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
         }
     }
 
@@ -682,19 +688,40 @@ namespace NRI
     void CommandBufferD3D12::writeCompactedSizes(std::span<AccelerationStructure* const> structures, QueryPool& pool, uint32_t firstQuery)
     {
         auto* qp = dynamic_cast<QueryPoolD3D12*>(&pool);
-        if (qp && qp->getReadbackBuffer())
-        {
-            D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC postbuildDesc{};
-            postbuildDesc.DestBuffer = qp->getReadbackBuffer()->GetGPUVirtualAddress() + firstQuery * sizeof(uint64_t);
-            postbuildDesc.InfoType = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_COMPACTED_SIZE;
+        if (!qp || !qp->getReadbackBuffer() || !qp->getUavBuffer() || structures.empty())
+            return;
 
-            std::vector<D3D12_GPU_VIRTUAL_ADDRESS> addresses;
-            addresses.reserve(structures.size());
-            for (auto* s : structures)
-                addresses.push_back(s->getDeviceAddress());
+        const uint64_t byteOffset = static_cast<uint64_t>(firstQuery) * sizeof(uint64_t);
+        const uint64_t byteSize = static_cast<uint64_t>(structures.size()) * sizeof(uint64_t);
 
-            m_cmdList->EmitRaytracingAccelerationStructurePostbuildInfo(&postbuildDesc, static_cast<UINT>(addresses.size()), addresses.data());
-        }
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC postbuildDesc{};
+        postbuildDesc.DestBuffer = qp->getUavBuffer()->GetGPUVirtualAddress() + byteOffset;
+        postbuildDesc.InfoType = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_COMPACTED_SIZE;
+
+        std::vector<D3D12_GPU_VIRTUAL_ADDRESS> addresses;
+        addresses.reserve(structures.size());
+        for (auto* s : structures)
+            addresses.push_back(s->getDeviceAddress());
+
+        m_cmdList->EmitRaytracingAccelerationStructurePostbuildInfo(&postbuildDesc, static_cast<UINT>(addresses.size()), addresses.data());
+
+        D3D12_RESOURCE_BARRIER toCopy{};
+        toCopy.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        toCopy.Transition.pResource = qp->getUavBuffer();
+        toCopy.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        toCopy.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        toCopy.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        m_cmdList->ResourceBarrier(1, &toCopy);
+
+        m_cmdList->CopyBufferRegion(qp->getReadbackBuffer(), byteOffset, qp->getUavBuffer(), byteOffset, byteSize);
+
+        D3D12_RESOURCE_BARRIER toUav{};
+        toUav.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        toUav.Transition.pResource = qp->getUavBuffer();
+        toUav.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        toUav.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        toUav.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        m_cmdList->ResourceBarrier(1, &toUav);
     }
 
     void CommandBufferD3D12::copyAccelerationStructure(AccelerationStructure& src, AccelerationStructure& dst, bool compact)
@@ -722,111 +749,326 @@ namespace NRI
 
     void CommandBufferD3D12::initializeTarget(TextureD3D12& texture)
     {
+        if (m_deferredStateTracking)
+        {
+            if (m_discardSeen.insert(&texture).second)
+                m_pendingDiscardTextures.push_back(&texture);
+            return;
+        }
         if (!texture.needsInitialDiscard())
             return;
         // DiscardResource wants a render target in RENDER_TARGET and a depth target in DEPTH_WRITE.
         const D3D12_RESOURCE_STATES state = texture.getUsage() == TextureUsage::DepthStencilAttachment ? D3D12_RESOURCE_STATE_DEPTH_WRITE
                                                                                                        : D3D12_RESOURCE_STATE_RENDER_TARGET;
-        if (texture.getCurrentState() != state)
-        {
-            D3D12_RESOURCE_BARRIER barrier{};
-            barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-            barrier.Transition.pResource = texture.getNativeResource();
-            barrier.Transition.StateBefore = texture.getCurrentState();
-            barrier.Transition.StateAfter = state;
-            barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-            m_cmdList->ResourceBarrier(1, &barrier);
-            texture.setCurrentState(state);
-        }
+        transitionTextureState(texture, state);
         m_cmdList->DiscardResource(texture.getNativeResource(), nullptr);
         texture.markContentsInitialized();
     }
 
-    void CommandBufferD3D12::transitionBufferState(BufferD3D12& buffer, D3D12_RESOURCE_STATES afterState)
+    D3D12_RESOURCE_STATES CommandBufferD3D12::getTrackedTextureState(const TextureD3D12& texture) const
     {
-        if (buffer.isUploadHeap() || buffer.isReadbackHeap() || buffer.getCurrentState() == afterState)
-            return;
+        if (m_deferredStateTracking)
+        {
+            if (auto it = m_localTexStates.find(const_cast<TextureD3D12*>(&texture)); it != m_localTexStates.end())
+                return it->second;
+        }
+        return texture.getCurrentState();
+    }
 
-        D3D12_RESOURCE_BARRIER barrier{};
-        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        barrier.Transition.pResource = buffer.getNativeBuffer();
-        barrier.Transition.StateBefore = buffer.getCurrentState();
-        barrier.Transition.StateAfter = afterState;
-        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        m_cmdList->ResourceBarrier(1, &barrier);
-        buffer.setCurrentState(afterState);
+    void CommandBufferD3D12::transitionTextureState(TextureD3D12& texture, D3D12_RESOURCE_STATES afterState, bool uavBarrierIfSame)
+    {
+        const bool isComputeList = (m_allocator.getCommandListType() == D3D12_COMMAND_LIST_TYPE_COMPUTE);
+        if (m_deferredStateTracking)
+        {
+            auto it = m_localTexStates.find(&texture);
+            if (it == m_localTexStates.end())
+            {
+                m_firstTexStates.emplace_back(&texture, afterState);
+                m_localTexStates.emplace(&texture, afterState);
+                if (uavBarrierIfSame && afterState == D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+                {
+                    D3D12_RESOURCE_BARRIER b{};
+                    b.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+                    b.UAV.pResource = texture.getNativeResource();
+                    m_cmdList->ResourceBarrier(1, &b);
+                }
+                return;
+            }
+            const D3D12_RESOURCE_STATES beforeState = it->second;
+            if (beforeState != afterState && !(isComputeList && isReadOnlySubset(beforeState, afterState)))
+            {
+                D3D12_RESOURCE_BARRIER b{};
+                b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                b.Transition.pResource = texture.getNativeResource();
+                b.Transition.StateBefore = beforeState;
+                b.Transition.StateAfter = afterState;
+                b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                m_cmdList->ResourceBarrier(1, &b);
+                it->second = afterState;
+            }
+            else if (uavBarrierIfSame && beforeState == D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+            {
+                D3D12_RESOURCE_BARRIER b{};
+                b.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+                b.UAV.pResource = texture.getNativeResource();
+                m_cmdList->ResourceBarrier(1, &b);
+            }
+            return;
+        }
+
+        const D3D12_RESOURCE_STATES beforeState = texture.getCurrentState();
+        if (beforeState != afterState && !(isComputeList && isReadOnlySubset(beforeState, afterState)))
+        {
+            D3D12_RESOURCE_BARRIER b{};
+            b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            b.Transition.pResource = texture.getNativeResource();
+            b.Transition.StateBefore = beforeState;
+            b.Transition.StateAfter = afterState;
+            b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            m_cmdList->ResourceBarrier(1, &b);
+            texture.setCurrentState(afterState);
+        }
+        else if (uavBarrierIfSame && beforeState == D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+        {
+            D3D12_RESOURCE_BARRIER b{};
+            b.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+            b.UAV.pResource = texture.getNativeResource();
+            m_cmdList->ResourceBarrier(1, &b);
+        }
+    }
+
+    void CommandBufferD3D12::transitionBufferState(BufferD3D12& buffer, D3D12_RESOURCE_STATES afterState, bool uavBarrierIfSame)
+    {
+        if (buffer.isUploadHeap() || buffer.isReadbackHeap())
+            return;
+        // On a D3D12 COPY command list, buffers implicitly promote from COMMON and decay back to COMMON on execution end.
+        if (m_allocator.getCommandListType() == D3D12_COMMAND_LIST_TYPE_COPY)
+        {
+            buffer.setCurrentState(D3D12_RESOURCE_STATE_COMMON);
+            return;
+        }
+        if (buffer.getInitialState() == D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE)
+        {
+            if (uavBarrierIfSame)
+            {
+                D3D12_RESOURCE_BARRIER b{};
+                b.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+                b.UAV.pResource = buffer.getNativeBuffer();
+                m_cmdList->ResourceBarrier(1, &b);
+            }
+            return;
+        }
+
+        if (m_deferredStateTracking)
+        {
+            auto it = m_localBufStates.find(&buffer);
+            if (it == m_localBufStates.end())
+            {
+                if (afterState != D3D12_RESOURCE_STATE_COMMON)
+                {
+                    m_firstBufStates.emplace_back(&buffer, afterState);
+                    m_localBufStates.emplace(&buffer, afterState);
+                }
+                if (uavBarrierIfSame && afterState == D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+                {
+                    D3D12_RESOURCE_BARRIER b{};
+                    b.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+                    b.UAV.pResource = buffer.getNativeBuffer();
+                    m_cmdList->ResourceBarrier(1, &b);
+                }
+                return;
+            }
+            const D3D12_RESOURCE_STATES beforeState = it->second;
+            if (beforeState != D3D12_RESOURCE_STATE_COMMON && afterState != D3D12_RESOURCE_STATE_COMMON &&
+                (beforeState & ~D3D12_RESOURCE_STATE_GENERIC_READ) == 0 &&
+                (afterState & ~D3D12_RESOURCE_STATE_GENERIC_READ) == 0)
+            {
+                afterState |= beforeState;
+            }
+            if (beforeState != afterState && afterState != D3D12_RESOURCE_STATE_COMMON)
+            {
+                D3D12_RESOURCE_BARRIER b{};
+                b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                b.Transition.pResource = buffer.getNativeBuffer();
+                b.Transition.StateBefore = beforeState;
+                b.Transition.StateAfter = afterState;
+                b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                m_cmdList->ResourceBarrier(1, &b);
+                it->second = afterState;
+            }
+            else if (uavBarrierIfSame)
+            {
+                D3D12_RESOURCE_BARRIER b{};
+                b.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+                b.UAV.pResource = buffer.getNativeBuffer();
+                m_cmdList->ResourceBarrier(1, &b);
+            }
+            return;
+        }
+
+        const D3D12_RESOURCE_STATES beforeState = buffer.getCurrentState();
+        if (beforeState != D3D12_RESOURCE_STATE_COMMON && afterState != D3D12_RESOURCE_STATE_COMMON &&
+            (beforeState & ~D3D12_RESOURCE_STATE_GENERIC_READ) == 0 &&
+            (afterState & ~D3D12_RESOURCE_STATE_GENERIC_READ) == 0)
+        {
+            afterState |= beforeState;
+        }
+        if (beforeState != afterState && afterState != D3D12_RESOURCE_STATE_COMMON)
+        {
+            D3D12_RESOURCE_BARRIER b{};
+            b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            b.Transition.pResource = buffer.getNativeBuffer();
+            b.Transition.StateBefore = beforeState;
+            b.Transition.StateAfter = afterState;
+            b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            m_cmdList->ResourceBarrier(1, &b);
+            buffer.setCurrentState(afterState);
+        }
+        else if (uavBarrierIfSame)
+        {
+            D3D12_RESOURCE_BARRIER b{};
+            b.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+            b.UAV.pResource = buffer.getNativeBuffer();
+            m_cmdList->ResourceBarrier(1, &b);
+        }
     }
 
     void CommandBufferD3D12::resourceBarriers(std::span<const TextureBarrierDesc> textures, std::span<const BufferBarrierDesc> buffers)
     {
-        std::vector<D3D12_RESOURCE_BARRIER> barriers;
+        const bool isComputeList = (m_allocator.getCommandListType() == D3D12_COMMAND_LIST_TYPE_COMPUTE);
         for (const auto& tb : textures)
         {
             if (!tb.texture)
                 continue;
             auto* texD3D12 = static_cast<TextureD3D12*>(tb.texture);
-            const D3D12_RESOURCE_STATES beforeState = texD3D12->getCurrentState();
-            const D3D12_RESOURCE_STATES afterState = TranslateResourceStateToD3D12(tb.after);
-
-            if (beforeState != afterState)
-            {
-                D3D12_RESOURCE_BARRIER b{};
-                b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                b.Transition.pResource = texD3D12->getNativeResource();
-                b.Transition.StateBefore = beforeState;
-                b.Transition.StateAfter = afterState;
-                b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-                barriers.push_back(b);
-                texD3D12->setCurrentState(afterState);
-            }
-            else if (tb.after.access & AccessBits::ShaderWrite)
-            {
-                D3D12_RESOURCE_BARRIER b{};
-                b.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-                b.UAV.pResource = texD3D12->getNativeResource();
-                barriers.push_back(b);
-            }
+            const D3D12_RESOURCE_STATES afterState = TranslateResourceStateToD3D12(tb.after, isComputeList);
+            transitionTextureState(*texD3D12, afterState, (tb.after.access & AccessBits::ShaderWrite) != 0);
         }
         for (const auto& bb : buffers)
         {
             if (!bb.buffer)
                 continue;
             auto* bufD3D12 = static_cast<BufferD3D12*>(bb.buffer);
-            const D3D12_RESOURCE_STATES afterState = TranslateResourceStateToD3D12(bb.after);
+            const D3D12_RESOURCE_STATES afterState = TranslateResourceStateToD3D12(bb.after, isComputeList);
             constexpr uint32_t writes = AccessBits::ShaderWrite | AccessBits::AccelerationStructureWrite;
-            // An acceleration structure's own buffer stays in RAYTRACING_ACCELERATION_STRUCTURE for its whole life (D3D12 forbids
-            // transitioning it): only UAV barriers order the builds and reads.
-            const bool fixedState = bufD3D12->getCurrentState() == D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE;
-            if (!fixedState && !bufD3D12->isUploadHeap() && bufD3D12->getCurrentState() != afterState && afterState != D3D12_RESOURCE_STATE_COMMON)
+            const bool fixedState = bufD3D12->getInitialState() == D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE;
+            const bool needsUav = ((bb.before.access & writes) != 0) || ((bb.after.access & writes) != 0) ||
+                                  (fixedState && (((bb.before.access | bb.after.access) & AccessBits::AccelerationStructureRead) != 0));
+            transitionBufferState(*bufD3D12, afterState, needsUav);
+        }
+    }
+
+    bool CommandBufferD3D12::resolveDeferredBarriers(CommandBuffer& fixupCmdBase)
+    {
+        auto& fixup = static_cast<CommandBufferD3D12&>(fixupCmdBase);
+        bool recorded = false;
+        auto ensureOpen = [&]()
+        {
+            if (!recorded)
             {
-                D3D12_RESOURCE_BARRIER b{};
-                b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                b.Transition.pResource = bufD3D12->getNativeBuffer();
-                b.Transition.StateBefore = bufD3D12->getCurrentState();
-                b.Transition.StateAfter = afterState;
-                b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-                barriers.push_back(b);
-                bufD3D12->setCurrentState(afterState);
+                fixup.m_allocator.reset();
+                fixup.setDeferredStateTracking(false);
+                fixup.begin(0, true);
+                recorded = true;
             }
-            else if ((bb.before.access & writes) || (bb.after.access & writes) ||
-                     (fixedState && ((bb.before.access | bb.after.access) & AccessBits::AccelerationStructureRead)))
+        };
+
+        // 1. Placed render/depth targets that still need initial DiscardResource before first use.
+        for (TextureD3D12* tex : m_pendingDiscardTextures)
+        {
+            if (tex && tex->needsInitialDiscard())
             {
-                D3D12_RESOURCE_BARRIER b{};
-                b.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-                b.UAV.pResource = bufD3D12->getNativeBuffer();
-                barriers.push_back(b);
+                ensureOpen();
+                fixup.initializeTarget(*tex);
             }
         }
 
-        if (!barriers.empty())
-            m_cmdList->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
+        // 2. Resolve first-use texture transitions and commit each texture's final state from this chunk.
+        const bool isComputeFixup = (fixup.m_allocator.getCommandListType() == D3D12_COMMAND_LIST_TYPE_COMPUTE);
+        for (const auto& [tex, firstState] : m_firstTexStates)
+        {
+            const D3D12_RESOURCE_STATES globalState = tex->getCurrentState();
+            const D3D12_RESOURCE_STATES finalState = m_localTexStates[tex];
+            if (globalState != firstState && !(isComputeFixup && finalState == firstState && isReadOnlySubset(globalState, firstState)))
+            {
+                ensureOpen();
+                D3D12_RESOURCE_BARRIER b{};
+                b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                b.Transition.pResource = tex->getNativeResource();
+                b.Transition.StateBefore = globalState;
+                b.Transition.StateAfter = firstState;
+                b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                fixup.m_cmdList->ResourceBarrier(1, &b);
+                tex->setCurrentState(finalState);
+            }
+            else if (finalState != firstState)
+            {
+                tex->setCurrentState(finalState);
+            }
+        }
+
+        // 3. Resolve first-use buffer transitions and commit each buffer's final state from this chunk.
+        for (const auto& [buf, firstState] : m_firstBufStates)
+        {
+            if (buf->isUploadHeap() || buf->isReadbackHeap() ||
+                buf->getInitialState() == D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE)
+                continue;
+            const D3D12_RESOURCE_STATES globalState = buf->getCurrentState();
+            const D3D12_RESOURCE_STATES finalState = m_localBufStates[buf];
+            const bool canSkipReadSubset = (finalState == firstState) &&
+                                           globalState != D3D12_RESOURCE_STATE_COMMON &&
+                                           firstState != D3D12_RESOURCE_STATE_COMMON &&
+                                           (globalState & ~D3D12_RESOURCE_STATE_GENERIC_READ) == 0 &&
+                                           (firstState & ~D3D12_RESOURCE_STATE_GENERIC_READ) == 0 &&
+                                           (globalState & firstState) == firstState;
+            if (globalState != firstState && firstState != D3D12_RESOURCE_STATE_COMMON && !canSkipReadSubset)
+            {
+                ensureOpen();
+                D3D12_RESOURCE_BARRIER b{};
+                b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                b.Transition.pResource = buf->getNativeBuffer();
+                b.Transition.StateBefore = globalState;
+                b.Transition.StateAfter = firstState;
+                b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                fixup.m_cmdList->ResourceBarrier(1, &b);
+                buf->setCurrentState(finalState);
+            }
+            else if (finalState != firstState)
+            {
+                buf->setCurrentState(finalState);
+            }
+        }
+
+        for (TextureD3D12* tex : m_markInitializedTextures)
+        {
+            if (tex)
+                tex->markContentsInitialized();
+        }
+
+        m_deferredStateTracking = false;
+        if (recorded)
+            fixup.end(0);
+        return recorded;
     }
 
     void CommandBufferD3D12::beginDebugLabel(const char* label)
     {
+        if (m_cmdList && label && label[0] != '\0')
+        {
+            if (!m_debugPassList.empty())
+                m_debugPassList += " | ";
+            m_debugPassList += label;
+            // Metadata = 0 (PIX_EVENT_UNICODE_VERSION): required by D3D12 DRED BreadcrumbContexts.
+            std::wstring wlabel;
+            for (const char* p = label; *p; ++p)
+                wlabel.push_back(static_cast<wchar_t>(static_cast<unsigned char>(*p)));
+            m_cmdList->BeginEvent(0, wlabel.c_str(), static_cast<UINT>((wlabel.size() + 1) * sizeof(wchar_t)));
+        }
     }
 
     void CommandBufferD3D12::endDebugLabel()
     {
+        if (m_cmdList)
+            m_cmdList->EndEvent();
     }
 }

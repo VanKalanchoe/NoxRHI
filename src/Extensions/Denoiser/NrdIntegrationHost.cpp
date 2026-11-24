@@ -1,4 +1,5 @@
 #include "NrdIntegrationHost.h"
+#include "../../Core/Log.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -14,6 +15,11 @@
             #define NOMINMAX
         #endif
         #include <windows.h>
+        #if defined(NRI_ENABLE_D3D12)
+            #include <d3d12.h>
+            #include <d3d12sdklayers.h>
+            #include <wrl/client.h>
+        #endif
     #endif
 
     // Resolve NVIDIA NRI symbols dynamically from NRI.dll so NoxRHI's own C exports (e.g. nriDestroyDevice) never collide.
@@ -98,6 +104,15 @@
 #endif
     }
 
+    #ifndef NRD_INTEGRATION_ASSERT
+        #define NRD_INTEGRATION_ASSERT(expr, msg)                                                   \
+            do                                                                                      \
+            {                                                                                       \
+                if (!(expr))                                                                        \
+                    NRI_LOG_ERROR("[NRD] Assert failed: {} ({})", (msg), #expr);                    \
+            } while (false)
+    #endif
+
     #include <NRDIntegration.hpp>
 #endif
 
@@ -106,6 +121,24 @@ namespace NRI
 #if defined(NRI_ENABLE_NRD)
     namespace
     {
+        void NRI_CALL onNvNriMessage(::nri::Message messageType, const char* file, uint32_t line, const char* message, void*)
+        {
+            const uint8_t type = static_cast<uint8_t>(messageType);
+            const char* safeFile = file ? file : "<unknown>";
+            const char* safeMsg = message ? message : "";
+            if (type >= 2)
+                NRI_LOG_ERROR("[NRD/NRI] {}:{} - {}", safeFile, line, safeMsg);
+            else if (type == 1)
+                NRI_LOG_WARN("[NRD/NRI] {}:{} - {}", safeFile, line, safeMsg);
+            else
+                NRI_LOG_INFO("[NRD/NRI] {}:{} - {}", safeFile, line, safeMsg);
+        }
+
+        void NRI_CALL onNvNriAbort(void*)
+        {
+            NRI_LOG_ERROR("[NRD/NRI] AbortExecution triggered (suppressed; returning error to caller).");
+        }
+
         ::nrd::Denoiser toNrdDenoiser(uint32_t method)
         {
             switch (method)
@@ -254,6 +287,8 @@ namespace NRI
         vkDesc.queueFamilies = queueFamilies;
         vkDesc.queueFamilyNum = queueFamilyCount;
         vkDesc.minorVersion = 4;
+        vkDesc.callbackInterface.MessageCallback = &onNvNriMessage;
+        vkDesc.callbackInterface.AbortExecution = &onNvNriAbort;
 
         const ::nrd::Result res = m_impl->integration.RecreateVK(integrationDesc, instanceDesc, vkDesc);
         outErrorCode = static_cast<uint32_t>(res);
@@ -324,6 +359,15 @@ namespace NRI
         d3dDesc.queueFamilyNum = queueFamilyCount;
         d3dDesc.disableD3D12EnhancedBarriers = true;
         d3dDesc.disableNVAPIInitialization = true;
+        d3dDesc.callbackInterface.MessageCallback = &onNvNriMessage;
+        d3dDesc.callbackInterface.AbortExecution = &onNvNriAbort;
+
+        if (d3dDesc.d3d12Device)
+        {
+            const HRESULT removedReason = d3dDesc.d3d12Device->GetDeviceRemovedReason();
+            if (FAILED(removedReason))
+                NRI_LOG_ERROR("[NRD] D3D12 device already removed before RecreateD3D12: 0x{:08X}", static_cast<uint32_t>(removedReason));
+        }
 
         const ::nrd::Result res = m_impl->integration.RecreateD3D12(integrationDesc, instanceDesc, d3dDesc);
         outErrorCode = static_cast<uint32_t>(res);
@@ -544,7 +588,7 @@ namespace NRI
             {
                 res.state.access = ::nri::AccessBits::SHADER_RESOURCE;
                 res.state.layout = ::nri::Layout::SHADER_RESOURCE;
-                res.state.stages = ::nri::StageBits::COMPUTE_SHADER | ::nri::StageBits::FRAGMENT_SHADER;
+                res.state.stages = ::nri::StageBits::COMPUTE_SHADER;
             }
             snapshot.SetResource(slot, res);
         };

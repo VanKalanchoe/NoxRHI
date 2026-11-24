@@ -255,19 +255,9 @@ namespace NRI
                 auto* texD3D12 = static_cast<TextureD3D12*>(tex);
                 const D3D12_RESOURCE_STATES targetState = isOutput
                     ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS
-                    : (D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+                    : D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
 
-                if (texD3D12->getCurrentState() != targetState)
-                {
-                    D3D12_RESOURCE_BARRIER b{};
-                    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                    b.Transition.pResource = texD3D12->getNativeResource();
-                    b.Transition.StateBefore = texD3D12->getCurrentState();
-                    b.Transition.StateAfter = targetState;
-                    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-                    list->ResourceBarrier(1, &b);
-                    texD3D12->setCurrentState(targetState);
-                }
+                cmdD3D12.transitionTextureState(*texD3D12, targetState);
 
                 dst.d3d12Resource = texD3D12->getNativeResource();
                 dst.format = static_cast<uint32_t>(texD3D12->getDxgiFormat());

@@ -263,4 +263,8 @@ NRI_API void NRI_CALL nriCmdResourceBarriers(NriCommandBuffer cmd,
 NRI_API void NRI_CALL nriCmdBeginDebugLabel(NriCommandBuffer cmd, const char* label);
 NRI_API void NRI_CALL nriCmdEndDebugLabel(NriCommandBuffer cmd);
 
+// Parallel command buffer recording support (D3D12 deferred state tracking; no-op on Vulkan).
+NRI_API void NRI_CALL nriCmdSetDeferredStateTracking(NriCommandBuffer cmd, bool enable);
+NRI_API bool NRI_CALL nriCmdResolveDeferredBarriers(NriCommandBuffer cmd, NriCommandBuffer fixupCmd);
+
 NRI_EXTERN_C_END

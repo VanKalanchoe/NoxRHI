@@ -370,6 +370,8 @@ namespace nri
         {
             recorder.CmdBuffer.reset();
             recorder.Allocator.reset();
+            recorder.FixupCmdBuffer.reset();
+            recorder.FixupAllocator.reset();
         }
     }
 
@@ -626,6 +628,10 @@ namespace nri
         pass.TextureBarrierCount = 0;
         pass.FirstBufferBarrier = 0;
         pass.BufferBarrierCount = 0;
+        pass.FirstPostTextureBarrier = 0;
+        pass.PostTextureBarrierCount = 0;
+        pass.FirstPostBufferBarrier = 0;
+        pass.PostBufferBarrierCount = 0;
 
         m_Events.push_back({ EventType::Pass, m_PassCount });
         return m_PassCount++;
@@ -902,6 +908,62 @@ namespace nri
             if (resource && accessed[slot])
                 m_CarriedStates[resource] = CarriedState{ lastWrite[slot], readsSinceWrite[slot], { visible[0][slot], visible[1][slot] }, written[slot] };
         }
+
+        // D3D12 COMPUTE command lists cannot transition resources out of graphics-only states (RENDER_TARGET, DEPTH_WRITE,
+        // PIXEL_SHADER_RESOURCE). Emit pre-fork Graphics release transitions on each AsyncBlock's Fork pass so every resource
+        // touched by the async compute block enters a compute-compatible state before the Graphics->Compute fork fence.
+        if (m_Device && m_Device->getAPI() == NRI_GRAPHICS_API_D3D12 && !m_AsyncBlocks.empty())
+        {
+            for (const AsyncBlock& block : m_AsyncBlocks)
+            {
+                std::vector<uint8_t> blockUse(textureCount + m_Buffers.size(), 0);
+                for (uint32_t position = block.First; position < block.End; ++position)
+                {
+                    for (const ResourceAccess& access : m_Passes[m_ExecutedScratch[position]].Accesses)
+                    {
+                        const uint32_t key = access.IsTexture ? access.Resource : static_cast<uint32_t>(textureCount) + access.Resource;
+                        blockUse[key] |= access.IsWrite ? 2u : 1u;
+                    }
+                }
+                std::vector<uint8_t> concurrentGfxRead(textureCount + m_Buffers.size(), 0);
+                const uint32_t joinPos = block.Join != RGInvalidIndex ? block.Join : static_cast<uint32_t>(m_ExecutedScratch.size());
+                for (uint32_t position = block.Fork + 1; position < joinPos; ++position)
+                {
+                    const Pass& p = m_Passes[m_ExecutedScratch[position]];
+                    if (p.Queue != NRI_QUEUE_GRAPHICS)
+                        continue;
+                    for (const ResourceAccess& access : p.Accesses)
+                    {
+                        const uint32_t key = access.IsTexture ? access.Resource : static_cast<uint32_t>(textureCount) + access.Resource;
+                        if (blockUse[key] == 1u && !access.IsWrite && (access.State.stages & StageBits::Fragment) != 0)
+                            concurrentGfxRead[key] = 1u;
+                    }
+                }
+                Pass& forkPass = m_Passes[m_ExecutedScratch[block.Fork]];
+                const uint32_t texStart = static_cast<uint32_t>(m_TextureBarriers.size());
+                const uint32_t bufStart = static_cast<uint32_t>(m_BufferBarriers.size());
+                // Append onto any existing post-barriers if multiple blocks share the same Fork pass.
+                if (forkPass.PostTextureBarrierCount == 0)
+                    forkPass.FirstPostTextureBarrier = texStart;
+                if (forkPass.PostBufferBarrierCount == 0)
+                    forkPass.FirstPostBufferBarrier = bufStart;
+                for (size_t key = 0; key < blockUse.size(); ++key)
+                {
+                    if (blockUse[key] == 0)
+                        continue;
+                    const bool writtenByAsync = (blockUse[key] & 2u) != 0;
+                    const ResourceState target = writtenByAsync
+                        ? ResourceState{ AccessBits::ShaderWrite, StageBits::Compute }
+                        : ResourceState{ AccessBits::ShaderRead, concurrentGfxRead[key] ? (StageBits::Fragment | StageBits::Compute) : StageBits::Compute };
+                    if (key < textureCount)
+                        m_TextureBarriers.push_back({ m_Textures[key].Texture, {}, target });
+                    else
+                        m_BufferBarriers.push_back({ m_Buffers[key - textureCount].Buffer, {}, target });
+                }
+                forkPass.PostTextureBarrierCount = static_cast<uint32_t>(m_TextureBarriers.size()) - forkPass.FirstPostTextureBarrier;
+                forkPass.PostBufferBarrierCount = static_cast<uint32_t>(m_BufferBarriers.size()) - forkPass.FirstPostBufferBarrier;
+            }
+        }
     }
 
     void RenderGraph::PlanQueues()
@@ -940,6 +1002,7 @@ namespace nri
         };
         std::vector<uint8_t>& blockAccess = m_BlockAccessScratch;
 
+        const bool isD3D12 = m_Device && m_Device->getAPI() == NRI_GRAPHICS_API_D3D12;
         for (bool replan = true; replan;)
         {
             replan = false;
@@ -959,7 +1022,13 @@ namespace nri
                 for (uint32_t position = first; position < end; ++position)
                 {
                     for (const ResourceAccess& access : pass(position).Accesses)
-                        blockAccess[resourceKey(access)] |= access.IsWrite ? 2 : 1;
+                    {
+                        // D3D12's debug layer treats RAYTRACING_ACCELERATION_STRUCTURE as a write-capable state across queues,
+                        // so concurrent TLAS reads on DIRECT and COMPUTE queues must be serialized via the fork/join fence.
+                        const bool asConflict = isD3D12 && !access.IsTexture &&
+                                                ((access.State.access & AccessBits::AccelerationStructureRead) != 0);
+                        blockAccess[resourceKey(access)] |= (access.IsWrite || asConflict) ? 2 : 1;
+                    }
                 }
                 auto conflicts = [&](const Pass& graphics)
                 {
@@ -1104,12 +1173,17 @@ namespace nri
         if (m_ProfilerHooks.BeginGpuFrame)
             m_ProfilerHooks.BeginGpuFrame(frameSlot, m_ProfilerHooks.UserData);
 
-        if (chunkCount == 1)
+        const bool parallel = chunkCount > 1;
+        if (!parallel)
         {
+            m_Recorders[frameSlot].CmdBuffer.setDeferredStateTracking(false);
             RecordChunk(0);
         }
         else
         {
+            for (uint32_t chunkIndex = 0; chunkIndex < chunkCount; ++chunkIndex)
+                m_Recorders[static_cast<size_t>(chunkIndex) * m_FramesInFlight + frameSlot].CmdBuffer.setDeferredStateTracking(true);
+
             RGTaskDispatcher* dispatcher = m_TaskDispatcher ? m_TaskDispatcher : &m_DefaultDispatcher;
             dispatcher->RunTasks("Record Command Chunk", std::span<const uint32_t>(m_ChunkExclusiveMasks.data(), chunkCount),
                                  [this](uint32_t chunkIndex) { RecordChunk(chunkIndex); });
@@ -1130,16 +1204,36 @@ namespace nri
         }
 
         m_SubmitList.clear();
-        for (uint32_t chunkIndex = 0; chunkIndex < chunkCount; ++chunkIndex)
-            m_SubmitList.push_back(m_Recorders[static_cast<size_t>(chunkIndex) * m_FramesInFlight + frameSlot].CmdBuffer.handle());
-
         m_Submissions.clear();
         if (m_Units.empty())
         {
+            for (uint32_t chunkIndex = 0; chunkIndex < chunkCount; ++chunkIndex)
+            {
+                CommandRecorder& recorder = m_Recorders[static_cast<size_t>(chunkIndex) * m_FramesInFlight + frameSlot];
+                if (parallel && recorder.FixupCmdBuffer && recorder.CmdBuffer.resolveDeferredBarriers(recorder.FixupCmdBuffer))
+                    m_SubmitList.push_back(recorder.FixupCmdBuffer.handle());
+                m_SubmitList.push_back(recorder.CmdBuffer.handle());
+            }
             m_Submissions.push_back({ NRI_QUEUE_GRAPHICS, std::span<const NriCommandBuffer>(m_SubmitList), {}, {} });
         }
         else
         {
+            std::vector<std::pair<size_t, size_t>> unitRanges;
+            unitRanges.reserve(m_Units.size());
+            for (const SubmissionUnit& unit : m_Units)
+            {
+                const size_t first = m_SubmitList.size();
+                for (uint32_t c = 0; c < unit.ChunkCount; ++c)
+                {
+                    const uint32_t chunkIndex = unit.FirstChunk + c;
+                    CommandRecorder& recorder = m_Recorders[static_cast<size_t>(chunkIndex) * m_FramesInFlight + frameSlot];
+                    if (parallel && recorder.FixupCmdBuffer && recorder.CmdBuffer.resolveDeferredBarriers(recorder.FixupCmdBuffer))
+                        m_SubmitList.push_back(recorder.FixupCmdBuffer.handle());
+                    m_SubmitList.push_back(recorder.CmdBuffer.handle());
+                }
+                unitRanges.emplace_back(first, m_SubmitList.size() - first);
+            }
+
             m_SubmissionWaits.resize(m_Units.size());
             m_SubmissionSignals.resize(m_Units.size());
             std::vector<uint64_t> forkValues(m_AsyncBlocks.size(), 0);
@@ -1169,8 +1263,9 @@ namespace nri
                         signals.push_back({ m_GraphicsTimeline.handle(), value });
                     }
                 }
+                const auto [submitFirst, submitCount] = unitRanges[unitIndex];
                 m_Submissions.push_back({ unit.Queue,
-                                          std::span<const NriCommandBuffer>(m_SubmitList.data() + unit.FirstChunk, unit.ChunkCount),
+                                          std::span<const NriCommandBuffer>(m_SubmitList.data() + submitFirst, submitCount),
                                           std::span<const TimelinePoint>(waits),
                                           std::span<const TimelinePoint>(signals) });
             }
@@ -1445,6 +1540,13 @@ namespace nri
                 recorder.CmdBuffer.reset();
                 recorder.Allocator = m_Device->createCommandAllocator(NRI_COMMAND_BUFFER_RESET_WITH_ALLOCATOR, m_Chunks[chunkIndex].Queue);
                 recorder.CmdBuffer = recorder.Allocator.allocateCommandBuffer(1);
+                recorder.FixupCmdBuffer.reset();
+                recorder.FixupAllocator.reset();
+                if (m_Device->getAPI() == NRI_GRAPHICS_API_D3D12)
+                {
+                    recorder.FixupAllocator = m_Device->createCommandAllocator(NRI_COMMAND_BUFFER_RESET_WITH_ALLOCATOR, m_Chunks[chunkIndex].Queue);
+                    recorder.FixupCmdBuffer = recorder.FixupAllocator.allocateCommandBuffer(1);
+                }
                 recorder.Queue = m_Chunks[chunkIndex].Queue;
             }
             if (m_ProfilerHooks.SetChunkContextAsyncCompute && m_ProfilerChunkContexts[chunkIndex])
@@ -1581,6 +1683,12 @@ namespace nri
 
         if (raster)
             cmd.endRendering();
+
+        if (pass.PostTextureBarrierCount > 0 || pass.PostBufferBarrierCount > 0)
+        {
+            cmd.resourceBarriers(std::span<const TextureBarrierDesc>(m_TextureBarriers.data() + pass.FirstPostTextureBarrier, pass.PostTextureBarrierCount),
+                                 std::span<const BufferBarrierDesc>(m_BufferBarriers.data() + pass.FirstPostBufferBarrier, pass.PostBufferBarrierCount));
+        }
 
         if (pass.Swapchain)
             cmd.transitionSwapchainLayout(pass.Swapchain, pass.SwapchainImage, NRI_TEXTURE_LAYOUT_COLOR_ATTACHMENT, NRI_TEXTURE_LAYOUT_PRESENT);
