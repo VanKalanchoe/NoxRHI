@@ -164,6 +164,7 @@ namespace NRI
         std::vector<::nrd::Identifier> clearedDenoisers;
         ::nrd::CommonSettings commonSettings{};
         uint32_t currentFrameIndex = 0xFFFFFFFFu;
+        uint32_t nrdFrameIndex = 0xFFFFFFFFu;
 #endif
         uint32_t width = 0;
         uint32_t height = 0;
@@ -245,6 +246,7 @@ namespace NRI
         m_impl->width = width;
         m_impl->height = height;
         m_impl->currentFrameIndex = 0xFFFFFFFFu;
+        m_impl->nrdFrameIndex = 0xFFFFFFFFu;
         m_impl->clearedDenoisers.clear();
 
         ::nrd::IntegrationCreationDesc integrationDesc{};
@@ -315,6 +317,7 @@ namespace NRI
         m_impl->width = width;
         m_impl->height = height;
         m_impl->currentFrameIndex = 0xFFFFFFFFu;
+        m_impl->nrdFrameIndex = 0xFFFFFFFFu;
         m_impl->clearedDenoisers.clear();
 
         ::nrd::IntegrationCreationDesc integrationDesc{};
@@ -396,6 +399,7 @@ namespace NRI
 
         m_impl->integration.NewFrame();
         m_impl->currentFrameIndex = settings.frameIndex;
+        m_impl->nrdFrameIndex = (m_impl->nrdFrameIndex == 0xFFFFFFFFu) ? 0u : (m_impl->nrdFrameIndex + 1u);
 
         ::nrd::CommonSettings nrdCommon{};
         std::memcpy(nrdCommon.viewToClipMatrix, settings.proj, sizeof(float) * 16);
@@ -421,7 +425,7 @@ namespace NRI
         nrdCommon.rectSizePrev[1] = static_cast<uint16_t>(m_impl->height);
 
         nrdCommon.denoisingRange = settings.denoisingRange > 0.0f ? settings.denoisingRange : 5000.0f;
-        nrdCommon.frameIndex = settings.frameIndex;
+        nrdCommon.frameIndex = m_impl->nrdFrameIndex;
         nrdCommon.accumulationMode = settings.resetHistory
             ? ::nrd::AccumulationMode::RESTART
             : ::nrd::AccumulationMode::CONTINUE;

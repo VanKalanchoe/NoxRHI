@@ -840,7 +840,7 @@ namespace NRI
         NRI_LOG_INFO("Async compute queue: {}", hasAsyncComputeQueue() ? "compute-only family " + std::to_string(m_computeQueueIndex)
                                                                        : std::string("none (compute runs on the graphics queue)"));
 
-        VULKAN_HPP_DEFAULT_DISPATCHER.init(*m_instance, vkGetInstanceProcAddr, *m_device);
+        VULKAN_HPP_DEFAULT_DISPATCHER.init(*m_instance, vkGetInstanceProcAddr, *m_device, vkGetDeviceProcAddr);
     }
 
     void DeviceVK::initDeviceCapabilities()
