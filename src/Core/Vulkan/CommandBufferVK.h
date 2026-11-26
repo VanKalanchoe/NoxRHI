@@ -34,6 +34,7 @@ namespace NRI
         void setDepthBiasEnable(bool enable) override;
         void setDepthBias(float constantFactor, float clamp, float slopeFactor) override;
         void setScissorRect(int32_t x, int32_t y, uint32_t width, uint32_t height) override;
+        void clearColorRects(uint32_t colorAttachmentIndex, const ClearColor& color, const Rect2D* rects, uint32_t rectCount) override;
         void setDepthClampEnable(bool enable) override;
         void setLineWidth(float lineWidth) override;
         void setRasterizationSamples(uint32_t sampleCount) override;

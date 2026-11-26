@@ -143,6 +143,8 @@ namespace NRI
     {
         std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> rtvHandles;
         D3D12_CPU_DESCRIPTOR_HANDLE rtvStart = m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
+        for (bool& valid : m_boundRtvValid)
+            valid = false;
 
         for (size_t i = 0; i < desc.colorAttachments.size() && i < 8; ++i)
         {
@@ -168,6 +170,8 @@ namespace NRI
                     : D3D12_RTV_DIMENSION_TEXTURE2D;
                 m_deviceD3D12.getNativeDevice()->CreateRenderTargetView(tex->getNativeResource(), &rtvViewDesc, rtvHandle);
                 rtvHandles.push_back(rtvHandle);
+                m_boundRtv[i] = rtvHandle;
+                m_boundRtvValid[i] = true;
 
                 if (attach.loadOP == LoadOP::clear)
                 {
@@ -216,6 +220,8 @@ namespace NRI
     void CommandBufferD3D12::endRendering()
     {
         m_hasDepthAttachment = false;
+        for (bool& valid : m_boundRtvValid)
+            valid = false;
     }
 
     D3D12_COMMAND_LIST_TYPE CommandBufferD3D12::getCommandListType() const
@@ -303,6 +309,24 @@ namespace NRI
     {
         const D3D12_RECT rect{ x, y, x + static_cast<LONG>(width), y + static_cast<LONG>(height) };
         m_cmdList->RSSetScissorRects(1, &rect);
+    }
+
+    void CommandBufferD3D12::clearColorRects(uint32_t colorAttachmentIndex, const ClearColor& color, const Rect2D* rects, uint32_t rectCount)
+    {
+        if (colorAttachmentIndex >= 8 || !m_boundRtvValid[colorAttachmentIndex])
+            return; // (no such attachment in the rendering in progress)
+        std::vector<D3D12_RECT> clearRects;
+        clearRects.reserve(rectCount);
+        for (uint32_t i = 0; i < rectCount; ++i)
+        {
+            if (rects[i].width == 0 || rects[i].height == 0)
+                continue;
+            clearRects.push_back(D3D12_RECT{ rects[i].x, rects[i].y, rects[i].x + static_cast<LONG>(rects[i].width), rects[i].y + static_cast<LONG>(rects[i].height) });
+        }
+        if (clearRects.empty())
+            return;
+        const float clearColor[4] = { color.r, color.g, color.b, color.a };
+        m_cmdList->ClearRenderTargetView(m_boundRtv[colorAttachmentIndex], clearColor, static_cast<UINT>(clearRects.size()), clearRects.data());
     }
 
     void CommandBufferD3D12::setPrimitiveTopology(const PrimitiveTopology& topology)

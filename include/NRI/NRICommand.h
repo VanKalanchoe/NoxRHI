@@ -34,6 +34,15 @@ typedef struct NriClearColor
     float a;
 } NriClearColor;
 
+// A rectangle of a render target in pixels, from its top-left corner (nriCmdClearColorRects).
+typedef struct NriRect2D
+{
+    int32_t x;
+    int32_t y;
+    uint32_t width;
+    uint32_t height;
+} NriRect2D;
+
 typedef struct NriClearDepth
 {
     float depth;
@@ -206,6 +215,10 @@ NRI_API void NRI_CALL nriCmdSetScissor(NriCommandBuffer cmd, NriExtent2D extent)
 NRI_API void NRI_CALL nriCmdSetViewportWithCount(NriCommandBuffer cmd, const NriViewportBounds* bounds, float minDepth, float maxDepth);
 NRI_API void NRI_CALL nriCmdSetScissorWithCount(NriCommandBuffer cmd, const NriExtent2D* extent);
 NRI_API void NRI_CALL nriCmdSetScissorRect(NriCommandBuffer cmd, int32_t x, int32_t y, uint32_t width, uint32_t height);
+// Clears rectangles of a colour attachment of the rendering in progress (between nriCmdBeginRendering and nriCmdEndRendering) to
+// `color`, whatever the pipeline state: what a load op clear does, for part of the target (redrawing only what changed in it).
+// `colorAttachmentIndex` is the attachment's index in the NriRenderDesc. Vulkan: vkCmdClearAttachments; D3D12: ClearRenderTargetView.
+NRI_API void NRI_CALL nriCmdClearColorRects(NriCommandBuffer cmd, uint32_t colorAttachmentIndex, NriClearColor color, const NriRect2D* rects, uint32_t rectCount);
 NRI_API void NRI_CALL nriCmdSetVertexInput(NriCommandBuffer cmd);
 NRI_API void NRI_CALL nriCmdSetPrimitiveTopology(NriCommandBuffer cmd, NriPrimitiveTopology topology);
 NRI_API void NRI_CALL nriCmdSetPrimitiveRestartEnable(NriCommandBuffer cmd, bool enable);

@@ -341,6 +341,26 @@ namespace NRI
         m_commandBuffers[m_currentFrameIndex].setScissorWithCount(vk::Rect2D(vk::Offset2D(x, y), vk::Extent2D(width, height)));
     }
 
+    void CommandBufferVK::clearColorRects(uint32_t colorAttachmentIndex, const ClearColor& color, const Rect2D* rects, uint32_t rectCount)
+    {
+        const vk::ClearAttachment attachment{
+            .aspectMask = vk::ImageAspectFlagBits::eColor,
+            .colorAttachment = colorAttachmentIndex,
+            .clearValue = vk::ClearValue{ vk::ClearColorValue{ std::array<float, 4>{ color.r, color.g, color.b, color.a } } }
+        };
+        std::vector<vk::ClearRect> clearRects;
+        clearRects.reserve(rectCount);
+        for (uint32_t i = 0; i < rectCount; ++i)
+        {
+            if (rects[i].width == 0 || rects[i].height == 0)
+                continue; // (an empty rect is invalid usage in Vulkan)
+            clearRects.push_back(vk::ClearRect{ .rect = vk::Rect2D(vk::Offset2D(rects[i].x, rects[i].y), vk::Extent2D(rects[i].width, rects[i].height)),
+                                                .baseArrayLayer = 0, .layerCount = 1 });
+        }
+        if (!clearRects.empty())
+            m_commandBuffers[m_currentFrameIndex].clearAttachments(attachment, clearRects);
+    }
+
     void CommandBufferVK::setVertexInput()
     {
         m_commandBuffers[m_currentFrameIndex].setVertexInputEXT({}, {});

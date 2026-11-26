@@ -23,6 +23,7 @@ namespace nri
     using LoadOp = NriLoadOp;
     using StoreOp = NriStoreOp;
     using ClearColor = NriClearColor;
+    using Rect2D = NriRect2D;
     using ClearDepth = NriClearDepth;
     using PipelineBindPoint = NriPipelineBindPoint;
     using PrimitiveTopology = NriPrimitiveTopology;
@@ -596,6 +597,11 @@ namespace nri
         void setViewportWithCount(const ViewportBounds& bounds, float minDepth, float maxDepth) { nriCmdSetViewportWithCount(m_handle, &bounds, minDepth, maxDepth); }
         void setScissorWithCount(const Extent2D& extent) { nriCmdSetScissorWithCount(m_handle, &extent); }
         void setScissorRect(int32_t x, int32_t y, uint32_t width, uint32_t height) { nriCmdSetScissorRect(m_handle, x, y, width, height); }
+        // Rectangles of a colour attachment of the rendering in progress cleared to `color` (part of a target redrawn).
+        void clearColorRects(uint32_t colorAttachmentIndex, const ClearColor& color, std::span<const NriRect2D> rects)
+        {
+            nriCmdClearColorRects(m_handle, colorAttachmentIndex, color, rects.data(), static_cast<uint32_t>(rects.size()));
+        }
         void setVertexInput() { nriCmdSetVertexInput(m_handle); }
         void setPrimitiveTopology(PrimitiveTopology topology) { nriCmdSetPrimitiveTopology(m_handle, topology); }
         void setPrimitiveRestartEnable(bool enable) { nriCmdSetPrimitiveRestartEnable(m_handle, enable); }

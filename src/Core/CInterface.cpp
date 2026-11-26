@@ -738,6 +738,15 @@ void NRI_CALL nriCmdSetScissorRect(NriCommandBuffer cmd, int32_t x, int32_t y, u
     if (cmd && cmd->impl) cmd->impl->setScissorRect(x, y, width, height);
 }
 
+static_assert(sizeof(NriRect2D) == sizeof(NRI::Rect2D) && offsetof(NriRect2D, width) == offsetof(NRI::Rect2D, width),
+              "NriRect2D and NRI::Rect2D share a layout");
+
+void NRI_CALL nriCmdClearColorRects(NriCommandBuffer cmd, uint32_t colorAttachmentIndex, NriClearColor color, const NriRect2D* rects, uint32_t rectCount)
+{
+    if (cmd && cmd->impl && rects && rectCount > 0)
+        cmd->impl->clearColorRects(colorAttachmentIndex, { color.r, color.g, color.b, color.a }, reinterpret_cast<const NRI::Rect2D*>(rects), rectCount);
+}
+
 void NRI_CALL nriCmdSetVertexInput(NriCommandBuffer cmd)
 {
     if (cmd && cmd->impl) cmd->impl->setVertexInput();

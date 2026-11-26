@@ -20,6 +20,7 @@ namespace NRI
     enum class StoreOP{ store, dontCare, none };
     struct ClearColor{ float r, g, b, a; };
     struct ClearDepth{ float depth; uint32_t stencil; };
+    struct Rect2D{ int32_t x, y; uint32_t width, height; }; // (the layout of NriRect2D)
     
     struct RenderAttachDesc
     {
@@ -199,6 +200,8 @@ namespace NRI
         virtual void setScissorWithCount(const Extent2D& swapChainExtent) = 0;
         // A scissor rectangle at an offset (a tile of a shadow atlas).
         virtual void setScissorRect(int32_t x, int32_t y, uint32_t width, uint32_t height) = 0;
+        // Rectangles of a colour attachment of the rendering in progress cleared to `color` (nriCmdClearColorRects).
+        virtual void clearColorRects(uint32_t colorAttachmentIndex, const ClearColor& color, const Rect2D* rects, uint32_t rectCount) = 0;
         virtual void setVertexInput() = 0;
         virtual void setPrimitiveTopology(const PrimitiveTopology& topology) = 0;
         virtual void setPrimitiveRestartEnable(bool enable) = 0;

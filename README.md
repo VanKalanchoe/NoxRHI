@@ -302,6 +302,9 @@ last shader when it bound the same pipeline as before. Code that records its own
 - **Shaders:** each Vulkan shader gets the SPIR-V of its own entry point (porting note 10), as D3D12 does.
 - **External libraries:** NoxRHI's bindings come back after NRD / Streamline (above).
 - **Bugs that only crash Vulkan:** `--shader-checks` (below) reports the out-of-range index D3D12's bounds checks hide.
+- **Clearing part of a target:** `cmd.clearColorRects(attachmentIndex, color, rects)` (`nriCmdClearColorRects`) clears rectangles of a
+  colour attachment of the rendering in progress, whatever the pipeline state -- what a load-op clear does, for part of the target
+  (`vkCmdClearAttachments` / `ClearRenderTargetView` with rects). NoxUI's partial redraw of its UI cache uses it.
 
 ### Shader checks (`--shader-checks`): out-of-range indices reported instead of a lost device
 

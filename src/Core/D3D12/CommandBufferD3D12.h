@@ -36,6 +36,7 @@ namespace NRI
         void setViewportWithCount(const ViewportBounds& bounds, float minDepth, float maxDepth) override;
         void setScissorWithCount(const Extent2D& swapChainExtent) override;
         void setScissorRect(int32_t x, int32_t y, uint32_t width, uint32_t height) override;
+        void clearColorRects(uint32_t colorAttachmentIndex, const ClearColor& color, const Rect2D* rects, uint32_t rectCount) override;
         void setVertexInput() override {}
         void setPrimitiveTopology(const PrimitiveTopology& topology) override;
         void setPrimitiveRestartEnable(bool enable) override {}
@@ -188,5 +189,8 @@ namespace NRI
         std::vector<class TextureD3D12*> m_pendingDiscardTextures;
         std::unordered_set<class TextureD3D12*> m_discardSeen;
         std::vector<class TextureD3D12*> m_markInitializedTextures;
+        // The render target views of the rendering in progress, by colour attachment index (clearColorRects).
+        D3D12_CPU_DESCRIPTOR_HANDLE m_boundRtv[8]{};
+        bool m_boundRtvValid[8]{};
     };
 }

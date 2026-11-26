@@ -285,6 +285,7 @@ namespace NRI
             void setViewportWithCount(const ViewportBounds&, float, float) override {}
             void setScissorWithCount(const Extent2D&) override {}
             void setScissorRect(int32_t, int32_t, uint32_t, uint32_t) override {}
+            void clearColorRects(uint32_t, const ClearColor&, const Rect2D*, uint32_t) override {}
             void setVertexInput() override {}
             void setPrimitiveTopology(const PrimitiveTopology&) override {}
             void setPrimitiveRestartEnable(bool) override {}
