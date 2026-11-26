@@ -24,6 +24,7 @@ namespace NRI
 
         uint32_t getMipLevels() const override { return m_desc.mipLevels; }
         uint32_t getArrayLayers() const override { return m_desc.arrayLayers; }
+        uint32_t getDepth() const override { return m_desc.depth; }
         TextureUsage getUsage() const override { return m_desc.usage; }
         const TextureDesc& getDesc() const { return m_desc; }
 

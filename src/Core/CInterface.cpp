@@ -120,6 +120,7 @@ namespace
         out.format = toCpp(d.format);
         out.directFormat = d.directFormat;
         out.sharedAcrossQueues = d.sharedAcrossQueues;
+        out.depth = d.depth ? d.depth : 1;
         return out;
     }
 
@@ -1193,6 +1194,11 @@ uint32_t NRI_CALL nriGetTextureMipLevels(NriTexture texture)
 uint32_t NRI_CALL nriGetTextureArrayLayers(NriTexture texture)
 {
     return texture && texture->impl ? texture->impl->getArrayLayers() : 0;
+}
+
+uint32_t NRI_CALL nriGetTextureDepth(NriTexture texture)
+{
+    return texture && texture->impl ? texture->impl->getDepth() : 0;
 }
 
 NriTextureUsage NRI_CALL nriGetTextureUsage(NriTexture texture)

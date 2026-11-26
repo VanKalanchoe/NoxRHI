@@ -36,9 +36,11 @@ namespace NRI
     {
         switch (cullMode)
         {
-            case CullMode::None: return vk::CullModeFlagBits::eNone;
-            case CullMode::Back: return vk::CullModeFlagBits::eBack;
+            case CullMode::None:  return vk::CullModeFlagBits::eNone;
+            case CullMode::Back:  return vk::CullModeFlagBits::eBack;
+            case CullMode::Front: return vk::CullModeFlagBits::eFront;
         }
+        return vk::CullModeFlagBits::eBack;
     }
     
     static vk::FrontFace translateFrontFaceToVk(const FrontFace& frontFace)

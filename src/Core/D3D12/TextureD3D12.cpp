@@ -75,12 +75,13 @@ namespace NRI
         D3D12_HEAP_PROPERTIES heapProps{};
         heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
 
+        const bool is3D = m_desc.depth > 1;
         D3D12_RESOURCE_DESC resDesc{};
-        resDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        resDesc.Dimension = is3D ? D3D12_RESOURCE_DIMENSION_TEXTURE3D : D3D12_RESOURCE_DIMENSION_TEXTURE2D;
         resDesc.Alignment = 0;
         resDesc.Width = m_desc.width;
         resDesc.Height = m_desc.height;
-        resDesc.DepthOrArraySize = static_cast<UINT16>(m_desc.isCubeMap ? 6 * m_desc.arrayLayers : m_desc.arrayLayers);
+        resDesc.DepthOrArraySize = static_cast<UINT16>(is3D ? m_desc.depth : (m_desc.isCubeMap ? 6 * m_desc.arrayLayers : m_desc.arrayLayers));
         resDesc.MipLevels = static_cast<UINT16>(m_desc.mipLevels);
         resDesc.Format = m_desc.usage == TextureUsage::DepthStencilAttachment ? DXGI_FORMAT_R32_TYPELESS : m_dxgiFormat;
         resDesc.SampleDesc.Count = m_desc.sampleCount;
@@ -166,6 +167,7 @@ namespace NRI
         // Copy each mip level
         uint32_t curWidth = m_desc.width;
         uint32_t curHeight = m_desc.height;
+        uint32_t curDepth = std::max(1u, m_desc.depth);
         uint32_t blockBytes = 4, blockSize = 1;
         imageFormatBlock(m_desc.format, blockBytes, blockSize);
 
@@ -176,13 +178,14 @@ namespace NRI
             const uint32_t rawPitch = blocksX * blockBytes;
             const uint32_t rowPitch = (rawPitch + 255u) & ~255u; // 256-byte pitch alignment
             const uint64_t effectiveOffset = stagingOffset + mipOffsets[mip];
+            const uint32_t totalRows = blocksY * curDepth;
 
             ID3D12Resource* srcResource = bufferD3D12->getNativeBuffer();
             uint64_t srcOffset = effectiveOffset;
 
             if (rawPitch != rowPitch || (effectiveOffset % D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT) != 0)
             {
-                const uint64_t paddedSize = static_cast<uint64_t>(rowPitch) * blocksY;
+                const uint64_t paddedSize = static_cast<uint64_t>(rowPitch) * totalRows;
                 BufferDesc tmpDesc{};
                 tmpDesc.size = paddedSize;
                 tmpDesc.usage = BufferUsage::Staging;
@@ -190,7 +193,7 @@ namespace NRI
 
                 const auto* srcBytes = static_cast<const uint8_t*>(bufferD3D12->map(0, 0)) + effectiveOffset;
                 auto* dstBytes = static_cast<uint8_t*>(tmpBuf->map(0, paddedSize));
-                for (uint32_t row = 0; row < blocksY; ++row)
+                for (uint32_t row = 0; row < totalRows; ++row)
                     std::memcpy(dstBytes + static_cast<size_t>(row) * rowPitch, srcBytes + static_cast<size_t>(row) * rawPitch, rawPitch);
                 tmpBuf->unmap();
 
@@ -206,7 +209,7 @@ namespace NRI
             src.PlacedFootprint.Footprint.Format = m_dxgiFormat;
             src.PlacedFootprint.Footprint.Width = curWidth;
             src.PlacedFootprint.Footprint.Height = curHeight;
-            src.PlacedFootprint.Footprint.Depth = 1;
+            src.PlacedFootprint.Footprint.Depth = curDepth;
             src.PlacedFootprint.Footprint.RowPitch = rowPitch;
 
             D3D12_TEXTURE_COPY_LOCATION dst{};
@@ -218,6 +221,7 @@ namespace NRI
 
             curWidth = std::max(1u, curWidth / 2);
             curHeight = std::max(1u, curHeight / 2);
+            curDepth = std::max(1u, curDepth / 2);
         }
 
         if (!isCopyQueue)

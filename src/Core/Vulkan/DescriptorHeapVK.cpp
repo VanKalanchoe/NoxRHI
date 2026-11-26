@@ -239,7 +239,8 @@ namespace NRI
 
         // Configure the image view to target specifically this mip level
         vk::ImageViewCreateInfo viewInfo = vkTex->getNativeViewInfo();
-        viewInfo.viewType = vk::ImageViewType::e2DArray;
+        if (viewInfo.viewType != vk::ImageViewType::e3D)
+            viewInfo.viewType = vk::ImageViewType::e2DArray;
         viewInfo.subresourceRange.baseMipLevel = mipLevel;
         viewInfo.subresourceRange.levelCount = 1;
 

@@ -123,8 +123,12 @@ namespace NRI
 
         m_format = format;
         
+        const bool is3D = desc.depth > 1;
+        const uint32_t effectiveLayers = is3D ? 1u : std::max(1u, desc.arrayLayers);
+        const uint32_t effectiveDepth = is3D ? desc.depth : 1u;
+
         vk::ImageCreateFlags createFlags{};
-        if (desc.isCubeMap)
+        if (desc.isCubeMap && !is3D)
         {
             createFlags |= vk::ImageCreateFlagBits::eCubeCompatible;
         }
@@ -132,12 +136,12 @@ namespace NRI
         vk::ImageCreateInfo imageInfo
         {
             .flags = createFlags,
-            .imageType = vk::ImageType::e2D,
+            .imageType = is3D ? vk::ImageType::e3D : vk::ImageType::e2D,
             .format = format,
-            .extent = {desc.width, desc.height, 1},
+            .extent = { desc.width, desc.height, effectiveDepth },
             .mipLevels = desc.mipLevels,
-            .arrayLayers = desc.arrayLayers,
-            .samples = static_cast<vk::SampleCountFlagBits>(desc.sampleCount), // might be a problem converting uint32_t to vk::samplecountflagbits
+            .arrayLayers = effectiveLayers,
+            .samples = static_cast<vk::SampleCountFlagBits>(desc.sampleCount),
             .tiling = vk::ImageTiling::eOptimal,
             .usage = usageFlags,
             .sharingMode = vk::SharingMode::eExclusive
@@ -153,7 +157,11 @@ namespace NRI
         m_imageResource.image = m_deviceVK.getAllocator().createImage(imageInfo).image;
 
         vk::ImageViewType viewType = vk::ImageViewType::e2D;
-        if (desc.isCubeMap)
+        if (is3D)
+        {
+            viewType = vk::ImageViewType::e3D;
+        }
+        else if (desc.isCubeMap)
         {
             viewType = vk::ImageViewType::eCube;
         }
@@ -173,13 +181,15 @@ namespace NRI
                 .baseMipLevel = 0,
                 .levelCount = desc.mipLevels,
                 .baseArrayLayer = 0,
-                .layerCount = desc.arrayLayers
+                .layerCount = effectiveLayers
             }
         };
 
-        // because of imgui needing a view to i guess giving all textures the view is fine ? since that means all textures need it no exception sad
-        /*if (desc.usage == TextureUsage::ColorAttachment || desc.usage == TextureUsage::ColorResolveAttachment || desc.usage == TextureUsage::DepthStencilAttachment)
-        */
+        if (is3D)
+        {
+            m_imageResource.view = vk::raii::ImageView(m_deviceVK.getDevice(), m_viewCreateInfo);
+        }
+        else
         {
             m_imageResource.view = m_deviceVK.createImageView(*m_imageResource.image, format, aspectFlags, 1);
         }
@@ -220,7 +230,7 @@ namespace NRI
                         .baseMipLevel = 0,
                         .levelCount = desc.mipLevels,
                         .baseArrayLayer = 0,
-                        .layerCount = desc.arrayLayers
+                        .layerCount = effectiveLayers
                     }
                 };
 
@@ -263,13 +273,16 @@ namespace NRI
 
         std::vector<vk::BufferImageCopy> regions;
         regions.reserve(mipOffsets.size());
+        const bool is3D = m_desc.depth > 1;
+        const uint32_t layerCount = is3D ? 1u : std::max(1u, m_desc.arrayLayers);
         for (uint32_t mip = 0; mip < mipOffsets.size(); ++mip)
         {
             regions.push_back(vk::BufferImageCopy{
                 .bufferOffset = stagingOffset + mipOffsets[mip],
                 .imageSubresource = { .aspectMask = vk::ImageAspectFlagBits::eColor, .mipLevel = mip, .baseArrayLayer = 0,
-                                      .layerCount = m_desc.arrayLayers },
-                .imageExtent = { std::max(1u, m_desc.width >> mip), std::max(1u, m_desc.height >> mip), 1 }
+                                      .layerCount = layerCount },
+                .imageExtent = { std::max(1u, m_desc.width >> mip), std::max(1u, m_desc.height >> mip),
+                                 is3D ? std::max(1u, m_desc.depth >> mip) : 1u }
             });
         }
         cb.copyBufferToImage(*source, *m_imageResource.image, vk::ImageLayout::eGeneral, regions);
@@ -291,7 +304,7 @@ namespace NRI
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .image = *m_imageResource.image,
             .subresourceRange = { .aspectMask = vk::ImageAspectFlagBits::eColor, .baseMipLevel = 0, .levelCount = m_desc.mipLevels,
-                                  .baseArrayLayer = 0, .layerCount = m_desc.arrayLayers }
+                                  .baseArrayLayer = 0, .layerCount = m_desc.depth > 1 ? 1u : std::max(1u, m_desc.arrayLayers) }
         };
         cb.pipelineBarrier2(vk::DependencyInfo{ .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &toGeneral });
     }

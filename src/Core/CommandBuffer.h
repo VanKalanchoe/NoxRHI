@@ -71,7 +71,8 @@ namespace NRI
     enum class CullMode
     {
         None,
-        Back
+        Back,
+        Front
     };
 
     enum class FrontFace

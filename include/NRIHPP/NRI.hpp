@@ -147,6 +147,7 @@ namespace nri
         ImageFormat format = NRI_FORMAT_NONE;
         uint32_t directFormat = UINT32_MAX;
         bool sharedAcrossQueues = false;
+        uint32_t depth = 1;
     };
 
     struct DescriptorHeapDesc
@@ -888,7 +889,8 @@ namespace nri
                 .usage = desc.usage,
                 .format = desc.format,
                 .directFormat = desc.directFormat,
-                .sharedAcrossQueues = desc.sharedAcrossQueues
+                .sharedAcrossQueues = desc.sharedAcrossQueues,
+                .depth = desc.depth
             };
             NriTexture tex = nullptr;
             checkResult(nriCreateTexture(m_handle, &cDesc, &tex), "nriCreateTexture");

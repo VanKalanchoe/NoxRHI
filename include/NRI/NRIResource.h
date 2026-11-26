@@ -121,6 +121,7 @@ typedef struct NriTextureDesc
     NriImageFormat format;
     uint32_t directFormat; // Set UINT32_MAX when unused
     bool sharedAcrossQueues;
+    uint32_t depth; // 0 or 1 = 2D texture; > 1 = hardware 3D texture
 } NriTextureDesc;
 
 typedef struct NriTextureRegionUpload
@@ -144,6 +145,7 @@ NRI_API uint32_t NRI_CALL nriGetTextureWidth(NriTexture texture);
 NRI_API uint32_t NRI_CALL nriGetTextureHeight(NriTexture texture);
 NRI_API uint32_t NRI_CALL nriGetTextureMipLevels(NriTexture texture);
 NRI_API uint32_t NRI_CALL nriGetTextureArrayLayers(NriTexture texture);
+NRI_API uint32_t NRI_CALL nriGetTextureDepth(NriTexture texture);
 NRI_API NriTextureUsage NRI_CALL nriGetTextureUsage(NriTexture texture);
 NRI_API uint32_t NRI_CALL nriGetTextureDescriptorSlot(NriTexture texture);
 

@@ -93,7 +93,8 @@ typedef enum NriPolygonMode
 typedef enum NriCullMode
 {
     NRI_CULL_MODE_NONE = 0,
-    NRI_CULL_MODE_BACK = 1
+    NRI_CULL_MODE_BACK = 1,
+    NRI_CULL_MODE_FRONT = 2
 } NriCullMode;
 
 typedef enum NriFrontFace

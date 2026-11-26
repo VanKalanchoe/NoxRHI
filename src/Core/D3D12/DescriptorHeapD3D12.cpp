@@ -178,7 +178,13 @@ namespace NRI
             // (a depth texture is read as R32_FLOAT; a multisampled one as Texture2DMS)
             srvDesc.Format = texD3D12.getDxgiFormat() == DXGI_FORMAT_D32_FLOAT ? DXGI_FORMAT_R32_FLOAT : texD3D12.getDxgiFormat();
             srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            if (texD3D12.getDesc().sampleCount > 1)
+            if (texD3D12.getDesc().depth > 1)
+            {
+                srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
+                srvDesc.Texture3D.MostDetailedMip = 0;
+                srvDesc.Texture3D.MipLevels = texD3D12.getMipLevels();
+            }
+            else if (texD3D12.getDesc().sampleCount > 1)
             {
                 srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMS;
             }
@@ -217,7 +223,14 @@ namespace NRI
         D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc{};
         uavDesc.Format = texD3D12.getDxgiFormat();
         const uint32_t totalSlices = texD3D12.getDesc().isCubeMap ? 6u * texD3D12.getArrayLayers() : texD3D12.getArrayLayers();
-        if (totalSlices > 1)
+        if (texD3D12.getDesc().depth > 1)
+        {
+            uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE3D;
+            uavDesc.Texture3D.MipSlice = mipLevel;
+            uavDesc.Texture3D.FirstWSlice = 0;
+            uavDesc.Texture3D.WSize = std::max(1u, texD3D12.getDesc().depth >> mipLevel);
+        }
+        else if (totalSlices > 1)
         {
             uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
             uavDesc.Texture2DArray.MipSlice = mipLevel;

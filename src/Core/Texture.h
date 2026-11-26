@@ -88,6 +88,7 @@ namespace NRI
         // Uploaded on the transfer queue and sampled on the graphics queue (concurrent sharing). Such an image is left in
         // its initial layout: the upload records the transition, so creating it submits nothing.
         bool sharedAcrossQueues = false;
+        uint32_t depth = 1;
     };
 
     // A rectangle of a texture's mip 0 from a staging buffer (rows tightly packed; x, y, width, height multiples of the block size).
@@ -153,16 +154,18 @@ namespace NRI
         uint64_t bytes = 0;
         uint64_t width = desc.width;
         uint64_t height = desc.height;
+        uint64_t depth = std::max<uint64_t>(desc.depth, 1);
         for (uint32_t mip = 0; mip < desc.mipLevels; ++mip)
         {
             const uint64_t blocksX = (std::max<uint64_t>(width, 1) + blockSize - 1) / blockSize;
             const uint64_t blocksY = (std::max<uint64_t>(height, 1) + blockSize - 1) / blockSize;
-            bytes += blocksX * blocksY * blockBytes;
+            bytes += blocksX * blocksY * std::max<uint64_t>(depth, 1) * blockBytes;
             width /= 2;
             height /= 2;
+            depth /= 2;
         }
 
-        const uint64_t layers = desc.isCubeMap ? 6u * desc.arrayLayers : desc.arrayLayers;
+        const uint64_t layers = desc.depth > 1 ? 1u : (desc.isCubeMap ? 6u * desc.arrayLayers : desc.arrayLayers);
         return bytes * std::max<uint64_t>(layers, 1);
     }
 
@@ -190,6 +193,7 @@ namespace NRI
 
         [[nodiscard]] virtual uint32_t getMipLevels() const = 0;
         [[nodiscard]] virtual uint32_t getArrayLayers() const = 0;
+        [[nodiscard]] virtual uint32_t getDepth() const { return 1; }
         [[nodiscard]] virtual TextureUsage getUsage() const = 0;
     };
 }

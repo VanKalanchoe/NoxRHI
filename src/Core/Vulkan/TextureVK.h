@@ -25,6 +25,7 @@ namespace NRI
         
         [[nodiscard]] uint32_t getMipLevels() const override { return m_desc.mipLevels; }
         [[nodiscard]] uint32_t getArrayLayers() const override { return m_desc.arrayLayers; }
+        [[nodiscard]] uint32_t getDepth() const override { return m_desc.depth; }
         [[nodiscard]] TextureUsage getUsage() const override { return m_desc.usage; }
         void setDescriptorIndexSlot(uint32_t index) { m_imageResource.descriptorIndexSlot = index; }
         void setDescriptorHeap(DescriptorHeap* heap, std::weak_ptr<bool> heapAlive = {})

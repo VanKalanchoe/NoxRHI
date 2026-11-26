@@ -32,7 +32,13 @@ namespace NRI
 
         D3D12_CULL_MODE translateCullMode(CullMode mode)
         {
-            return mode == CullMode::None ? D3D12_CULL_MODE_NONE : D3D12_CULL_MODE_BACK;
+            switch (mode)
+            {
+            case CullMode::None:  return D3D12_CULL_MODE_NONE;
+            case CullMode::Front: return D3D12_CULL_MODE_FRONT;
+            case CullMode::Back:
+            default:              return D3D12_CULL_MODE_BACK;
+            }
         }
 
         D3D12_FILL_MODE translatePolygonMode(PolygonMode mode)
