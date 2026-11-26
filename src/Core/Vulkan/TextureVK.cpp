@@ -258,7 +258,7 @@ namespace NRI
 
         if (m_boundHeap && m_imageResource.descriptorIndexSlot != ~0u)
         {
-            if (auto alive = m_heapAlive.lock(); !alive || *alive)
+            if (auto alive = m_heapAlive.lock(); alive && *alive)
                 m_boundHeap->unregisterTexture(m_imageResource.descriptorIndexSlot);
             m_imageResource.descriptorIndexSlot = ~0u;
         }
