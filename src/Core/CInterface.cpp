@@ -1441,6 +1441,8 @@ NriResult NRI_CALL nriCreatePipeline(NriDevice device, const NriPipelineDesc* de
         cppDesc.maxRecursionDepth = desc->maxRecursionDepth ? desc->maxRecursionDepth : 1;
         cppDesc.forceCompile = desc->forceCompile;
         cppDesc.buildNow = desc->buildNow;
+        cppDesc.maxPayloadSize = desc->maxPayloadSize;
+        cppDesc.maxAttributeSize = desc->maxAttributeSize;
         if (desc->shaders && desc->shaderCount > 0)
         {
             cppDesc.shaders.reserve(desc->shaderCount);

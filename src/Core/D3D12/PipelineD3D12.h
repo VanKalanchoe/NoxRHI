@@ -39,7 +39,7 @@ namespace NRI
         PipelineType getType() const { return m_type; }
 
         const std::vector<uint8_t>& getShaderGroupHandles() const override { return m_shaderGroupHandles; }
-        uint32_t getShaderGroupHandleSize() const override { return D3D12_RAYTRACING_SHADER_RECORD_BYTE_ALIGNMENT; }
+        uint32_t getShaderGroupHandleSize() const override { return D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES; }
         uint32_t getShaderGroupBaseAlignment() const override { return D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT; }
         uint32_t getRayGenShaderGroupIndex() const override { return 0; }
         const std::vector<uint32_t>& getMissShaderGroupIndices() const override { return m_missShaderGroupIndices; }

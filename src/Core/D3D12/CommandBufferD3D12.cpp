@@ -264,6 +264,16 @@ namespace NRI
             // and before draw*; resolve the D3D12 PSO variant lazily in ensureGraphicsPipelineState() at draw time.
             m_boundPso = nullptr;
         }
+        else if (bindPoint == PipelineBindPoint::RayTracing)
+        {
+            // A ray tracing pipeline is a state object (SetPipelineState1; it was given to SetPipelineState, which it is not for, and
+            // DispatchRays ran with the previous compute PSO). It replaces the bound PSO: the next compute bind sets its PSO again.
+            if (ID3D12StateObject* stateObject = pipeD3D12.getNativeStateObject())
+            {
+                m_cmdList->SetPipelineState1(stateObject);
+                m_boundPso = nullptr;
+            }
+        }
         else if (pipeD3D12.getNativePipeline())
         {
             if (pipeD3D12.getNativePipeline() != m_boundPso)

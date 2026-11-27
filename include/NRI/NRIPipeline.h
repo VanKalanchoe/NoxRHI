@@ -53,6 +53,10 @@ typedef struct NriPipelineDesc
     uint32_t maxRecursionDepth;
     bool forceCompile;
     bool buildNow;
+    // Ray tracing pipelines: the largest ray payload and hit attributes in bytes (D3D12 state objects need them; 0: 256 / 32;
+    // Vulkan ignores them).
+    uint32_t maxPayloadSize;
+    uint32_t maxAttributeSize;
 } NriPipelineDesc;
 
 NRI_API NriResult NRI_CALL nriCreatePipeline(NriDevice device, const NriPipelineDesc* desc, NriShaderCompiler compiler, NriPipeline* outPipeline);

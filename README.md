@@ -70,7 +70,7 @@ scripts\setup_build.bat --msvc
 scripts\setup_build.bat -DNRI_STATIC_LIBRARY=ON
 ```
 
-Open **`build\NoxRHI.slnx`** in **JetBrains Rider** (or Visual Studio 2026) and build/run any target (`HeadlessNone`, `HeadlessRender`, `ClearScreen`, `RenderGraphTriangle`, `TexturedQuads`, `ImGuiDemo`, `StreamlineNRDDemo`, `ShaderCompat`, and the cross-API examples `GpuParticles`, `BindlessScene`, `MeshletCulling`, `RayQueryShadows`).
+Open **`build\NoxRHI.slnx`** in **JetBrains Rider** (or Visual Studio 2026) and build/run any target (`HeadlessNone`, `HeadlessRender`, `ClearScreen`, `RenderGraphTriangle`, `TexturedQuads`, `ImGuiDemo`, `StreamlineNRDDemo`, `ShaderCompat`, and the cross-API examples `GpuParticles`, `BindlessScene`, `MeshletCulling`, `RayQueryShadows`, `RayTracingPipeline`).
 
 ### 3. Example CLI Flags
 All examples default to the no-GPU backend (`NRI_GRAPHICS_API_NONE`); pass `--vk` (Vulkan) or `--dx12` / `--d3d12` (Direct3D 12) to run on a GPU backend. Windowed examples (`ClearScreen`, `RenderGraphTriangle`, `TexturedQuads`, `ImGuiDemo`) use SDL3 main callbacks (`SDL_MAIN_USE_CALLBACKS`), `HeadlessNone` runs solely on `NRI_GRAPHICS_API_NONE`, and `HeadlessRender` / `StreamlineNRDDemo` run windowless (`NRI_WINDOW_SYSTEM_HEADLESS`):
@@ -165,11 +165,12 @@ build\Debug\PathTracer.exe --vk            build\Debug\PathTracer.exe --dx12    
 | `BindlessScene` | 144 instanced cubes, each with its own texture from a bindless table (a non-uniform index: `SampleNonUniform`); per-frame constants from a CPU-written buffer; HDR target + reverse-Z depth; compute tonemap into a storage texture; fullscreen present | Space: pause |
 | `MeshletCulling` | task + mesh shaders: the task shader culls 576 spheres x 38 meshlets (frustum + normal cone), the mesh shader reads **byte-packed** triangle indices with `LoadByte`; the drawn count is read back into the title | F: freeze culling, C: colours, Space |
 | `RayQueryShadows` | a rasterized scene whose fragment shader casts shadow and ambient-occlusion rays with `RayQuery` against a TLAS rebuilt every frame (one per frame in flight) | S: shadows, A: AO rays, Space |
+| `RayTracingPipeline` | the same scene ray traced with a **ray tracing pipeline**: ray generation, two miss shaders (sky, shadow), two hit groups (opaque; cut-out with an **any hit** shader that ignores hits in a lattice of holes) picked per instance, the closest hit tracing the shadow ray (recursion 2), a shader binding table baked from the pipeline's group handles. Push data in ray tracing stages is a global `[[vk::push_constant]] ConstantBuffer` (a `uniform` entry-point parameter would be the shader record). It checks its own image (fails when the ray generation wrote nothing) | S: shadows, C: cut-outs, Space |
 | `PathTracer` | a 1-sample-per-pixel path tracer (ray queries in a compute shader: sun + sky, a diffuse and a specular bounce) denoised by **NRD** (REBLUR) or **DLSS Ray Reconstruction** (Streamline), next to an accumulated reference; shows each denoiser's input guides | 1 reference, 2 noisy, 3 NRD, 4 DLSS-RR, G guides, Space, +/- |
 
 `examples/Common` holds what they share: `ExampleApp.h` (window, API choice, device, swapchain, descriptor heaps, render graph, frame loop,
 uploads, buffer references), `ExampleMath.h` (column-major matrices, reverse-Z projection) and **`nox_gpu.slang`**, the one header that hides
-what differs between the two APIs' shaders. CI runs all five on D3D12 (WARP, debug layer on) for 30 frames on every push, plus
+what differs between the two APIs' shaders. CI runs all six on D3D12 (WARP, debug layer on) for 30 frames on every push, plus
 `MeshletCulling --indirect`, `MeshletCulling --shader-checks` and PathTracer's noisy mode and guides (CI builds without NRD / Streamline).
 
 Options every cross-API example takes: `--vk` / `--dx12`, `--frames N` (quit after N frames: the exit code says whether anything failed),
@@ -302,6 +303,10 @@ last shader when it bound the same pipeline as before. Code that records its own
 - **Shaders:** each Vulkan shader gets the SPIR-V of its own entry point (porting note 10), as D3D12 does.
 - **External libraries:** NoxRHI's bindings come back after NRD / Streamline (above).
 - **Bugs that only crash Vulkan:** `--shader-checks` (below) reports the out-of-range index D3D12's bounds checks hide.
+- **Ray tracing pipelines:** `NRI_PIPELINE_RAY_TRACING` (ray generation, misses, hit groups with any hit / intersection shaders,
+  callables; `maxRecursionDepth`, and for D3D12 `maxPayloadSize` / `maxAttributeSize`, 256 / 32 bytes by default) give the same shader
+  groups in the same order on both -- ray generation, misses, hit groups, callables -- so one shader table (`nriBakeShaderTable`) and
+  `nriCmdTraceRays` work on both (D3D12: a state object of DXIL libraries, bound with SetPipelineState1). `examples/RayTracingPipeline`.
 - **Clearing part of a target:** `cmd.clearColorRects(attachmentIndex, color, rects)` (`nriCmdClearColorRects`) clears rectangles of a
   colour attachment of the rendering in progress, whatever the pipeline state -- what a load-op clear does, for part of the target
   (`vkCmdClearAttachments` / `ClearRenderTargetView` with rects). NoxUI's partial redraw of its UI cache uses it.
@@ -357,6 +362,12 @@ already work on both and need nothing.
    **NoxRHI reports it:** every D3D12 compile compares the entry point's push data with Vulkan's scalar layout and logs an error naming
    the first field that moved (`Push data of 'csFoo' (file.slang) differs between the APIs: 'pc.b' is at byte 16 on D3D12 but byte 8 on
    Vulkan ...`) -- `src/Extensions/ShaderCompiler/PushLayoutCheck.h`.
+   **Ray tracing stages (ray generation, miss, closest / any hit, intersection, callable) take push data as a global, not as a
+   `uniform` entry-point parameter:** Slang maps a ray tracing entry point's uniform parameters to the *shader record* (the bytes after
+   the shader's handle in the shader binding table -- `ShaderRecordBufferKHR` in the SPIR-V, a local root signature on D3D12), so a
+   `void rayGen(uniform Push pc)` reads whatever the table holds there (zeros: the Nox engine's path tracer rendered black). Declare
+   `[[vk::push_constant]] ConstantBuffer<Push> pc : register(b0, space0);` (Vulkan push data; D3D12 the root constants), as
+   `examples/RayTracingPipeline` does.
 1. **Buffer pointers.** D3D12 shaders have no pointers. Every `(T*)push.someReference` (the engine reaches its UBO, lights, instances, meshlets
    and particles this way) becomes a `BufferRef<T>` (read) or `RWBufferRef<T>` (write) from `nox_gpu.slang`: a 64-bit value that is the device
    address on Vulkan and a descriptor slot on D3D12 (`ByteAddressBuffer` / `RWByteAddressBuffer` handles). The push data layout does not change
@@ -438,7 +449,7 @@ lavapipe has none of them). The windowed examples create a Win32 surface, so on 
 | `NRI_ENABLE_STREAMLINE` | `ON` | Enable NVIDIA Streamline (DLSS-SR / DLSS-RR) extension |
 | `NRI_ENABLE_NRD` | `ON` | Enable NVIDIA NRD (SIGMA / REBLUR / RELAX) denoiser extension |
 | `NRI_ENABLE_PCH` | `ON` | Use private precompiled headers inside `NoxRHI::Core` for faster builds |
-| `NRI_BUILD_EXAMPLES` | `ON` | Build `ShaderCompat`, `HeadlessNone`, `HeadlessRender`, `StreamlineNRDDemo`, `ClearScreen`, `RenderGraphTriangle`, `TexturedQuads`, `ImGuiDemo`, `GpuParticles`, `BindlessScene`, `MeshletCulling`, `RayQueryShadows` and `PathTracer` |
+| `NRI_BUILD_EXAMPLES` | `ON` | Build `ShaderCompat`, `HeadlessNone`, `HeadlessRender`, `StreamlineNRDDemo`, `ClearScreen`, `RenderGraphTriangle`, `TexturedQuads`, `ImGuiDemo`, `GpuParticles`, `BindlessScene`, `MeshletCulling`, `RayQueryShadows`, `RayTracingPipeline` and `PathTracer` |
 
 ---
 

@@ -22,6 +22,7 @@
 #include <cstring>
 #include <cmath>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <stdexcept>
@@ -90,6 +91,12 @@ namespace nox
         nri::CompareOp depthCompare = NRI_COMPARE_GREATER; // reverse-Z
         nri::CullMode cull = NRI_CULL_MODE_NONE;
         enum class Blend { Off, Alpha, Additive } blend = Blend::Off;
+    };
+
+    // What Host::Probe measured over the centre 64 x 64 pixels, per channel (memory order).
+    struct ProbeResult
+    {
+        float mean[4]{}, min[4]{}, max[4]{};
     };
 
     struct FrameInfo
@@ -282,12 +289,15 @@ namespace nox
         // --- probes: what a render-graph texture holds ------------------------------------------------------------------------------
 
         // With --probe: copies the centre 64 x 64 pixels of `texture` (RGBA8 / sRGB: 4 bytes, RGBA16F: 8 bytes per pixel) to the CPU and
-        // prints their average colour and range two frames later -- to see which pass of a frame produces what. Nothing without --probe.
-        void Probe(nri::RenderGraph& graph, nri::RGTexture texture, const char* name, uint32_t bytesPerPixel, const FrameInfo& frame)
+        // prints their average colour and range two frames later -- to see which pass of a frame produces what. With a `check`, it runs
+        // without --probe too and every result is handed to it (an example verifying its own image: RayTracingPipeline).
+        void Probe(nri::RenderGraph& graph, nri::RGTexture texture, const char* name, uint32_t bytesPerPixel, const FrameInfo& frame,
+                   std::function<void(const ProbeResult&)> check = {})
         {
-            if (!m_ProbesOn || frame.extent.width < 64 || frame.extent.height < 64)
+            if ((!m_ProbesOn && !check) || frame.extent.width < 64 || frame.extent.height < 64)
                 return;
             ProbeSlot& probe = m_Probes[name];
+            probe.check = std::move(check);
             const uint64_t bytes = 64ull * 64 * bytesPerPixel;
             if (probe.pending[frame.frameSlot])
                 PrintProbe(name, probe, frame.frameSlot);
@@ -742,6 +752,7 @@ namespace nox
             bool pending[kFramesInFlight]{};
             uint32_t bytesPerPixel = 4;
             uint32_t printed = 0;
+            std::function<void(const ProbeResult&)> check;
         };
 
         static float HalfToFloat(uint16_t h)
@@ -759,7 +770,8 @@ namespace nox
         void PrintProbe(const char* name, ProbeSlot& probe, uint32_t slot)
         {
             probe.pending[slot] = false;
-            if (probe.printed++ % 60 != 0) // (the first one, then once every 60)
+            const bool print = m_ProbesOn && probe.printed++ % 60 == 0; // (the first one, then once every 60)
+            if (!print && !probe.check)
                 return;
             const uint64_t bytes = 64ull * 64 * probe.bytesPerPixel;
             const auto* data = static_cast<const uint8_t*>(probe.readback[slot].map(0, bytes));
@@ -781,8 +793,20 @@ namespace nox
                     hi[c] = std::max(hi[c], v);
                 }
             probe.readback[slot].unmap();
-            std::printf("[%s] %s: probe '%s' (centre 64 x 64, channels in memory order): mean (%.3f %.3f %.3f %.3f) min (%.3f %.3f %.3f) max (%.3f %.3f %.3f)\n",
-                        m_Example->Name(), ApiName(), name, sum[0] / 4096, sum[1] / 4096, sum[2] / 4096, sum[3] / 4096, lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
+            if (print)
+                std::printf("[%s] %s: probe '%s' (centre 64 x 64, channels in memory order): mean (%.3f %.3f %.3f %.3f) min (%.3f %.3f %.3f) max (%.3f %.3f %.3f)\n",
+                            m_Example->Name(), ApiName(), name, sum[0] / 4096, sum[1] / 4096, sum[2] / 4096, sum[3] / 4096, lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
+            if (probe.check)
+            {
+                ProbeResult result;
+                for (int c = 0; c < 4; ++c)
+                {
+                    result.mean[c] = sum[c] / 4096;
+                    result.min[c] = lo[c];
+                    result.max[c] = hi[c];
+                }
+                probe.check(result);
+            }
         }
 
         std::map<std::string, ProbeSlot> m_Probes;

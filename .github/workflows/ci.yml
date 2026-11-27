@@ -98,11 +98,19 @@ jobs:
           $failed = 0
           Write-Host "=== BindlessScene --probe ==="
           ./BindlessScene.exe --dx12 --frames 5 --probe
-          foreach ($example in 'GpuParticles', 'BindlessScene', 'MeshletCulling', 'RayQueryShadows', 'PathTracer') {
+          foreach ($example in 'GpuParticles', 'BindlessScene', 'MeshletCulling', 'RayQueryShadows', 'RayTracingPipeline', 'PathTracer') {
             Write-Host "=== $example ==="
             & "./$example.exe" --dx12 --frames 30
             $code = $LASTEXITCODE
             if ($code -ne 0) { Write-Host ("$example exit code: {0} (0x{0:X8})" -f $code); $failed = 1 }
+          }
+          # RayTracingPipeline (the only example with a ray tracing pipeline: state object, shader identifiers, SetPipelineState1,
+          # DispatchRays; it fails itself when its image is not written): without the cut-outs (hit group 0 only) and with the probe.
+          foreach ($options in @('--no-cutouts'), @('--probe')) {
+            Write-Host "=== RayTracingPipeline $options ==="
+            & ./RayTracingPipeline.exe --dx12 --frames 30 @options
+            $code = $LASTEXITCODE
+            if ($code -ne 0) { Write-Host ("RayTracingPipeline $options exit code: {0} (0x{0:X8})" -f $code); $failed = 1 }
           }
           # MeshletCulling's indirect draw (ExecuteIndirect with a DispatchMesh signature) and the shader checks (--shader-checks: the host's
           # self-test of the report, then the mesh shader's NoxIndex / NOX_CHECK; a reported failure is an error, so the exit code fails).

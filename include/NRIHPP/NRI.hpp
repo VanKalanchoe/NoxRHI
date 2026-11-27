@@ -181,6 +181,9 @@ namespace nri
         uint32_t maxRecursionDepth = 1;
         bool forceCompile = false;
         bool buildNow = false;
+        // Ray tracing: the largest ray payload / hit attributes in bytes (D3D12; 0: 256 / 32; Vulkan ignores them).
+        uint32_t maxPayloadSize = 0;
+        uint32_t maxAttributeSize = 0;
     };
 
     struct RenderAttachDesc
@@ -936,7 +939,9 @@ namespace nri
                 .hitGroupCount = static_cast<uint32_t>(desc.hitGroups.size()),
                 .maxRecursionDepth = desc.maxRecursionDepth,
                 .forceCompile = desc.forceCompile,
-                .buildNow = desc.buildNow
+                .buildNow = desc.buildNow,
+                .maxPayloadSize = desc.maxPayloadSize,
+                .maxAttributeSize = desc.maxAttributeSize
             };
             NriPipeline pip = nullptr;
             checkResult(nriCreatePipeline(m_handle, &cDesc, compiler, &pip), "nriCreatePipeline");

@@ -31,6 +31,11 @@ namespace NRI
         std::vector<ImageFormat> colorFormats;
         std::vector<RayTracingHitGroupDesc> hitGroups;
         uint32_t maxRecursionDepth = 1;
+        // Ray tracing pipelines: the largest ray payload and hit attributes (bytes) any of its shaders uses. D3D12 needs them in the
+        // state object (0: 256 bytes of payload, D3D12_RAYTRACING_MAX_ATTRIBUTE_SIZE_IN_BYTES of attributes -- creation fails when a
+        // shader's payload is larger); Vulkan reads them from the SPIR-V and ignores these.
+        uint32_t maxPayloadSize = 0;
+        uint32_t maxAttributeSize = 0;
         
         bool forceCompile = false;
         // Built on the calling thread, a failure thrown from createPipeline (never left for the first bind to find): what a pipeline

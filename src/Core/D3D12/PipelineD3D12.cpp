@@ -3,7 +3,9 @@
 #include "TextureD3D12.h"
 #include "../../Extensions/ShaderCompiler/ShaderCompiler.h"
 
+#include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <condition_variable>
 #include <filesystem>
 #include <fstream>
@@ -517,31 +519,161 @@ namespace NRI
 
     void PipelineD3D12::createRayTracingPipeline(const PipelineDesc& desc, ShaderCompiler& compiler)
     {
-        (void)compiler;
-        std::vector<D3D12_STATE_SUBOBJECT> subobjects;
+        // A DXR state object built as PipelineVK builds its Vulkan ray tracing pipeline, with the same shader groups in the same order --
+        // ray generation, misses, hit groups, callables -- so the shader table code (ShaderBindingTable.h) works on both: each stage a
+        // DXIL library exporting its entry point under a unique name ("S<index>", so two stages may share an entry point name), the hit
+        // groups ("HG<index>"), the payload / attribute sizes, the recursion depth and the device's global root signature (push data at
+        // b0 and the descriptor heaps, as every other shader). The group handles are the shader identifiers the state object reports.
+        if (desc.shaders.empty())
+            throw std::runtime_error("PipelineD3D12: a ray tracing pipeline needs shader stages");
 
-        D3D12_GLOBAL_ROOT_SIGNATURE globalRootSigDesc{};
-        globalRootSigDesc.pGlobalRootSignature = m_deviceD3D12.getGlobalRootSignature();
-        D3D12_STATE_SUBOBJECT globalRootSigSubobject{};
-        globalRootSigSubobject.Type = D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE;
-        globalRootSigSubobject.pDesc = &globalRootSigDesc;
-        subobjects.push_back(globalRootSigSubobject);
+        auto widen = [](const std::string& text)
+        {
+            std::wstring wide;
+            wide.reserve(text.size());
+            for (unsigned char c : text)
+                wide.push_back(static_cast<wchar_t>(c)); // entry point names are ASCII identifiers
+            return wide;
+        };
 
+        const size_t shaderCount = desc.shaders.size();
+        std::vector<std::vector<char>> bytecode(shaderCount);
+        std::vector<std::wstring> exportNames(shaderCount);
+        std::vector<std::wstring> entryNames(shaderCount);
+        std::vector<D3D12_EXPORT_DESC> exports(shaderCount);
+        std::vector<D3D12_DXIL_LIBRARY_DESC> libraries(shaderCount);
+        int32_t rayGenShader = -1;
+        std::vector<uint32_t> missShaders, closestHitShaders, anyHitShaders, callableShaders;
+        for (size_t i = 0; i < shaderCount; ++i)
+        {
+            const ShaderStageDesc& shader = desc.shaders[i];
+            if (!m_debugName.empty())
+                m_debugName += " + ";
+            m_debugName += shader.sourcePath + ":" + shader.entryPoint;
+            bytecode[i] = loadOrCompileDxil(shader, compiler, m_deviceD3D12.getShaderCacheDir(), desc.forceCompile);
+            if (bytecode[i].empty())
+                throw std::runtime_error("PipelineD3D12: no DXIL for " + shader.sourcePath + ":" + shader.entryPoint);
+            exportNames[i] = L"S" + std::to_wstring(i);
+            entryNames[i] = widen(shader.entryPoint);
+            switch (shader.stage)
+            {
+            case ShaderStage::RayGen: rayGenShader = static_cast<int32_t>(i); break;
+            case ShaderStage::Miss: missShaders.push_back(static_cast<uint32_t>(i)); break;
+            case ShaderStage::ClosestHit: closestHitShaders.push_back(static_cast<uint32_t>(i)); break;
+            case ShaderStage::AnyHit: anyHitShaders.push_back(static_cast<uint32_t>(i)); break;
+            case ShaderStage::Callable: callableShaders.push_back(static_cast<uint32_t>(i)); break;
+            case ShaderStage::Intersection: break;
+            default:
+                throw std::runtime_error("PipelineD3D12: " + shader.sourcePath + ":" + shader.entryPoint + " is not a ray tracing stage");
+            }
+        }
+        if (rayGenShader < 0)
+            throw std::runtime_error("PipelineD3D12: a ray tracing pipeline needs a ray generation shader");
+        for (size_t i = 0; i < shaderCount; ++i)
+        {
+            exports[i] = D3D12_EXPORT_DESC{ exportNames[i].c_str(), entryNames[i].c_str(), D3D12_EXPORT_FLAG_NONE };
+            libraries[i] = D3D12_DXIL_LIBRARY_DESC{ D3D12_SHADER_BYTECODE{ bytecode[i].data(), bytecode[i].size() }, 1, &exports[i] };
+        }
+
+        // Hit groups: as given, or (as PipelineVK) one per closest hit shader, paired with the any hit shader of the same position.
+        struct HitGroup
+        {
+            uint32_t closestHit = ~0u, anyHit = ~0u, intersection = ~0u;
+        };
+        std::vector<HitGroup> hitGroups;
+        if (!desc.hitGroups.empty())
+        {
+            for (const RayTracingHitGroupDesc& group : desc.hitGroups)
+                hitGroups.push_back({ group.closestHitShaderIndex, group.anyHitShaderIndex, group.intersectionShaderIndex });
+        }
+        else
+        {
+            for (size_t i = 0; i < closestHitShaders.size(); ++i)
+                hitGroups.push_back({ closestHitShaders[i], i < anyHitShaders.size() ? anyHitShaders[i] : ~0u, ~0u });
+        }
+        auto checkIndex = [&](uint32_t index, ShaderStage stage, const char* what)
+        {
+            if (index == ~0u)
+                return;
+            if (index >= shaderCount || desc.shaders[index].stage != stage)
+                throw std::runtime_error(std::string("PipelineD3D12: a hit group's ") + what + " shader index " + std::to_string(index) +
+                                         " is not a " + what + " shader of this pipeline");
+        };
+        std::vector<std::wstring> hitGroupNames(hitGroups.size());
+        std::vector<D3D12_HIT_GROUP_DESC> hitGroupDescs(hitGroups.size());
+        for (size_t g = 0; g < hitGroups.size(); ++g)
+        {
+            const HitGroup& group = hitGroups[g];
+            checkIndex(group.closestHit, ShaderStage::ClosestHit, "closest hit");
+            checkIndex(group.anyHit, ShaderStage::AnyHit, "any hit");
+            checkIndex(group.intersection, ShaderStage::Intersection, "intersection");
+            hitGroupNames[g] = L"HG" + std::to_wstring(g);
+            D3D12_HIT_GROUP_DESC& hitDesc = hitGroupDescs[g];
+            hitDesc.HitGroupExport = hitGroupNames[g].c_str();
+            hitDesc.Type = group.intersection != ~0u ? D3D12_HIT_GROUP_TYPE_PROCEDURAL_PRIMITIVE : D3D12_HIT_GROUP_TYPE_TRIANGLES;
+            hitDesc.ClosestHitShaderImport = group.closestHit != ~0u ? exportNames[group.closestHit].c_str() : nullptr;
+            hitDesc.AnyHitShaderImport = group.anyHit != ~0u ? exportNames[group.anyHit].c_str() : nullptr;
+            hitDesc.IntersectionShaderImport = group.intersection != ~0u ? exportNames[group.intersection].c_str() : nullptr;
+        }
+
+        D3D12_RAYTRACING_SHADER_CONFIG shaderConfig{};
+        shaderConfig.MaxPayloadSizeInBytes = desc.maxPayloadSize ? desc.maxPayloadSize : 256u;
+        shaderConfig.MaxAttributeSizeInBytes = desc.maxAttributeSize ? desc.maxAttributeSize : D3D12_RAYTRACING_MAX_ATTRIBUTE_SIZE_IN_BYTES;
         D3D12_RAYTRACING_PIPELINE_CONFIG pipelineConfig{};
-        pipelineConfig.MaxTraceRecursionDepth = desc.maxRecursionDepth;
-        D3D12_STATE_SUBOBJECT configSubobject{};
-        configSubobject.Type = D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG;
-        configSubobject.pDesc = &pipelineConfig;
-        subobjects.push_back(configSubobject);
+        pipelineConfig.MaxTraceRecursionDepth = std::max(1u, desc.maxRecursionDepth);
+        D3D12_GLOBAL_ROOT_SIGNATURE globalRootSignature{};
+        globalRootSignature.pGlobalRootSignature = m_deviceD3D12.getGlobalRootSignature();
+
+        // The subobjects point at the descriptions above, which live until CreateStateObject returns. Without explicit associations
+        // the shader config, pipeline config and global root signature apply to every export.
+        std::vector<D3D12_STATE_SUBOBJECT> subobjects;
+        subobjects.reserve(shaderCount + hitGroupDescs.size() + 3);
+        for (D3D12_DXIL_LIBRARY_DESC& library : libraries)
+            subobjects.push_back({ D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY, &library });
+        for (D3D12_HIT_GROUP_DESC& hitDesc : hitGroupDescs)
+            subobjects.push_back({ D3D12_STATE_SUBOBJECT_TYPE_HIT_GROUP, &hitDesc });
+        subobjects.push_back({ D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG, &shaderConfig });
+        subobjects.push_back({ D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG, &pipelineConfig });
+        subobjects.push_back({ D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE, &globalRootSignature });
 
         D3D12_STATE_OBJECT_DESC stateObjectDesc{};
         stateObjectDesc.Type = D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE;
         stateObjectDesc.NumSubobjects = static_cast<UINT>(subobjects.size());
         stateObjectDesc.pSubobjects = subobjects.data();
+        ThrowIfFailed(m_deviceD3D12.getNativeDevice()->CreateStateObject(&stateObjectDesc, IID_PPV_ARGS(&m_stateObject)),
+                      ("CreateStateObject (ray tracing pipeline " + m_debugName + ")").c_str());
 
-        ThrowIfFailed(m_deviceD3D12.getNativeDevice()->CreateStateObject(
-            &stateObjectDesc, IID_PPV_ARGS(&m_stateObject)), "CreateStateObject (RTPSO)");
-
-        m_shaderGroupHandles.resize(D3D12_RAYTRACING_SHADER_RECORD_BYTE_ALIGNMENT);
+        // The shader groups' identifiers, in Vulkan's group order: ray generation (group 0), misses, hit groups, callables.
+        ComPtr<ID3D12StateObjectProperties> properties;
+        ThrowIfFailed(m_stateObject.As(&properties), "ID3D12StateObjectProperties");
+        std::vector<const wchar_t*> groups;
+        groups.push_back(exportNames[static_cast<size_t>(rayGenShader)].c_str());
+        m_missShaderGroupIndices.clear();
+        m_hitShaderGroupIndices.clear();
+        m_callableShaderGroupIndices.clear();
+        for (uint32_t miss : missShaders)
+        {
+            m_missShaderGroupIndices.push_back(static_cast<uint32_t>(groups.size()));
+            groups.push_back(exportNames[miss].c_str());
+        }
+        for (const std::wstring& name : hitGroupNames)
+        {
+            m_hitShaderGroupIndices.push_back(static_cast<uint32_t>(groups.size()));
+            groups.push_back(name.c_str());
+        }
+        for (uint32_t callable : callableShaders)
+        {
+            m_callableShaderGroupIndices.push_back(static_cast<uint32_t>(groups.size()));
+            groups.push_back(exportNames[callable].c_str());
+        }
+        m_shaderGroupHandles.assign(groups.size() * D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES, 0);
+        for (size_t g = 0; g < groups.size(); ++g)
+        {
+            const void* identifier = properties->GetShaderIdentifier(groups[g]);
+            if (!identifier)
+                throw std::runtime_error("PipelineD3D12: the ray tracing pipeline " + m_debugName + " has no shader identifier for group " +
+                                         std::to_string(g));
+            std::memcpy(m_shaderGroupHandles.data() + g * D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES, identifier, D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES);
+        }
     }
 }
