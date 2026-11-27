@@ -213,6 +213,8 @@ namespace nri
         NriTexture texture = nullptr;
         ResourceState before{};
         ResourceState after{};
+        uint32_t mipOffset = 0; // mips [mipOffset, mipOffset + mipCount), 0: every mip (NriTextureBarrierDesc)
+        uint32_t mipCount = 0;
     };
 
     struct BufferBarrierDesc

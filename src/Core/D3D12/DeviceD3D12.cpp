@@ -16,6 +16,8 @@
 #include "MemoryAllocatorD3D12.h"
 #include "../../Extensions/ShaderCompiler/ShaderCompiler.h"
 #include "../../Extensions/Upscaler/StreamlineContext.h"
+#include <mutex>
+#include <unordered_set>
 
 namespace NRI
 {
@@ -52,7 +54,18 @@ namespace NRI
             else if (severity == D3D12_MESSAGE_SEVERITY_WARNING)
                 NRI_LOG_WARN("D3D12 validation: {}", pDescription);
             else
-                NRI_LOG_INFO("D3D12 validation: {}", pDescription);
+            {
+                // Information only, once per message: a library calling the same thing every frame (ID3D12Device::CheckFeatureSupport,
+                // "superseded by CheckFeatureSupport1" in newer Agility SDKs, from NGX / NRD's own device code) filled the log with it.
+                static std::mutex seenMutex;
+                static std::unordered_set<int> seen;
+                {
+                    std::lock_guard lock(seenMutex);
+                    if (!seen.insert(static_cast<int>(messageId)).second)
+                        return;
+                }
+                NRI_LOG_INFO("D3D12 validation (information, logged once): {}", pDescription);
+            }
         }
     }
 

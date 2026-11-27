@@ -187,6 +187,11 @@ typedef struct NriTextureBarrierDesc
     NriTexture texture;
     NriResourceState before;
     NriResourceState after;
+    // Mips [mipOffset, mipOffset + mipCount) only; mipCount 0: every mip. A range is a pass-local split (a mip chain built in place:
+    // mip N - 1 read while mip N is written): D3D12 transitions just those mips and keeps tracking the texture as one state, so the
+    // pass brings them back (the reverse barrier) before it ends. Vulkan narrows the barrier's subresource range.
+    uint32_t mipOffset;
+    uint32_t mipCount;
 } NriTextureBarrierDesc;
 
 typedef struct NriBufferBarrierDesc

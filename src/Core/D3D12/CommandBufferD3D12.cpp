@@ -8,7 +8,9 @@
 #include "AccelerationStructureD3D12.h"
 #include "QueryPoolD3D12.h"
 #include "SwapchainD3D12.h"
+
 #include <algorithm>
+#include <iterator>
 
 namespace NRI
 {
@@ -62,6 +64,13 @@ namespace NRI
             if (state.access & AccessBits::IndirectRead)
                 readStates |= D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
             return readStates;
+        }
+
+        // A read-only texture state D3D12 lets combine with others (a depth target's DEPTH_READ among them).
+        bool isReadOnlyTextureState(D3D12_RESOURCE_STATES state)
+        {
+            return state != D3D12_RESOURCE_STATE_COMMON &&
+                   (state & ~(D3D12_RESOURCE_STATE_GENERIC_READ | D3D12_RESOURCE_STATE_DEPTH_READ)) == 0;
         }
 
         bool isReadOnlySubset(D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after)
@@ -809,6 +818,17 @@ namespace NRI
         return texture.getCurrentState();
     }
 
+    D3D12_RESOURCE_STATES CommandBufferD3D12::combinedReadState(D3D12_RESOURCE_STATES beforeState, D3D12_RESOURCE_STATES afterState) const
+    {
+        // A read after reads keeps the earlier read states (as buffers do): the render graph places no barrier for a read whose stage
+        // already sees the last write, so a shader read after a copy (COPY_SOURCE) or a pixel read after a compute read
+        // (NON_PIXEL_SHADER_RESOURCE) must still find its state. Direct lists only: a compute list cannot hold the pixel / depth states.
+        if (m_allocator.getCommandListType() == D3D12_COMMAND_LIST_TYPE_DIRECT && isReadOnlyTextureState(beforeState) &&
+            isReadOnlyTextureState(afterState))
+            return beforeState | afterState;
+        return afterState;
+    }
+
     void CommandBufferD3D12::transitionTextureState(TextureD3D12& texture, D3D12_RESOURCE_STATES afterState, bool uavBarrierIfSame)
     {
         const bool isComputeList = (m_allocator.getCommandListType() == D3D12_COMMAND_LIST_TYPE_COMPUTE);
@@ -829,6 +849,7 @@ namespace NRI
                 return;
             }
             const D3D12_RESOURCE_STATES beforeState = it->second;
+            afterState = combinedReadState(beforeState, afterState);
             if (beforeState != afterState && !(isComputeList && isReadOnlySubset(beforeState, afterState)))
             {
                 D3D12_RESOURCE_BARRIER b{};
@@ -851,6 +872,7 @@ namespace NRI
         }
 
         const D3D12_RESOURCE_STATES beforeState = texture.getCurrentState();
+        afterState = combinedReadState(beforeState, afterState);
         if (beforeState != afterState && !(isComputeList && isReadOnlySubset(beforeState, afterState)))
         {
             D3D12_RESOURCE_BARRIER b{};
@@ -967,6 +989,58 @@ namespace NRI
         }
     }
 
+    void CommandBufferD3D12::mipRangeBarrier(TextureD3D12& texture, D3D12_RESOURCE_STATES beforeState, D3D12_RESOURCE_STATES afterState,
+                                             uint32_t firstMip, uint32_t mipCount, bool uavBarrierIfSame)
+    {
+        // A pass-local split (NriTextureBarrierDesc): the texture stays tracked as one state -- the one the pass found it in -- and the
+        // pass brings the mips back before it ends. The split leaves that state (before == it), the return goes back to it (after
+        // == it); a texture this list has not used yet, or one in another state, first goes whole to `before`.
+        const bool unknownHere = m_deferredStateTracking && m_localTexStates.find(&texture) == m_localTexStates.end();
+        const D3D12_RESOURCE_STATES tracked = getTrackedTextureState(texture);
+        if (unknownHere || (tracked != beforeState && tracked != afterState))
+        {
+            transitionTextureState(texture, beforeState);
+            beforeState = getTrackedTextureState(texture); // (read states combine: what the mips are in now)
+        }
+        if (mipCount == 0)
+            return;
+        if (beforeState == afterState)
+        {
+            if (uavBarrierIfSame && afterState == D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+            {
+                D3D12_RESOURCE_BARRIER b{};
+                b.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+                b.UAV.pResource = texture.getNativeResource();
+                m_cmdList->ResourceBarrier(1, &b);
+            }
+            return;
+        }
+        const uint32_t mipLevels = texture.getMipLevels();
+        const uint32_t layers = std::max(texture.getArrayLayers(), 1u);
+        D3D12_RESOURCE_BARRIER barriers[32];
+        UINT count = 0;
+        for (uint32_t layer = 0; layer < layers; ++layer)
+        {
+            for (uint32_t mip = firstMip; mip < firstMip + mipCount; ++mip)
+            {
+                D3D12_RESOURCE_BARRIER& b = barriers[count++];
+                b = {};
+                b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                b.Transition.pResource = texture.getNativeResource();
+                b.Transition.StateBefore = beforeState;
+                b.Transition.StateAfter = afterState;
+                b.Transition.Subresource = mip + layer * mipLevels;
+                if (count == std::size(barriers))
+                {
+                    m_cmdList->ResourceBarrier(count, barriers);
+                    count = 0;
+                }
+            }
+        }
+        if (count > 0)
+            m_cmdList->ResourceBarrier(count, barriers);
+    }
+
     void CommandBufferD3D12::resourceBarriers(std::span<const TextureBarrierDesc> textures, std::span<const BufferBarrierDesc> buffers)
     {
         const bool isComputeList = (m_allocator.getCommandListType() == D3D12_COMMAND_LIST_TYPE_COMPUTE);
@@ -976,6 +1050,13 @@ namespace NRI
                 continue;
             auto* texD3D12 = static_cast<TextureD3D12*>(tb.texture);
             const D3D12_RESOURCE_STATES afterState = TranslateResourceStateToD3D12(tb.after, isComputeList);
+            const uint32_t mipLevels = texD3D12->getMipLevels();
+            if (tb.mipCount != 0 && (tb.mipOffset != 0 || tb.mipOffset + tb.mipCount < mipLevels))
+            {
+                mipRangeBarrier(*texD3D12, TranslateResourceStateToD3D12(tb.before, isComputeList), afterState, tb.mipOffset,
+                                std::min(tb.mipCount, mipLevels - std::min(tb.mipOffset, mipLevels)), (tb.after.access & AccessBits::ShaderWrite) != 0);
+                continue;
+            }
             transitionTextureState(*texD3D12, afterState, (tb.after.access & AccessBits::ShaderWrite) != 0);
         }
         for (const auto& bb : buffers)

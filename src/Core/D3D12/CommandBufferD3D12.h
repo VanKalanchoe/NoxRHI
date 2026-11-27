@@ -126,6 +126,11 @@ namespace NRI
         void initializeTarget(class TextureD3D12& texture);
         void transitionTextureState(class TextureD3D12& texture, D3D12_RESOURCE_STATES afterState, bool uavBarrierIfSame = false);
         D3D12_RESOURCE_STATES getTrackedTextureState(const class TextureD3D12& texture) const;
+        // The state a read keeps from the reads before it (direct lists: read-only states combine).
+        D3D12_RESOURCE_STATES combinedReadState(D3D12_RESOURCE_STATES beforeState, D3D12_RESOURCE_STATES afterState) const;
+        // TextureBarrierDesc with a mip range: per-subresource transitions, the texture's tracked state unchanged (a pass-local split).
+        void mipRangeBarrier(class TextureD3D12& texture, D3D12_RESOURCE_STATES beforeState, D3D12_RESOURCE_STATES afterState,
+                             uint32_t firstMip, uint32_t mipCount, bool uavBarrierIfSame);
 
         // Keeps temporary staging buffers created during recording alive until this command list is submitted and retired.
         void retainTempBuffer(std::shared_ptr<BufferD3D12> buffer) { m_tempBuffers.push_back(std::move(buffer)); }

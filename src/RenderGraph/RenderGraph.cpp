@@ -1580,6 +1580,8 @@ namespace nri
         recorder.Allocator.resetPool();
         CommandBuffer& cmd = recorder.CmdBuffer;
         cmd.begin(0, true);
+        scratch.RegisterFirstTouches = m_Chunks.size() > 1 && m_Device && m_Device->getAPI() == NRI_GRAPHICS_API_D3D12;
+        scratch.Touched.clear();
 
         if (firstChunk && m_ProfilerHooks.RecordGpuFrameBegin)
             m_ProfilerHooks.RecordGpuFrameBegin(cmd, m_ProfilerHooks.UserData);
@@ -1653,6 +1655,68 @@ namespace nri
         cmd.end(0);
     }
 
+    void RenderGraph::RegisterFirstTouches(const Pass& pass, CommandBuffer& cmd, ChunkScratch& scratch)
+    {
+        // D3D12 records parallel chunks with deferred state tracking: a command list learns the state each resource must enter it in
+        // from its first barrier on it, and the submission's fixup list puts it there. A read whose stage already sees the last write
+        // has no barrier (PlanPreciseSynchronization), so a chunk whose first use of a resource is such a read -- SSR sampling the depth
+        // the G-buffer pass sampled already -- learnt its state from a later barrier instead (Forward 3D's depth target): the fixup
+        // moved the depth to DEPTH_WRITE before SSR read it. The first pass of a chunk to use a resource states it here, a barrier
+        // from its state to itself (no transition; the backend records the state the list needs).
+        for (uint32_t i = 0; i < pass.TextureBarrierCount; ++i)
+            scratch.Touched.insert(m_TextureBarriers[pass.FirstTextureBarrier + i].texture);
+        for (uint32_t i = 0; i < pass.BufferBarrierCount; ++i)
+            scratch.Touched.insert(m_BufferBarriers[pass.FirstBufferBarrier + i].buffer);
+
+        const bool computeQueue = pass.Queue == NRI_QUEUE_COMPUTE;
+        scratch.FirstTouchTextures.clear();
+        scratch.FirstTouchBuffers.clear();
+        for (const ResourceAccess& access : pass.Accesses)
+        {
+            ResourceState state = access.State;
+            if (computeQueue)
+            {
+                state.access &= ComputeQueueAccess;
+                state.stages &= ComputeQueueStages;
+                if (state.access == AccessBits::None)
+                    continue;
+            }
+            if (access.IsTexture)
+            {
+                const NriTexture texture = m_Textures[access.Resource].Texture;
+                if (!texture || scratch.Touched.contains(texture))
+                    continue;
+                auto found = std::find_if(scratch.FirstTouchTextures.begin(), scratch.FirstTouchTextures.end(),
+                                          [texture](const TextureBarrierDesc& entry) { return entry.texture == texture; });
+                if (found == scratch.FirstTouchTextures.end())
+                    found = scratch.FirstTouchTextures.insert(scratch.FirstTouchTextures.end(), TextureBarrierDesc{ texture, {}, {} });
+                found->after.access |= state.access;
+                found->after.stages |= state.stages;
+                found->before = found->after;
+            }
+            else
+            {
+                const NriBuffer buffer = m_Buffers[access.Resource].Buffer;
+                if (!buffer || scratch.Touched.contains(buffer))
+                    continue;
+                auto found = std::find_if(scratch.FirstTouchBuffers.begin(), scratch.FirstTouchBuffers.end(),
+                                          [buffer](const BufferBarrierDesc& entry) { return entry.buffer == buffer; });
+                if (found == scratch.FirstTouchBuffers.end())
+                    found = scratch.FirstTouchBuffers.insert(scratch.FirstTouchBuffers.end(), BufferBarrierDesc{ buffer, {}, {} });
+                found->after.access |= state.access;
+                found->after.stages |= state.stages;
+                found->before = found->after;
+            }
+        }
+        if (scratch.FirstTouchTextures.empty() && scratch.FirstTouchBuffers.empty())
+            return;
+        for (const TextureBarrierDesc& entry : scratch.FirstTouchTextures)
+            scratch.Touched.insert(entry.texture);
+        for (const BufferBarrierDesc& entry : scratch.FirstTouchBuffers)
+            scratch.Touched.insert(entry.buffer);
+        cmd.resourceBarriers(scratch.FirstTouchTextures, scratch.FirstTouchBuffers);
+    }
+
     void RenderGraph::ExecutePass(Pass& pass, CommandBuffer& cmd, ChunkScratch& scratch, void* gpuContext)
     {
         const auto start = std::chrono::steady_clock::now();
@@ -1670,6 +1734,8 @@ namespace nri
             cmd.resourceBarriers(std::span<const TextureBarrierDesc>(m_TextureBarriers.data() + pass.FirstTextureBarrier, pass.TextureBarrierCount),
                                  std::span<const BufferBarrierDesc>(m_BufferBarriers.data() + pass.FirstBufferBarrier, pass.BufferBarrierCount));
         }
+        if (scratch.RegisterFirstTouches)
+            RegisterFirstTouches(pass, cmd, scratch);
 
         if (pass.Swapchain)
             cmd.transitionSwapchainLayout(pass.Swapchain, pass.SwapchainImage, NRI_TEXTURE_LAYOUT_UNDEFINED, NRI_TEXTURE_LAYOUT_COLOR_ATTACHMENT);

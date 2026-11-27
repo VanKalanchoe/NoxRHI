@@ -330,6 +330,11 @@ namespace nri
         {
             std::vector<uint32_t> GroupStack;
             RenderDesc RenderDescScratch;
+            // Parallel recording on D3D12 (RegisterFirstTouches): the resources this chunk's command list has used so far.
+            bool RegisterFirstTouches = false;
+            std::unordered_set<const void*> Touched;
+            std::vector<TextureBarrierDesc> FirstTouchTextures;
+            std::vector<BufferBarrierDesc> FirstTouchBuffers;
         };
 
         uint32_t BeginPass(const char* name, RGPassFlags flags);
@@ -368,6 +373,7 @@ namespace nri
         void PrepareRecording(uint32_t frameSlot);
         void RecordChunk(uint32_t chunkIndex);
         void ExecutePass(Pass& pass, CommandBuffer& cmd, ChunkScratch& scratch, void* gpuContext);
+        void RegisterFirstTouches(const Pass& pass, CommandBuffer& cmd, ChunkScratch& scratch);
         void BeginRendering(const Pass& pass, CommandBuffer& cmd, RenderDesc& desc);
         void ReleaseCallbacks();
         uint32_t GetScopeId(const char* name);

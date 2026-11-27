@@ -1041,7 +1041,9 @@ void NRI_CALL nriCmdResourceBarriers(NriCommandBuffer cmd,
         texVec.push_back({
             textures[i].texture ? textures[i].texture->impl.get() : nullptr,
             { textures[i].before.access, textures[i].before.stages },
-            { textures[i].after.access, textures[i].after.stages }
+            { textures[i].after.access, textures[i].after.stages },
+            textures[i].mipOffset,
+            textures[i].mipCount
         });
     }
     std::vector<NRI::BufferBarrierDesc> bufVec;

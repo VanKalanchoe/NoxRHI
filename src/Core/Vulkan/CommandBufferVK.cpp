@@ -1202,6 +1202,10 @@ vk::AccessFlagBits2::eColorAttachmentWrite | vk::AccessFlagBits2::eDepthStencilA
         for (const TextureBarrierDesc& desc : textures)
         {
             auto* texture = static_cast<TextureVK*>(desc.texture);
+            // (every layout is GENERAL: a mip range only narrows the dependency)
+            const uint32_t mipLevels = texture->getMipLevels();
+            const uint32_t baseMip = desc.mipCount != 0 ? std::min(desc.mipOffset, mipLevels - 1) : 0;
+            const uint32_t levelCount = desc.mipCount != 0 ? std::min(desc.mipCount, mipLevels - baseMip) : mipLevels;
             m_imageBarrierScratch.push_back(vk::ImageMemoryBarrier2{
                 .srcStageMask = translateStageBits(desc.before.stages),
                 .srcAccessMask = translateAccessBits(desc.before.access),
@@ -1214,8 +1218,8 @@ vk::AccessFlagBits2::eColorAttachmentWrite | vk::AccessFlagBits2::eDepthStencilA
                 .image = *texture->getNativeImage(),
                 .subresourceRange = {
                     .aspectMask = texture->getUsage() == TextureUsage::DepthStencilAttachment ? vk::ImageAspectFlagBits::eDepth : vk::ImageAspectFlagBits::eColor,
-                    .baseMipLevel = 0,
-                    .levelCount = texture->getMipLevels(),
+                    .baseMipLevel = baseMip,
+                    .levelCount = levelCount,
                     .baseArrayLayer = 0,
                     .layerCount = texture->getArrayLayers()
                 }
