@@ -619,8 +619,9 @@ namespace NRI
         D3D12_RAYTRACING_SHADER_CONFIG shaderConfig{};
         shaderConfig.MaxPayloadSizeInBytes = desc.maxPayloadSize ? desc.maxPayloadSize : 256u;
         shaderConfig.MaxAttributeSizeInBytes = desc.maxAttributeSize ? desc.maxAttributeSize : D3D12_RAYTRACING_MAX_ATTRIBUTE_SIZE_IN_BYTES;
-        D3D12_RAYTRACING_PIPELINE_CONFIG pipelineConfig{};
+        D3D12_RAYTRACING_PIPELINE_CONFIG1 pipelineConfig{};
         pipelineConfig.MaxTraceRecursionDepth = std::max(1u, desc.maxRecursionDepth);
+        pipelineConfig.Flags = D3D12_RAYTRACING_PIPELINE_FLAG_NONE;
         D3D12_GLOBAL_ROOT_SIGNATURE globalRootSignature{};
         globalRootSignature.pGlobalRootSignature = m_deviceD3D12.getGlobalRootSignature();
 
@@ -633,7 +634,7 @@ namespace NRI
         for (D3D12_HIT_GROUP_DESC& hitDesc : hitGroupDescs)
             subobjects.push_back({ D3D12_STATE_SUBOBJECT_TYPE_HIT_GROUP, &hitDesc });
         subobjects.push_back({ D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG, &shaderConfig });
-        subobjects.push_back({ D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG, &pipelineConfig });
+        subobjects.push_back({ D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG1, &pipelineConfig });
         subobjects.push_back({ D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE, &globalRootSignature });
 
         D3D12_STATE_OBJECT_DESC stateObjectDesc{};
@@ -646,6 +647,32 @@ namespace NRI
         // The shader groups' identifiers, in Vulkan's group order: ray generation (group 0), misses, hit groups, callables.
         ComPtr<ID3D12StateObjectProperties> properties;
         ThrowIfFailed(m_stateObject.As(&properties), "ID3D12StateObjectProperties");
+
+        // Compute explicit DXR stack size (RG + max(CH, MS, IS) + AH + safety margin) and log per-shader stack sizes.
+        const UINT64 defaultStackSize = properties->GetPipelineStackSize();
+        const UINT64 rgStack = properties->GetShaderStackSize(exportNames[static_cast<size_t>(rayGenShader)].c_str());
+        UINT64 maxMissStack = 0;
+        for (uint32_t miss : missShaders)
+            maxMissStack = std::max(maxMissStack, properties->GetShaderStackSize(exportNames[miss].c_str()));
+        UINT64 maxChStack = 0, maxAhStack = 0, maxIsStack = 0;
+        for (size_t g = 0; g < hitGroups.size(); ++g)
+        {
+            const std::wstring prefix = hitGroupNames[g] + L"::";
+            if (hitGroups[g].closestHit != ~0u)
+                maxChStack = std::max(maxChStack, properties->GetShaderStackSize((prefix + L"closesthit").c_str()));
+            if (hitGroups[g].anyHit != ~0u)
+                maxAhStack = std::max(maxAhStack, properties->GetShaderStackSize((prefix + L"anyhit").c_str()));
+            if (hitGroups[g].intersection != ~0u)
+                maxIsStack = std::max(maxIsStack, properties->GetShaderStackSize((prefix + L"intersection").c_str()));
+        }
+        const UINT64 explicitStackSize = std::max<UINT64>(
+            defaultStackSize,
+            rgStack + std::max({ maxChStack, maxMissStack, maxIsStack }) + maxAhStack + 4096u);
+        if (explicitStackSize > defaultStackSize)
+            properties->SetPipelineStackSize(explicitStackSize);
+        NRI_LOG_INFO("PipelineD3D12 RT '{}': defaultStack={}, setStack={} (RG={}, MS={}, CH={}, AH={})",
+                     m_debugName, defaultStackSize, properties->GetPipelineStackSize(),
+                     rgStack, maxMissStack, maxChStack, maxAhStack);
         std::vector<const wchar_t*> groups;
         groups.push_back(exportNames[static_cast<size_t>(rayGenShader)].c_str());
         m_missShaderGroupIndices.clear();

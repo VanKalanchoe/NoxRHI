@@ -897,9 +897,27 @@ namespace NRI
     {
         if (buffer.isUploadHeap() || buffer.isReadbackHeap())
             return;
-        // On a D3D12 COPY command list, buffers implicitly promote from COMMON and decay back to COMMON on execution end.
+        // On a D3D12 COPY command list, buffers implicitly promote from COMMON on first use and decay back to COMMON on execution end,
+        // but switching between COPY_DEST and COPY_SOURCE within the same COPY command list still requires an explicit transition barrier.
         if (m_allocator.getCommandListType() == D3D12_COMMAND_LIST_TYPE_COPY)
         {
+            auto it = m_localBufStates.find(&buffer);
+            if (it == m_localBufStates.end())
+            {
+                if (afterState != D3D12_RESOURCE_STATE_COMMON)
+                    m_localBufStates.emplace(&buffer, afterState);
+            }
+            else if (it->second != afterState && afterState != D3D12_RESOURCE_STATE_COMMON)
+            {
+                D3D12_RESOURCE_BARRIER b{};
+                b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                b.Transition.pResource = buffer.getNativeBuffer();
+                b.Transition.StateBefore = it->second;
+                b.Transition.StateAfter = afterState;
+                b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                m_cmdList->ResourceBarrier(1, &b);
+                it->second = afterState;
+            }
             buffer.setCurrentState(D3D12_RESOURCE_STATE_COMMON);
             return;
         }

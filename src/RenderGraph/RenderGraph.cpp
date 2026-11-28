@@ -1003,6 +1003,46 @@ namespace nri
         std::vector<uint8_t>& blockAccess = m_BlockAccessScratch;
 
         const bool isD3D12 = m_Device && m_Device->getAPI() == NRI_GRAPHICS_API_D3D12;
+        // What the compute passes [from, to) do to each resource: 1 read, 2 written.
+        auto markAccesses = [&](std::vector<uint8_t>& use, uint32_t from, uint32_t to)
+        {
+            use.assign(textureCount + m_Buffers.size(), 0);
+            for (uint32_t position = from; position < to; ++position)
+            {
+                for (const ResourceAccess& access : pass(position).Accesses)
+                {
+                    // D3D12's debug layer treats RAYTRACING_ACCELERATION_STRUCTURE as a write-capable state across queues,
+                    // so concurrent TLAS reads on DIRECT and COMPUTE queues must be serialized via the fork/join fence.
+                    const bool asConflict = isD3D12 && !access.IsTexture &&
+                                            ((access.State.access & AccessBits::AccelerationStructureRead) != 0);
+                    use[resourceKey(access)] |= (access.IsWrite || asConflict) ? 2 : 1;
+                }
+            }
+        };
+        // A graphics pass that must not overlap those compute passes (it writes what they touch, or reads what they write).
+        auto conflictsWith = [&](const std::vector<uint8_t>& use, const Pass& graphics)
+        {
+            for (const ResourceAccess& access : graphics.Accesses)
+            {
+                const uint8_t blockUse = use[resourceKey(access)];
+                if (blockUse != 0 && (access.IsWrite || (blockUse & 2) != 0))
+                    return true;
+            }
+            return false;
+        };
+        std::vector<uint8_t> splitUse;
+        // The first graphics pass from `after` on that conflicts with the compute passes [from, to) (count: none).
+        auto firstConflict = [&](uint32_t from, uint32_t to, uint32_t after)
+        {
+            markAccesses(splitUse, from, to);
+            for (uint32_t position = after; position < count; ++position)
+            {
+                if (pass(position).Queue != NRI_QUEUE_COMPUTE && conflictsWith(splitUse, pass(position)))
+                    return position;
+            }
+            return count;
+        };
+
         for (bool replan = true; replan;)
         {
             replan = false;
@@ -1014,32 +1054,27 @@ namespace nri
                     ++first;
                     continue;
                 }
-                uint32_t end = first;
-                while (end < count && pass(end).Queue == NRI_QUEUE_COMPUTE)
-                    ++end;
+                uint32_t runEnd = first;
+                while (runEnd < count && pass(runEnd).Queue == NRI_QUEUE_COMPUTE)
+                    ++runEnd;
 
-                blockAccess.assign(textureCount + m_Buffers.size(), 0);
-                for (uint32_t position = first; position < end; ++position)
+                // A run of compute passes is one block, joined where the first graphics pass needs any of it -- unless a graphics
+                // pass needs only its first part: then that part is a block of its own (the next iteration takes the rest), so
+                // the graphics pass waits for that part alone. (Noxiouse: the RT reflections read the DDGI atlases the run's
+                // first passes blend, and waited for the screen-probe GI after them as well.) The parts follow each other on the
+                // compute queue as before, each with its own timeline signal.
+                uint32_t end = runEnd;
+                for (uint32_t split = first + 1; split < runEnd; ++split)
                 {
-                    for (const ResourceAccess& access : pass(position).Accesses)
+                    if (firstConflict(first, split, runEnd) < firstConflict(split, runEnd, runEnd))
                     {
-                        // D3D12's debug layer treats RAYTRACING_ACCELERATION_STRUCTURE as a write-capable state across queues,
-                        // so concurrent TLAS reads on DIRECT and COMPUTE queues must be serialized via the fork/join fence.
-                        const bool asConflict = isD3D12 && !access.IsTexture &&
-                                                ((access.State.access & AccessBits::AccelerationStructureRead) != 0);
-                        blockAccess[resourceKey(access)] |= (access.IsWrite || asConflict) ? 2 : 1;
+                        end = split;
+                        break;
                     }
                 }
-                auto conflicts = [&](const Pass& graphics)
-                {
-                    for (const ResourceAccess& access : graphics.Accesses)
-                    {
-                        const uint8_t blockUse = blockAccess[resourceKey(access)];
-                        if (blockUse != 0 && (access.IsWrite || (blockUse & 2) != 0))
-                            return true;
-                    }
-                    return false;
-                };
+
+                markAccesses(blockAccess, first, end);
+                auto conflicts = [&](const Pass& graphics) { return conflictsWith(blockAccess, graphics); };
 
                 uint32_t fork = RGInvalidIndex;
                 uint32_t firstGraphics = RGInvalidIndex;
